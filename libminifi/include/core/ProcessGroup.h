@@ -224,10 +224,6 @@ class ProcessGroup {
   // update property value
   void updatePropertyValue(std::string processorName, std::string propertyName, std::string propertyValue);
 
-  void getConnections(std::map<std::string, std::shared_ptr<Connection>> &connectionMap);
-
-  void getConnections(std::map<std::string, std::shared_ptr<Connectable>> &connectionMap);
-
   void getFlowFileContainers(std::map<std::string, std::shared_ptr<Connectable>> &containers) const;
 
   void drainConnections();

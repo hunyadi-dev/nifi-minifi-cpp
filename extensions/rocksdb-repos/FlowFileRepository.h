@@ -18,6 +18,9 @@
 #ifndef LIBMINIFI_INCLUDE_CORE_REPOSITORY_FLOWFILEREPOSITORY_H_
 #define LIBMINIFI_INCLUDE_CORE_REPOSITORY_FLOWFILEREPOSITORY_H_
 
+#include <map>
+#include <string>
+
 #include "utils/file/FileUtils.h"
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
@@ -146,7 +149,6 @@ class FlowFileRepository : public core::Repository, public std::enable_shared_fr
     auto operation = [this, &batch]() { return db_->Write(rocksdb::WriteOptions(), &batch); };
     return ExecuteWithRetry(operation);
   }
-
 
   /**
    * 

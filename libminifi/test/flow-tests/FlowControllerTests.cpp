@@ -79,41 +79,6 @@ Connections:
 Remote Processing Groups:
 )";
 
-TEST_CASE("Flow shutdown drains connections", "[TestFlow1]") {
-  TestControllerWithFlow testController(yamlConfig);
-  auto controller = testController.controller_;
-  auto root = testController.root_;
-
-  testController.configuration_->set(minifi::Configure::nifi_flowcontroller_drain_timeout, "100 ms");
-
-  auto sinkProc = std::static_pointer_cast<minifi::processors::TestProcessor>(root->findProcessor("TestProcessor"));
-  // prevent execution of the consumer processor
-  sinkProc->yield(10000);
-
-  std::map<std::string, std::shared_ptr<minifi::Connection>> connectionMap;
-
-  root->getConnections(connectionMap);
-  // adds the single connection to the map both by name and id
-  REQUIRE(connectionMap.size() == 2);
-
-  testController.startFlow();
-
-  // wait for the generator to create some files
-  std::this_thread::sleep_for(std::chrono::milliseconds{1000});
-
-  for (auto& it : connectionMap) {
-    REQUIRE(it.second->getQueueSize() > 10);
-  }
-
-  controller->stop(true);
-
-  REQUIRE(sinkProc->trigger_count == 0);
-
-  for (auto& it : connectionMap) {
-    REQUIRE(it.second->isEmpty());
-  }
-}
-
 TEST_CASE("Flow shutdown waits for a while", "[TestFlow2]") {
   TestControllerWithFlow testController(yamlConfig);
   auto controller = testController.controller_;

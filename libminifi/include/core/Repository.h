@@ -49,6 +49,7 @@ namespace org {
 namespace apache {
 namespace nifi {
 namespace minifi {
+class Connection;
 namespace core {
 
 #define REPOSITORY_DIRECTORY "./repo"
@@ -113,13 +114,11 @@ class Repository : public virtual core::SerializableComponent, public core::Trac
     return found;
   }
 
-  void setConnectionMap(std::map<std::string, std::shared_ptr<core::Connectable>> &connectionMap) {
-    this->connectionMap = connectionMap;
+  void setContainers(std::map<std::string, std::shared_ptr<core::Connectable>> &other) {
+    containers = other;
   }
 
-  void setContainers(std::map<std::string, std::shared_ptr<core::Connectable>> &containers) {
-    this->containers = containers;
-  }
+  void getConnections(std::map<std::string, std::shared_ptr<Connection>>& other) const;
 
   virtual bool Get(const std::string &key, std::string &value) {
     return false;
@@ -233,8 +232,6 @@ class Repository : public virtual core::SerializableComponent, public core::Trac
 
  protected:
   std::map<std::string, std::shared_ptr<core::Connectable>> containers;
-
-  std::map<std::string, std::shared_ptr<core::Connectable>> connectionMap;
   // Mutex for protection
   std::mutex mutex_;
   // repository directory

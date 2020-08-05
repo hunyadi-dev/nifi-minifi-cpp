@@ -152,18 +152,6 @@ TEST_CASE("Test YAML Config Processing", "[YamlConfiguration]") {
   REQUIRE(30 * 1000 == rootFlowConfig->findProcessor("TailFile")->getPenalizationPeriodMsec());
   REQUIRE(1 * 1000 == rootFlowConfig->findProcessor("TailFile")->getYieldPeriodMsec());
   REQUIRE(0 == rootFlowConfig->findProcessor("TailFile")->getRunDurationNano());
-
-  std::map<std::string, std::shared_ptr<minifi::Connection>> connectionMap;
-  rootFlowConfig->getConnections(connectionMap);
-  REQUIRE(2 == connectionMap.size());
-  // This is a map of UUID->Connection, and we don't know UUID, so just going to loop over it
-  for (auto it : connectionMap) {
-    REQUIRE(it.second);
-    REQUIRE(!it.second->getUUIDStr().empty());
-    REQUIRE(it.second->getDestination());
-    REQUIRE(it.second->getSource());
-    REQUIRE(60000 == it.second->getFlowExpirationDuration());
-  }
 }
 
   SECTION("missing required field in YAML throws exception") {
@@ -454,18 +442,6 @@ NiFi Properties Overrides: {}
   REQUIRE(30 * 1000 == rootFlowConfig->findProcessor("TailFile")->getPenalizationPeriodMsec());
   REQUIRE(1 * 1000 == rootFlowConfig->findProcessor("TailFile")->getYieldPeriodMsec());
   REQUIRE(0 == rootFlowConfig->findProcessor("TailFile")->getRunDurationNano());
-
-  std::map<std::string, std::shared_ptr<minifi::Connection>> connectionMap;
-  rootFlowConfig->getConnections(connectionMap);
-  REQUIRE(2 == connectionMap.size());
-
-  for (auto it : connectionMap) {
-    REQUIRE(it.second);
-    REQUIRE(!it.second->getUUIDStr().empty());
-    REQUIRE(it.second->getDestination());
-    REQUIRE(it.second->getSource());
-    REQUIRE(0 == it.second->getFlowExpirationDuration());
-  }
 }
 
 TEST_CASE("Test Dynamic Unsupported", "[YamlConfigurationDynamicUnsupported]") {

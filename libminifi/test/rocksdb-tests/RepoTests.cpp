@@ -394,7 +394,7 @@ TEST_CASE("Flush deleted flowfiles before shutdown", "[TestFFR7]") {
       std::this_thread::sleep_for(std::chrono::milliseconds{100});
     };
 
-    ff_repository->setConnectionMap(connectionMap);
+    ff_repository->setContainers(connectionMap);
     REQUIRE(ff_repository->initialize(config));
     ff_repository->loadComponent(content_repo);
     ff_repository->start();
@@ -405,7 +405,7 @@ TEST_CASE("Flush deleted flowfiles before shutdown", "[TestFFR7]") {
   // check if the deleted flowfiles are indeed deleted
   {
     std::shared_ptr<TestFlowFileRepository> ff_repository = std::make_shared<TestFlowFileRepository>("flowFileRepository");
-    ff_repository->setConnectionMap(connectionMap);
+    ff_repository->setContainers(connectionMap);
     REQUIRE(ff_repository->initialize(config));
     ff_repository->loadComponent(content_repo);
     ff_repository->start();

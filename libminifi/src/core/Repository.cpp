@@ -21,6 +21,7 @@
 
 #include "io/DataStream.h"
 #include "io/Serializable.h"
+#include "Connection.h"
 #include "core/Relationship.h"
 #include "core/logging/Logger.h"
 #include "FlowController.h"
@@ -57,6 +58,15 @@ uint64_t Repository::getRepoSize() {
 }
 
 void Repository::flush() {
+}
+
+void Repository::getConnections(std::map<std::string, std::shared_ptr<Connection>>& other) const {
+  for (const auto& kv : containers) {
+    std::shared_ptr<Connection> connection = std::dynamic_pointer_cast<Connection>(kv.second);
+    if (connection) {
+      other.emplace(kv.first, connection);
+    }
+  }
 }
 
 } /* namespace core */

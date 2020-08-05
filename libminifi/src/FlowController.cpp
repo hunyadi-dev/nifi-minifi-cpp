@@ -383,15 +383,12 @@ void FlowController::load(const std::shared_ptr<core::ProcessGroup> &root, bool 
 }
 
 void FlowController::loadFlowRepo() {
-  if (this->flow_file_repo_ != nullptr) {
+  if (flow_file_repo_ != nullptr) {
     logger_->log_debug("Getting connection map");
-    std::map<std::string, std::shared_ptr<core::Connectable>> connectionMap;
     std::map<std::string, std::shared_ptr<core::Connectable>> containers;
-    if (this->root_ != nullptr) {
-      this->root_->getConnections(connectionMap);
-      this->root_->getFlowFileContainers(containers);
+    if (root_ != nullptr) {
+      root_->getFlowFileContainers(containers);
     }
-    flow_file_repo_->setConnectionMap(connectionMap);
     flow_file_repo_->setContainers(containers);
     flow_file_repo_->loadComponent(content_repo_);
   } else {
@@ -483,11 +480,9 @@ void FlowController::initializeC2() {
   component_metrics_by_id_.clear();
 
   std::string class_csv;
+  const std::map<std::string, std::shared_ptr<Connection>> connections = getFlowFileReposConnections();
   if (root_ != nullptr) {
     std::shared_ptr<state::response::QueueMetrics> queueMetrics = std::make_shared<state::response::QueueMetrics>();
-
-    std::map<std::string, std::shared_ptr<Connection>> connections;
-    root_->getConnections(connections);
     for (auto con : connections) {
       queueMetrics->addConnection(con.second);
     }
@@ -530,8 +525,6 @@ void FlowController::initializeC2() {
       }
 
       auto flowMonitor = std::dynamic_pointer_cast<state::response::FlowMonitor>(processor);
-      std::map<std::string, std::shared_ptr<Connection>> connections;
-      root_->getConnections(connections);
       if (flowMonitor != nullptr) {
         for (auto con : connections) {
           flowMonitor->addConnection(con.second);
@@ -933,8 +926,7 @@ int16_t FlowController::applyUpdate(const std::string &source, const std::string
 int16_t FlowController::clearConnection(const std::string &connection) {
   if (root_ != nullptr) {
     logger_->log_info("Attempting to clear connection %s", connection);
-    std::map<std::string, std::shared_ptr<Connection>> connections;
-    root_->getConnections(connections);
+    std::map<std::string, std::shared_ptr<Connection>> connections = getFlowFileReposConnections();
     auto conn = connections.find(connection);
     if (conn != connections.end()) {
       logger_->log_info("Clearing connection %s", connection);

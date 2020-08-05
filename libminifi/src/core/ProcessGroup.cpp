@@ -340,26 +340,6 @@ void ProcessGroup::updatePropertyValue(std::string processorName, std::string pr
   return;
 }
 
-void ProcessGroup::getConnections(std::map<std::string, std::shared_ptr<Connection>> &connectionMap) {
-  for (auto connection : connections_) {
-    connectionMap[connection->getUUIDStr()] = connection;
-    connectionMap[connection->getName()] = connection;
-  }
-  for (auto processGroup : child_process_groups_) {
-    processGroup->getConnections(connectionMap);
-  }
-}
-
-void ProcessGroup::getConnections(std::map<std::string, std::shared_ptr<Connectable>> &connectionMap) {
-  for (auto connection : connections_) {
-    connectionMap[connection->getUUIDStr()] = connection;
-    connectionMap[connection->getName()] = connection;
-  }
-  for (auto processGroup : child_process_groups_) {
-    processGroup->getConnections(connectionMap);
-  }
-}
-
 void ProcessGroup::getFlowFileContainers(std::map<std::string, std::shared_ptr<Connectable>> &containers) const {
   for (auto connection : connections_) {
     containers[connection->getUUIDStr()] = connection;

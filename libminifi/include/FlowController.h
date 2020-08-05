@@ -339,6 +339,15 @@ class FlowController : public core::controller::ControllerServiceProvider, publi
    */
   virtual void initializePaths(const std::string &adjustedFilename);
 
+  std::map<std::string, std::shared_ptr<Connection>> getFlowFileReposConnections() {
+    if (!flow_file_repo_) {
+      return {};
+    }
+    std::map<std::string, std::shared_ptr<Connection>> connections;
+    flow_file_repo_->getConnections(connections);
+    return connections;
+  }
+
   // flow controller mutex
   std::recursive_mutex mutex_;
 

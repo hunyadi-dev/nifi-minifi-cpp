@@ -125,7 +125,6 @@ void FlowFileRepository::run() {
 void FlowFileRepository::prune_stored_flowfiles() {
   rocksdb::DB* used_database;
   std::unique_ptr<rocksdb::DB> stored_database;
-  bool corrupt_checkpoint = false;
   if (nullptr != checkpoint_) {
     rocksdb::Options options;
     options.create_if_missing = true;
@@ -148,19 +147,12 @@ void FlowFileRepository::prune_stored_flowfiles() {
     std::string key = it->key().ToString();
     if (eventRead->DeSerialize(reinterpret_cast<const uint8_t *>(it->value().data()), it->value().size())) {
       logger_->log_debug("Found connection for %s, path %s ", eventRead->getConnectionUuid(), eventRead->getContentFullPath());
-      bool found = false;
-      auto search = containers.find(eventRead->getConnectionUuid());
-      found = (search != containers.end());
-      if (!found) {
-        // for backward compatibility
-        search = connectionMap.find(eventRead->getConnectionUuid());
-        found = (search != connectionMap.end());
-      }
-      if (!corrupt_checkpoint && found) {
+      auto found = containers.find(eventRead->getConnectionUuid());
+      if (found != containers.end()) {
         // we find the connection for the persistent flowfile, create the flowfile and enqueue that
         std::shared_ptr<core::FlowFile> flow_file_ref = std::static_pointer_cast<core::FlowFile>(eventRead);
         eventRead->setStoredToRepository(true);
-        search->second->put(eventRead);
+        found->second->put(eventRead);
       } else {
         logger_->log_warn("Could not find connection for %s, path %s ", eventRead->getConnectionUuid(), eventRead->getContentFullPath());
         auto claim = eventRead->getResourceClaim();

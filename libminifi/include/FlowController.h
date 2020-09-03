@@ -30,6 +30,7 @@
 #include <set>
 #include <string>
 #include <utility>
+#include <tuple>
 #include <vector>
 
 #include "Connection.h"
@@ -337,6 +338,13 @@ class FlowController : public core::controller::ControllerServiceProvider, publi
   void restartThreadPool();
   void initializeUninitializedSchedulers();
   void reinitializeSchedulersWithClearedThreadPool();
+  std::tuple<std::string, bool> getC2AgentClassAndEnableStateFromConfig();
+  std::string getReloadedC2AgentIdentifier();
+  void addQueueMetricsToDeviceInformation();
+  void addRepoMetricsToDeviceInformation();
+  void addC2RootClassesFromConfigToRootMetricsNodes(const std::string& agent_identifier, const std::string& agent_class);
+  void addFlowMetricClassesFromConfigToDeviceInformation();
+  void buildComponentMetricMapping();
 
   template <typename T, typename = typename std::enable_if<std::is_base_of<SchedulingAgent, T>::value>::type>
   void conditionalReloadScheduler(std::shared_ptr<T>& scheduler, const bool condition) {
@@ -357,8 +365,7 @@ class FlowController : public core::controller::ControllerServiceProvider, publi
 
   // conifiguration filename
   std::string configuration_filename_;
-  std::atomic<bool> c2_initialized_;
-  std::atomic<bool> flow_update_;
+  bool c2_initialized_;
   std::atomic<bool> c2_enabled_;
   // Provenance Repo
   std::shared_ptr<core::Repository> provenance_repo_;

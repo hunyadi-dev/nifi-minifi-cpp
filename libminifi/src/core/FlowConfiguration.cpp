@@ -67,31 +67,35 @@ std::shared_ptr<core::Processor> FlowConfiguration::createProvenanceReportTask()
   return processor;
 }
 
+void FlowConfiguration::setFlowVersionFromUrl(const std::string& url) {
+  std::string flow_id, bucket_id;
+  auto path_split = utils::StringUtils::split(url, "/");
+  // Registry API docs: nifi.apache.org/docs/nifi-registry-docs/rest-api/index.html
+  // GET /buckets/{bucketId}/flows/{flowId}: Gets a flow
+  const auto bucket_token_found = std::find(path_split.cbegin(), path_split.cend(), "buckets");
+  if (bucket_token_found != path_split.cend() && std::next(bucket_token_found) != path_split.cend()) {
+    bucket_id = *std::next(bucket_token_found);
+    const auto flows_token_found = std::find(std::next(bucket_token_found, 2), path_split.cend(), "flows");
+    if (flows_token_found != path_split.cend() && std::next(flows_token_found) != path_split.cend()) {
+      flow_id = *std::next(flows_token_found);
+    }
+  }
+  flow_version_->setFlowVersion(url, bucket_id, flow_id);
+}
+
 std::unique_ptr<core::ProcessGroup> FlowConfiguration::updateFromPayload(const std::string& url, const std::string& yamlConfigPayload) {
   auto old_services = controller_services_;
   auto old_provider = service_provider_;
   controller_services_ = std::make_shared<core::controller::ControllerServiceMap>();
   service_provider_ = std::make_shared<core::controller::StandardControllerServiceProvider>(controller_services_, nullptr, configuration_);
-  auto payload = getRootFromPayload(yamlConfigPayload);
-  if (!url.empty() && payload != nullptr) {
-    std::string flow_id, bucket_id;
-    auto path_split = utils::StringUtils::split(url, "/");
-    // Registry API docs: nifi.apache.org/docs/nifi-registry-docs/rest-api/index.html
-    // GET /buckets/{bucketId}/flows/{flowId}: Gets a flow
-    const auto bucket_token_found = std::find(path_split.cbegin(), path_split.cend(), "buckets");
-    if (bucket_token_found != path_split.cend() && std::next(bucket_token_found) != path_split.cend()) {
-      bucket_id = *std::next(bucket_token_found);
-      const auto flows_token_found = std::find(std::next(bucket_token_found, 2), path_split.cend(), "flows");
-      if (flows_token_found != path_split.cend() && std::next(flows_token_found) != path_split.cend()) {
-        flow_id = *std::next(flows_token_found);
-      }
-    }
-    flow_version_->setFlowVersion(url, bucket_id, flow_id);
+  std::unique_ptr<core::ProcessGroup> rootProcessGroup = getRootFromPayload(yamlConfigPayload);
+  if (!url.empty() && rootProcessGroup != nullptr) {
+    setFlowVersionFromUrl(url);
   } else {
     controller_services_ = old_services;
     service_provider_ = old_provider;
   }
-  return payload;
+  return rootProcessGroup;
 }
 
 std::unique_ptr<core::ProcessGroup> FlowConfiguration::createRootProcessGroup(std::string name, utils::Identifier & uuid, int version) {

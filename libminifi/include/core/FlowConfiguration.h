@@ -163,6 +163,10 @@ class FlowConfiguration : public CoreComponent {
     core::ClassLoader::getDefaultClassLoader().registerResource(resource_location, resource_function);
   }
 
+ private:
+  void setFlowVersionFromUrl(const std::string& url);
+
+ protected:
   // service provider reference.
   std::shared_ptr<core::controller::StandardControllerServiceProvider> service_provider_;
   // based, shared controller service map.

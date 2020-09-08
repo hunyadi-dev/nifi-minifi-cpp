@@ -51,6 +51,31 @@ void checkRequiredField(const YAML::Node *yamlNode, const std::string &fieldName
   }
 }
 
+void checkRequiredFieldWithAlternate(const YAML::Node *yamlNode, const std::string &fieldName, const std::string &alternateFieldName,
+    const std::shared_ptr<logging::Logger>& logger, const std::string &yamlSection, const std::string &errorMessage) {
+  std::string errMsg = errorMessage;
+  if (!yamlNode->as<YAML::Node>()[fieldName] && !yamlNode->as<YAML::Node>()[alternateFieldName]) {
+    if (errMsg.empty()) {
+      const YAML::Node name_node = yamlNode->as<YAML::Node>()["name"];
+      // Build a helpful error message for the user so they can fix the
+      // invalid YAML config file, using the component name if present
+      errMsg =
+          name_node ?
+              "Unable to parse configuration file for component named '" + name_node.as<std::string>() + "' as both '" + fieldName + "' and '" + alternateFieldName + "'' is missing, at least one is required" : // NOLINT
+              "Unable to parse configuration file as both '" + fieldName + "' and '" + alternateFieldName + "'' is missing";
+      if (!yamlSection.empty()) {
+        errMsg += " [in '" + yamlSection + "' section of configuration file]";
+      }
+      const YAML::Mark mark = yamlNode->Mark();
+      if (!mark.is_null()) {
+        errMsg += " [line:column, pos at " + std::to_string(mark.line) + ":" + std::to_string(mark.column) + ", " + std::to_string(mark.pos) + "]";
+      }
+    }
+    logger->log_error(errMsg.c_str());
+    throw std::invalid_argument(errMsg);
+  }
+}
+
 }  // namespace yaml
 }  // namespace core
 }  // namespace minifi

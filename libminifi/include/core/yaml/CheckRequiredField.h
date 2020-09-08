@@ -49,8 +49,9 @@ namespace yaml {
  *                               not present in 'yamlNode'
  */
 void checkRequiredField(
-    const YAML::Node *yamlNode, const std::string &fieldName, const std::shared_ptr<logging::Logger>& logger, const std::string &yamlSection = "", const std::string &errorMessage = "");
-
+    const YAML::Node *yamlNode, const std::string &fieldName, const std::shared_ptr<logging::Logger>& logger, const std::string& yamlSection = "", const std::string &errorMessage = "");
+void checkRequiredFieldWithAlternate(const YAML::Node *yamlNode, const std::string &fieldName, const std::string &alternateFieldName,
+    const std::shared_ptr<logging::Logger>& logger, const std::string& yamlSection = "", const std::string& errorMessage = "");
 }  // namespace yaml
 }  // namespace core
 }  // namespace minifi

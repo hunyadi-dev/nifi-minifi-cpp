@@ -497,60 +497,77 @@ void YamlConfiguration::parseProvenanceReportingYaml(YAML::Node *reportNode, cor
   processor->setScheduledState(core::RUNNING);
 }
 
+bool YamlConfiguration::validateControllerServices(const YAML::Node& controllerServicesNode) {
+  gsl_Expects(!controllerServicesNode.IsNull());
+  if (!controllerServicesNode.IsSequence()) {
+    logger_ -> log_error("Invalid yaml configuration: Controller services node is not a sequence. Check missing [] brackets!");
+    return false;
+  }
+  for (const auto iter : controllerServicesNode) {
+    const YAML::Node controllerServiceNode = iter.as<YAML::Node>();
+    yaml::checkRequiredField(&controllerServiceNode, "name", logger_, CONFIG_YAML_CONTROLLER_SERVICES_KEY);
+    yaml::checkRequiredField(&controllerServiceNode, "id", logger_, CONFIG_YAML_CONTROLLER_SERVICES_KEY);
+    yaml::checkRequiredFieldWithAlternate(&controllerServiceNode, "class", "type", logger_, CONFIG_YAML_CONTROLLER_SERVICES_KEY);
+  }
+  return true;
+}
+
 void YamlConfiguration::parseControllerServices(YAML::Node *controllerServicesNode) {
-  if (!IsNullOrEmpty(controllerServicesNode)) {
-    if (controllerServicesNode->IsSequence()) {
-      for (auto iter : *controllerServicesNode) {
-        YAML::Node controllerServiceNode = iter.as<YAML::Node>();
-        try {
-          yaml::checkRequiredField(&controllerServiceNode, "name", logger_,
-          CONFIG_YAML_CONTROLLER_SERVICES_KEY);
-          yaml::checkRequiredField(&controllerServiceNode, "id", logger_,
-          CONFIG_YAML_CONTROLLER_SERVICES_KEY);
-          std::string type = "";
+  if (IsNullOrEmpty(controllerServicesNode)) {
+    return;
+  }
+  if (!validateControllerServices(*controllerServicesNode)) {
+    return;
+  }
+  for (auto iter : *controllerServicesNode) {
+    YAML::Node controllerServiceNode = iter.as<YAML::Node>();
+    try {
+      std::string qualified_type = "";
 
-          try {
-            yaml::checkRequiredField(&controllerServiceNode, "class", logger_, CONFIG_YAML_CONTROLLER_SERVICES_KEY);
-            type = controllerServiceNode["class"].as<std::string>();
-          } catch (const std::invalid_argument &) {
-            yaml::checkRequiredField(&controllerServiceNode, "type", logger_, CONFIG_YAML_CONTROLLER_SERVICES_KEY);
-            type = controllerServiceNode["type"].as<std::string>();
-            logger_->log_debug("Using type %s for controller service node", type);
-          }
-          std::string fullType = type;
-          auto lastOfIdx = type.find_last_of(".");
-          if (lastOfIdx != std::string::npos) {
-            lastOfIdx++;  // if a value is found, increment to move beyond the .
-            int nameLength = type.length() - lastOfIdx;
-            type = type.substr(lastOfIdx, nameLength);
-          }
-
-          auto name = controllerServiceNode["name"].as<std::string>();
-          auto id = controllerServiceNode["id"].as<std::string>();
-
-          utils::Identifier uuid;
-          uuid = id;
-          auto controller_service_node = createControllerService(type, fullType, name, uuid);
-          if (nullptr != controller_service_node) {
-            logger_->log_debug("Created Controller Service with UUID %s and name %s", id, name);
-            controller_service_node->initialize();
-            YAML::Node propertiesNode = controllerServiceNode["Properties"];
-            // we should propogate properties to the node and to the implementation
-            parsePropertiesNodeYaml(&propertiesNode, std::static_pointer_cast<core::ConfigurableComponent>(controller_service_node), name,
-            CONFIG_YAML_CONTROLLER_SERVICES_KEY);
-            if (controller_service_node->getControllerServiceImplementation() != nullptr) {
-              parsePropertiesNodeYaml(&propertiesNode, std::static_pointer_cast<core::ConfigurableComponent>(controller_service_node->getControllerServiceImplementation()), name,
-              CONFIG_YAML_CONTROLLER_SERVICES_KEY);
-            }
-          } else {
-            logger_->log_debug("Could not locate %s", type);
-          }
-          controller_services_->put(id, controller_service_node);
-          controller_services_->put(name, controller_service_node);
-        } catch (YAML::InvalidNode &) {
-          throw Exception(ExceptionType::GENERAL_EXCEPTION, "Name, id, and class must be specified for controller services");
+      const YAML::Node class_node = controllerServiceNode["class"];
+      if (class_node) {
+        qualified_type = class_node.as<std::string>();
+      } else {
+        const YAML::Node type_node = controllerServiceNode["type"];
+        if (type_node) {
+          logger_->log_debug("Using type %s for controller service node", qualified_type);
+          qualified_type = type_node.as<std::string>();
+        } else {
+          // https://xkcd.com/2200/
+          const std::string error = "Error parsing controller service node: Both class and type fields are missing, but the configuration validation did not fail.";
+          logger_ -> log_error(error.c_str());
+          throw Exception(ExceptionType::GENERAL_EXCEPTION, error);
         }
       }
+      std::string type = qualified_type;
+      auto lastOfIdx = qualified_type.find_last_of(".");
+      if (lastOfIdx != std::string::npos) {
+        lastOfIdx++;  // if a value is found, increment to move beyond the .
+        int nameLength = qualified_type.length() - lastOfIdx;
+        type = qualified_type.substr(lastOfIdx, nameLength);
+      }
+
+      const std::string name = controllerServiceNode["name"].as<std::string>();
+      const std::string id = controllerServiceNode["id"].as<std::string>();
+
+      auto controller_service_node = createControllerService(type, qualified_type, name, utils::Identifier{id});
+      if (nullptr != controller_service_node) {
+        logger_->log_debug("Created Controller Service with UUID %s and name %s", id, name);
+        controller_service_node->initialize();
+        YAML::Node propertiesNode = controllerServiceNode["Properties"];
+        // we should propogate properties to the node and to the implementation
+        parsePropertiesNodeYaml(&propertiesNode, std::static_pointer_cast<core::ConfigurableComponent>(controller_service_node), name, CONFIG_YAML_CONTROLLER_SERVICES_KEY);
+        if (controller_service_node->getControllerServiceImplementation() != nullptr) {
+          parsePropertiesNodeYaml(&propertiesNode, std::static_pointer_cast<core::ConfigurableComponent>(controller_service_node->getControllerServiceImplementation()), name,
+              CONFIG_YAML_CONTROLLER_SERVICES_KEY);
+        }
+      } else {
+        logger_->log_debug("Could not locate %s", type);
+      }
+      controller_services_->put(id, controller_service_node);
+      controller_services_->put(name, controller_service_node);
+    } catch (YAML::InvalidNode &) {
+      throw Exception(ExceptionType::GENERAL_EXCEPTION, "Name, id, and class must be specified for controller services");
     }
   }
 }

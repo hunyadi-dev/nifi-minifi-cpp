@@ -190,6 +190,9 @@ class YamlConfiguration : public FlowConfiguration {
 
   // Process Property YAML
   void parseProcessorPropertyYaml(YAML::Node *doc, YAML::Node *node, std::shared_ptr<core::Processor> processor);
+
+  bool validateControllerServices(const YAML::Node& controllerServicesNode);
+
   /**
    * Parse controller services
    * @param controllerServicesNode controller services YAML node.

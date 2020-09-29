@@ -66,7 +66,7 @@ public:
 class BinaryConcatenationMerge : public MergeBin {
 public:
   static const char *mimeType;
-  std::string getMergedContentType() {
+  std::string getMergedContentType() override {
     return mimeType;
   }
   virtual void merge(
@@ -250,7 +250,7 @@ public:
   static const char *mimeType;
   void merge(core::ProcessContext *context, core::ProcessSession *session, std::deque<std::shared_ptr<core::FlowFile>> &flows, std::string &header, std::string &footer,
     std::string &demarcator, const std::shared_ptr<core::FlowFile> &flowFile) override;
-  std::string getMergedContentType() {
+  std::string getMergedContentType() override {
     return mimeType;
   }
 };
@@ -261,7 +261,7 @@ public:
   static const char *mimeType;
   void merge(core::ProcessContext *context, core::ProcessSession *session, std::deque<std::shared_ptr<core::FlowFile>> &flows, std::string &header, std::string &footer,
     std::string &demarcator, const std::shared_ptr<core::FlowFile> &flowFile) override;
-  std::string getMergedContentType() {
+  std::string getMergedContentType() override {
     return mimeType;
   }
 };

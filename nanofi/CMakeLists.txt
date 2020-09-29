@@ -19,6 +19,8 @@
 
 cmake_minimum_required(VERSION 2.6)
 
+if (ENABLE_NANOFI)
+
 IF(POLICY CMP0048)
   CMAKE_POLICY(SET CMP0048 OLD)
 ENDIF(POLICY CMP0048)
@@ -89,3 +91,5 @@ if (NOT DISABLE_CURL)
 add_subdirectory(examples)
 add_subdirectory(ecu)
 endif()
+
+endif(ENABLE_NANOFI)

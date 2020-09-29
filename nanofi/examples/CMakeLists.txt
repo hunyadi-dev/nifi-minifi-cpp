@@ -19,6 +19,7 @@
 
 cmake_minimum_required(VERSION 2.6)
 
+if (ENABLE_NANOFI)
 IF(POLICY CMP0048)
   CMAKE_POLICY(SET CMP0048 OLD)
 ENDIF(POLICY CMP0048)
@@ -77,3 +78,4 @@ target_wholearchive_library(monitor_directory minifi-http-curl)
 target_link_libraries(monitor_directory nanofi Threads::Threads)
 
 endif()
+endif(ENABLE_NANOFI)

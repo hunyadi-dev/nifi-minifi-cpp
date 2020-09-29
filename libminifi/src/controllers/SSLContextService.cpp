@@ -126,6 +126,13 @@ bool SSLContextService::configure_ssl_context(SSL_CTX *ctx) {
       return false;
     }
   }
+  // SNI support
+  SSL_CTX_set_client_hello_cb(ctx, [] (SSL *s, int *ad, void *arg) {
+    const char* servername = SSL_get_servername(s, TLSEXT_NAMETYPE_host_name);
+    if (servername && strcmp(servername, "test.example.com") == 0)
+      *reinterpret_cast<bool*>(arg) = true;
+    return SSL_TLSEXT_ERR_OK;
+  });
 
   SSL_CTX_set_verify(ctx, SSL_VERIFY_PEER, nullptr);
   int retp = SSL_CTX_load_verify_locations(ctx, ca_certificate_.c_str(), 0);

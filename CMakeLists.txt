@@ -540,9 +540,12 @@ endif()
 
 ## NOW WE CAN ADD LIBRARIES AND EXTENSIONS TO MAIN
 add_subdirectory(main)
-add_subdirectory(nanofi)
 
-add_dependencies(nanofi minifiexe)
+option(ENABLE_NANOFI "Enables building nanofi." ON)
+if (ENABLE_NANOFI)
+	add_subdirectory(nanofi)
+	add_dependencies(nanofi minifiexe)
+endif()
 
 if (NOT DISABLE_CURL AND NOT DISABLE_CONTROLLER)
 	add_subdirectory(controller)

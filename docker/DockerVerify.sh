@@ -87,6 +87,8 @@ exec
   behave $BEHAVE_OPTS "features/kafka.feature" -n "A MiNiFi instance transfers data to a kafka broker" &&
   behave $BEHAVE_OPTS "features/kafka.feature" -n "PublishKafka sends flowfiles to failure when the broker is not available" &&
   behave $BEHAVE_OPTS "features/kafka.feature" -n "PublishKafka sends can use SSL connect" &&
+  behave $BEHAVE_OPTS "features/kafka.feature" -n "A MiNiFi publishes data to a kafka topic and another one listens using ConsumeKafka" &&
+  behave $BEHAVE_OPTS "features/kafka.feature" -n "ConsumeKafka parses and uses kafka topics" && 
   behave $BEHAVE_OPTS "features/s3.feature" -n "A MiNiFi instance transfers encoded data to s3" &&
   behave $BEHAVE_OPTS "features/s3.feature" -n "A MiNiFi instance transfers encoded data through a http proxy to s3" &&
   behave $BEHAVE_OPTS "features/s3.feature" -n "A MiNiFi instance can remove s3 bucket objects" &&

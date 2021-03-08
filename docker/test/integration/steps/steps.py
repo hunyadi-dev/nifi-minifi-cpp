@@ -7,10 +7,11 @@ from minifi.core.InputPort import InputPort
 from minifi.core.SSLContextService import SSLContextService
 from minifi.core.SSL_cert_utils import gen_cert, gen_req, rsa_gen_key_callback
 
-from minifi.processors.PublishKafka import PublishKafka
-from minifi.processors.PutS3Object import PutS3Object
+from minifi.processors.ConsumeKafka import ConsumeKafka
 from minifi.processors.DeleteS3Object import DeleteS3Object
 from minifi.processors.FetchS3Object import FetchS3Object
+from minifi.processors.PublishKafka import PublishKafka
+from minifi.processors.PutS3Object import PutS3Object
 
 
 from behave import given, then, when
@@ -81,7 +82,6 @@ def step_impl(context, address):
 
 @given("a PutS3Object processor set up to communicate with an s3 server")
 def step_impl(context):
-    # PublishKafka is never the first node of a flow potential cluster-flow setup is omitted
     put_s3 = PutS3Object()
     put_s3.set_name("PutS3Object")
     context.test.add_node(put_s3)
@@ -107,11 +107,30 @@ def step_impl(context):
     publish_kafka.set_name("PublishKafka")
     context.test.add_node(publish_kafka)
 
+@given("a kafka producer workflow publishing files placed in \"{directory}\" to a broker")
+def step_impl(context, directory):
+    context.execute_steps("""
+        given a GetFile processor with the \"Input Directory\" property set to \"{directory}\"
+        and a PublishKafka processor set up to communicate with a kafka broker instance
+        and the "success" relationship of the GetFile processor is connected to the PublishKafka""".
+        format(directory=directory))
+
+@given("a ConsumeKafka processor set up to consume from the topic PublishKafka sends data to in a \"{cluster_name}\" flow")
+def step_impl(context, cluster_name):
+    consume_kafka = ConsumeKafka()
+    consume_kafka.set_name("ConsumeKafka")
+    context.test.add_node(consume_kafka)
+    logging.info("Acquiring " + cluster_name)
+    cluster = context.test.acquire_cluster(cluster_name)
+    # Assume that the first node declared is primary unless specified otherwise
+    if cluster.get_flow() is None:
+        cluster.set_name(cluster_name)
+        cluster.set_flow(consume_kafka)
+
 @given("the \"{property_name}\" of the {processor_name} processor is set to \"{property_value}\"")
 def step_impl(context, property_name, processor_name, property_value):
     processor = context.test.get_node_by_name(processor_name)
     processor.set_property(property_name, property_value)
-
 
 @given("the scheduling period of the {processor_name} processor is set to \"{sceduling_period}\"")
 def step_impl(context, processor_name, sceduling_period):
@@ -153,6 +172,13 @@ def step_impl(context):
 @given("a file with the content \"{content}\" is present in \"{path}\"")
 def step_impl(context, content, path):
     context.test.add_test_data(path, content)
+
+@given("two files with content \"{content_1}\" and \"{content_2}\" are placed in \"{path}\"")
+def step_impl(context, content_1, content_2, path):
+    context.execute_steps("""
+        given a file with the content \"{content_1}\" is present in \"{path}\"
+        and a file with the content \"{content_2}\" is present in \"{path}\"""".
+        format(content_1=content_1, content_2=content_2, path=path))
 
 # NiFi setups
 
@@ -205,6 +231,7 @@ def step_impl(context, producer_name, consumer_name):
 # Kafka setup
 
 @given("a kafka broker \"{cluster_name}\" is set up in correspondence with the PublishKafka")
+@given("a kafka broker \"{cluster_name}\" is set up in correspondence with the publisher flow")
 def step_impl(context, cluster_name):
     cluster = context.test.acquire_cluster(cluster_name)
     cluster.set_name(cluster_name)

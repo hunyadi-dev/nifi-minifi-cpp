@@ -2,18 +2,21 @@ import logging
 import os
 
 from os import listdir
+from os.path import join
 
 from .FileOutputValidator import FileOutputValidator
 
-class NoFileOutPutValidator(FileOutputValidator):
+class NoContentCheckFileNumberValidator(FileOutputValidator):
     """
-    Validates if no flowfiles were transferred
+    Validates the content of a single file in the given directory.
     """
-    def __init__(self, subdir=''):
+
+    def __init__(self, num_files_expected, subdir=''):
         self.valid = False
+        self.num_files_expected = num_files_expected
         self.subdir = subdir
 
-    def validate(self, dir=''):
+    def validate(self):
         self.valid = False
         full_dir = os.path.join(self.output_dir, self.subdir)
         logging.info("Output folder: %s", full_dir)
@@ -21,5 +24,5 @@ class NoFileOutPutValidator(FileOutputValidator):
         if not os.path.isdir(full_dir):
             return self.valid
 
-        self.valid = (0 == self.get_num_files(full_dir))
+        self.valid = self.num_files_expected == self.get_num_files(full_dir)
         return self.valid

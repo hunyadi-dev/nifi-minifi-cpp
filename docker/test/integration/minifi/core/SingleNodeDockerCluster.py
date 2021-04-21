@@ -238,7 +238,6 @@ class SingleNodeDockerCluster(Cluster):
                     name='kafka-broker',
                     network=self.network.name,
                     ports={'9092/tcp': 9092, '29092/tcp' : 29092},
-                    # environment=["KAFKA_LISTENERS=PLAINTEXT://kafka-broker:9092,SSL://kafka-broker:9093", "KAFKA_ZOOKEEPER_CONNECT=zookeeper:2181"],
                     environment=[
                         "KAFKA_BROKER_ID=1",
                         'ALLOW_PLAINTEXT_LISTENER: "yes"',

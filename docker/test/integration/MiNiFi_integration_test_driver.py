@@ -119,6 +119,8 @@ class MiNiFi_integration_test():
             startup_success = cluster.wait_for_app_logs("Starting Flow Controller...", 120)
         elif cluster.get_engine() == "kafka-broker":
             startup_success = cluster.wait_for_app_logs("Startup complete.", 120)
+        elif cluster.get_engine() == "kafka-broker-ssl":
+            startup_success = cluster.wait_for_app_logs("Startup complete.", 120)
         elif cluster.get_engine() == "http-proxy":
             startup_success = cluster.wait_for_app_logs("Accepting HTTP Socket connections at", 120)
         elif cluster.get_engine() == "s3-server":
@@ -149,7 +151,7 @@ class MiNiFi_integration_test():
             assert self.wait_for_cluster_startup_finish(cluster)
         # Seems like some extra time needed for consumers to negotiate with the broker
         for cluster in self.clusters.values():
-            if cluster.get_engine() == "kafka-broker":
+            if cluster.get_engine() == "kafka-broker" or cluster.get_engine() == "kafka-broker-ssl":
                 time.sleep(10)
 
     def add_node(self, processor):

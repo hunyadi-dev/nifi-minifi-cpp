@@ -33,7 +33,7 @@ import docker
 
 from kafka import KafkaProducer
 from confluent_kafka.admin import AdminClient, NewTopic, NewPartitions
-from confluent_kafka import Producer
+from confluent_kafka import Producer, Consumer
 import socket
 
 # Background
@@ -289,7 +289,24 @@ def step_impl(context, producer_name, consumer_name):
     consumer.set_property("SSL Certificate", crt_file)
     consumer.set_property("SSL Verify Peer", "no")
 
+@given("ssl certificates are placed in \"/tmp/resources\" with cert name \"{cert_file_name}\" and key name \"{key_file_name}\"")
+def step_impl(context, cert_file_name, key_file_name):
+    directory = "./resources/kafka_broker_ssl/conf/certs"
+    for filename in os.listdir(directory):
+        file_path = directory + "/" + filename
+        # print(file_path)
+        with open(file_path, 'rb') as file:
+            context.test.put_test_resource(filename, file.read())
+
+
 # Kafka setup
+@given("a kafka broker \"{cluster_name}\" set up to communicate via SSL is set up in correspondence with the third-party kafka publisher")
+def step_impl(context, cluster_name):
+    cluster = context.test.acquire_cluster(cluster_name)
+    cluster.set_name(cluster_name)
+    cluster.set_engine("kafka-broker-ssl")
+    cluster.set_flow(None)
+
 @given("a kafka broker \"{cluster_name}\" is set up in correspondence with the PublishKafka")
 @given("a kafka broker \"{cluster_name}\" is set up in correspondence with the third-party kafka publisher")
 @given("a kafka broker \"{cluster_name}\" is set up in correspondence with the publisher flow")
@@ -349,6 +366,7 @@ def step_impl(context, topic_name):
 @when("all instances start up")
 @when("all other processes start up")
 def step_impl(context):
+    print("Invisible message")
     context.test.start()
 
 @when("content \"{content}\" is added to file \"{file_name}\" present in directory \"{path}\" {seconds:d} seconds later")
@@ -366,6 +384,18 @@ def delivery_report(err, msg):
 @when("a message with content \"{content}\" is published to the \"{topic_name}\" topic")
 def step_impl(context, content, topic_name):
     producer = Producer({"bootstrap.servers": "localhost:29092", "client.id": socket.gethostname()})
+    producer.produce(topic_name, content.encode("utf-8"), callback=delivery_report)
+    producer.flush(10)
+
+@when("a message with content \"{content}\" is published to the \"{topic_name}\" topic using an ssl connection")
+def step_impl(context, content, topic_name):
+    print("Invisible message")
+    producer = Producer({
+        "bootstrap.servers": "localhost:29093",
+        "security.protocol": "ssl",
+        "ssl.ca.location": "/home/hunyadix/Documents/Projects/nifi-minifi-cpp_4/src/docker/test/integration/resources/kafka_broker_ssl/conf/certs/nifi-cert.pem",
+        "ssl.certificate.location": "/home/hunyadix/Documents/Projects/nifi-minifi-cpp_4/src/docker/test/integration/resources/kafka_broker_ssl/conf/certs/client_cert.crt",
+        "client.id": socket.gethostname()})
     producer.produce(topic_name, content.encode("utf-8"), callback=delivery_report)
     producer.flush(10)
 

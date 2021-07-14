@@ -48,59 +48,74 @@ namespace nifi {
 namespace minifi {
 namespace processors {
 
-core::Property SFTPProcessorBase::Hostname(
-    core::PropertyBuilder::createProperty("Hostname")->withDescription("The fully qualified hostname or IP address of the remote system")
-        ->isRequired(true)->supportsExpressionLanguage(true)->build());
-core::Property SFTPProcessorBase::Port(
-    core::PropertyBuilder::createProperty("Port")->withDescription("The port that the remote system is listening on for file transfers")
-        ->isRequired(true)->supportsExpressionLanguage(true)->build());
-core::Property SFTPProcessorBase::Username(
-    core::PropertyBuilder::createProperty("Username")->withDescription("Username")
-        ->isRequired(true)->supportsExpressionLanguage(true)->build());
-core::Property SFTPProcessorBase::Password(
-    core::PropertyBuilder::createProperty("Password")->withDescription("Password for the user account")
-        ->isRequired(false)->supportsExpressionLanguage(true)->build());
-core::Property SFTPProcessorBase::PrivateKeyPath(
-    core::PropertyBuilder::createProperty("Private Key Path")->withDescription("The fully qualified path to the Private Key file")
-        ->isRequired(false)->supportsExpressionLanguage(true)->build());
-core::Property SFTPProcessorBase::PrivateKeyPassphrase(
-    core::PropertyBuilder::createProperty("Private Key Passphrase")->withDescription("Password for the private key")
-        ->isRequired(false)->supportsExpressionLanguage(true)->build());
-core::Property SFTPProcessorBase::StrictHostKeyChecking(
-    core::PropertyBuilder::createProperty("Strict Host Key Checking")->withDescription("Indicates whether or not strict enforcement of hosts keys should be applied")
-        ->isRequired(true)->withDefaultValue<bool>(false)->build());
-core::Property SFTPProcessorBase::HostKeyFile(
-    core::PropertyBuilder::createProperty("Host Key File")->withDescription("If supplied, the given file will be used as the Host Key; otherwise, no use host key file will be used")
-        ->isRequired(false)->build());
-core::Property SFTPProcessorBase::ConnectionTimeout(
-    core::PropertyBuilder::createProperty("Connection Timeout")->withDescription("Amount of time to wait before timing out while creating a connection")
-        ->isRequired(true)->withDefaultValue<core::TimePeriodValue>("30 sec")->build());
-core::Property SFTPProcessorBase::DataTimeout(
-    core::PropertyBuilder::createProperty("Data Timeout")->withDescription("When transferring a file between the local and remote system, this value specifies how long is allowed to elapse without any data being transferred between systems")
-        ->isRequired(true)->withDefaultValue<core::TimePeriodValue>("30 sec")->build());
-core::Property SFTPProcessorBase::SendKeepaliveOnTimeout(
-    core::PropertyBuilder::createProperty("Send Keep Alive On Timeout")->withDescription("Indicates whether or not to send a single Keep Alive message when SSH socket times out")
-        ->isRequired(true)->withDefaultValue<bool>(true)->build());
-core::Property SFTPProcessorBase::ProxyType(
-    core::PropertyBuilder::createProperty("Proxy Type")->withDescription("Specifies the Proxy Configuration Controller Service to proxy network requests. If set, it supersedes proxy settings configured per component. "
-                                                                         "Supported proxies: HTTP + AuthN, SOCKS + AuthN")
-        ->isRequired(false)
-        ->withAllowableValues<std::string>({PROXY_TYPE_DIRECT,
-                                            PROXY_TYPE_HTTP,
-                                            PROXY_TYPE_SOCKS})
-        ->withDefaultValue(PROXY_TYPE_DIRECT)->build());
-core::Property SFTPProcessorBase::ProxyHost(
-    core::PropertyBuilder::createProperty("Proxy Host")->withDescription("The fully qualified hostname or IP address of the proxy server")
-        ->isRequired(false)->supportsExpressionLanguage(true)->build());
-core::Property SFTPProcessorBase::ProxyPort(
-    core::PropertyBuilder::createProperty("Proxy Port")->withDescription("The port of the proxy server")
-        ->isRequired(false)->supportsExpressionLanguage(true)->build());
-core::Property SFTPProcessorBase::HttpProxyUsername(
-    core::PropertyBuilder::createProperty("Http Proxy Username")->withDescription("Http Proxy Username")
-        ->isRequired(false)->supportsExpressionLanguage(true)->build());
-core::Property SFTPProcessorBase::HttpProxyPassword(
-    core::PropertyBuilder::createProperty("Http Proxy Password")->withDescription("Http Proxy Password")
-        ->isRequired(false)->supportsExpressionLanguage(true)->build());
+core::Property SFTPProcessorBase::Hostname(core::PropertyBuilder::createProperty("Hostname")
+    ->withDescription("The fully qualified hostname or IP address of the remote system")
+    ->isRequired(true)->supportsExpressionLanguage(true)->build());
+
+core::Property SFTPProcessorBase::Port(core::PropertyBuilder::createProperty("Port")
+    ->withDescription("The port that the remote system is listening on for file transfers")
+    ->isRequired(true)->supportsExpressionLanguage(true)->build());
+
+core::Property SFTPProcessorBase::Username(core::PropertyBuilder::createProperty("Username")
+    ->withDescription("Username")
+    ->isRequired(true)->supportsExpressionLanguage(true)->build());
+
+core::Property SFTPProcessorBase::Password(core::PropertyBuilder::createProperty("Password")
+    ->withDescription("Password for the user account")
+    ->isRequired(false)->supportsExpressionLanguage(true)->build());
+
+core::Property SFTPProcessorBase::PrivateKeyPath(core::PropertyBuilder::createProperty("Private Key Path")
+    ->withDescription("The fully qualified path to the Private Key file")
+    ->isRequired(false)->supportsExpressionLanguage(true)->build());
+
+core::Property SFTPProcessorBase::PrivateKeyPassphrase(core::PropertyBuilder::createProperty("Private Key Passphrase")
+    ->withDescription("Password for the private key")
+    ->isRequired(false)->supportsExpressionLanguage(true)->build());
+
+core::Property SFTPProcessorBase::StrictHostKeyChecking(core::PropertyBuilder::createProperty("Strict Host Key Checking")
+    ->withDescription("Indicates whether or not strict enforcement of hosts keys should be applied")
+    ->isRequired(true)->withDefaultValue<bool>(false)->build());
+
+core::Property SFTPProcessorBase::HostKeyFile(core::PropertyBuilder::createProperty("Host Key File")
+    ->withDescription("If supplied, the given file will be used as the Host Key; otherwise, no use host key file will be used")
+    ->isRequired(false)->build());
+
+core::Property SFTPProcessorBase::ConnectionTimeout(core::PropertyBuilder::createProperty("Connection Timeout")
+    ->withDescription("Amount of time to wait before timing out while creating a connection")
+    ->isRequired(true)->withDefaultValue<core::TimePeriodValue>("30 sec")->build());
+
+core::Property SFTPProcessorBase::DataTimeout(core::PropertyBuilder::createProperty("Data Timeout")
+    ->withDescription("When transferring a file between the local and remote system, this value specifies how long is allowed to elapse without any data being transferred between systems")
+    ->isRequired(true)->withDefaultValue<core::TimePeriodValue>("30 sec")->build());
+
+core::Property SFTPProcessorBase::SendKeepaliveOnTimeout(core::PropertyBuilder::createProperty("Send Keep Alive On Timeout")
+    ->withDescription("Indicates whether or not to send a single Keep Alive message when SSH socket times out")
+    ->isRequired(true)->withDefaultValue<bool>(true)->build());
+
+core::Property SFTPProcessorBase::ProxyType(core::PropertyBuilder::createProperty("Proxy Type")
+    ->withDescription("Specifies the Proxy Configuration Controller Service to proxy network requests. If set, it supersedes proxy settings configured per component. "
+                       "Supported proxies: HTTP + AuthN, SOCKS + AuthN")
+    ->isRequired(false)
+    ->withAllowableValues<std::string>({PROXY_TYPE_DIRECT,
+                                        PROXY_TYPE_HTTP,
+                                        PROXY_TYPE_SOCKS})
+    ->withDefaultValue(PROXY_TYPE_DIRECT)->build());
+
+core::Property SFTPProcessorBase::ProxyHost(core::PropertyBuilder::createProperty("Proxy Host")
+    ->withDescription("The fully qualified hostname or IP address of the proxy server")
+    ->isRequired(false)->supportsExpressionLanguage(true)->build());
+
+core::Property SFTPProcessorBase::ProxyPort(core::PropertyBuilder::createProperty("Proxy Port")
+    ->withDescription("The port of the proxy server")
+    ->isRequired(false)->supportsExpressionLanguage(true)->build());
+
+core::Property SFTPProcessorBase::HttpProxyUsername(core::PropertyBuilder::createProperty("Http Proxy Username")
+    ->withDescription("Http Proxy Username")
+    ->isRequired(false)->supportsExpressionLanguage(true)->build());
+
+core::Property SFTPProcessorBase::HttpProxyPassword(core::PropertyBuilder::createProperty("Http Proxy Password")
+    ->withDescription("Http Proxy Password")
+    ->isRequired(false)->supportsExpressionLanguage(true)->build());
 
 constexpr char const* SFTPProcessorBase::PROXY_TYPE_DIRECT;
 constexpr char const* SFTPProcessorBase::PROXY_TYPE_HTTP;
@@ -108,7 +123,7 @@ constexpr char const* SFTPProcessorBase::PROXY_TYPE_SOCKS;
 
 constexpr size_t SFTPProcessorBase::CONNECTION_CACHE_MAX_SIZE;
 
-SFTPProcessorBase::SFTPProcessorBase(std::string name, utils::Identifier uuid)
+SFTPProcessorBase::SFTPProcessorBase(const std::string& name, const utils::Identifier& uuid)
     : Processor(name, uuid),
       connection_timeout_(0),
       data_timeout_(0),
@@ -158,7 +173,7 @@ void SFTPProcessorBase::parseCommonPropertiesOnSchedule(const std::shared_ptr<co
   if (!context->getProperty(StrictHostKeyChecking.getName(), value)) {
     logger_->log_error("Strict Host Key Checking attribute is missing or invalid");
   } else {
-    utils::StringUtils::StringToBool(value, strict_host_checking_);
+    strict_host_checking_ = utils::StringUtils::toBool(value).value_or(false);
   }
   context->getProperty(HostKeyFile.getName(), host_key_file_);
   if (!context->getProperty(ConnectionTimeout.getName(), value)) {
@@ -180,7 +195,7 @@ void SFTPProcessorBase::parseCommonPropertiesOnSchedule(const std::shared_ptr<co
   if (!context->getProperty(SendKeepaliveOnTimeout.getName(), value)) {
     logger_->log_error("Send Keep Alive On Timeout attribute is missing or invalid");
   } else {
-    utils::StringUtils::StringToBool(value, use_keepalive_on_timeout_);
+    use_keepalive_on_timeout_ = utils::StringUtils::toBool(value).value_or(true);
   }
   context->getProperty(ProxyType.getName(), proxy_type_);
 }

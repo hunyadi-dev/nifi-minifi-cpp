@@ -15,8 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef EXTENSIONS_HTTP_CURL_CLIENT_HTTPSTREAM_H_
-#define EXTENSIONS_HTTP_CURL_CLIENT_HTTPSTREAM_H_
+#pragma once
 
 #include <memory>
 #include <thread>
@@ -77,7 +76,7 @@ class HttpStream : public io::BaseStream {
    * Skip to the specified offset.
    * @param offset offset to which we will skip
    */
-  void seek(uint64_t offset) override;
+  void seek(size_t offset) override;
 
   size_t size() const override {
     return written;
@@ -91,14 +90,14 @@ class HttpStream : public io::BaseStream {
    * @param buf buffer in which we extract data
    * @param buflen
    */
-  int read(uint8_t *buf, int buflen) override;
+  size_t read(uint8_t *buf, size_t buflen) override;
 
   /**
    * writes value to stream
    * @param value value to write
    * @param size size of value
    */
-  int write(const uint8_t *value, int size) override;
+  size_t write(const uint8_t *value, size_t size) override;
 
   static bool submit_client(std::shared_ptr<utils::HTTPClient> client) {
     if (client == nullptr)
@@ -133,18 +132,6 @@ class HttpStream : public io::BaseStream {
   }
 
  protected:
-
-  /**
-   * Populates the vector using the provided type name.
-   * @param buf output buffer
-   * @param t incoming object
-   * @returns number of bytes read.
-   */
-  template<typename T>
-  int readBuffer(std::vector<uint8_t>&, const T&);
-
-  void reset();
-
   std::vector<uint8_t> array;
 
   std::shared_ptr<utils::HTTPClient> http_client_;
@@ -165,7 +152,6 @@ class HttpStream : public io::BaseStream {
   std::atomic<bool> started_;
 
  private:
-
   std::shared_ptr<logging::Logger> logger_;
 };
 } /* namespace io */
@@ -173,5 +159,3 @@ class HttpStream : public io::BaseStream {
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif /* EXTENSIONS_HTTP_CURL_CLIENT_HTTPSTREAM_H_ */

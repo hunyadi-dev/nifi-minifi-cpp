@@ -17,8 +17,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef __MERGE_CONTENT_H__
-#define __MERGE_CONTENT_H__
+#pragma once
+
+#include <deque>
+#include <map>
+#include <vector>
+#include <memory>
+#include <string>
 
 #include "ArchiveCommon.h"
 #include "BinFiles.h"
@@ -64,7 +69,7 @@ class BinaryConcatenationMerge : public MergeBin {
   BinaryConcatenationMerge(const std::string& header, const std::string& footer, const std::string& demarcator);
 
   void merge(core::ProcessContext *context, core::ProcessSession *session,
-      std::deque<std::shared_ptr<core::FlowFile>> &flows, FlowFileSerializer& serializer, const std::shared_ptr<core::FlowFile> &flowFile);
+      std::deque<std::shared_ptr<core::FlowFile>> &flows, FlowFileSerializer& serializer, const std::shared_ptr<core::FlowFile> &flowFile) override;
   // Nest Callback Class for write stream
   class WriteCallback: public OutputStreamCallback {
    public:
@@ -77,35 +82,35 @@ class BinaryConcatenationMerge : public MergeBin {
     std::string &demarcator_;
     std::deque<std::shared_ptr<core::FlowFile>> &flows_;
     FlowFileSerializer& serializer_;
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) {
-      int64_t ret = 0;
+    int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
+      size_t write_size_sum = 0;
       if (!header_.empty()) {
-        int64_t len = stream->write(reinterpret_cast<uint8_t*>(const_cast<char*>(header_.data())), gsl::narrow<int>(header_.size()));
-        if (len < 0)
-          return len;
-        ret += len;
+        const auto write_ret = stream->write(reinterpret_cast<const uint8_t*>(header_.data()), header_.size());
+        if (io::isError(write_ret))
+          return -1;
+        write_size_sum += write_ret;
       }
       bool isFirst = true;
-      for (auto flow : flows_) {
+      for (const auto& flow : flows_) {
         if (!isFirst && !demarcator_.empty()) {
-          int64_t len = stream->write(reinterpret_cast<uint8_t*>(const_cast<char*>(demarcator_.data())), gsl::narrow<int>(demarcator_.size()));
-          if (len < 0)
-            return len;
-          ret += len;
+          const auto write_ret = stream->write(reinterpret_cast<const uint8_t*>(demarcator_.data()), demarcator_.size());
+          if (io::isError(write_ret))
+            return -1;
+          write_size_sum += write_ret;
         }
         int len = serializer_.serialize(flow, stream);
         if (len < 0)
           return len;
-        ret += len;
+        write_size_sum += gsl::narrow<size_t>(len);
         isFirst = false;
       }
       if (!footer_.empty()) {
-        int64_t len = stream->write(reinterpret_cast<uint8_t*>(const_cast<char*>(footer_.data())), gsl::narrow<int>(footer_.size()));
-        if (len < 0)
-          return len;
-        ret += len;
+        const auto write_ret = stream->write(reinterpret_cast<const uint8_t*>(footer_.data()), footer_.size());
+        if (io::isError(write_ret))
+          return -1;
+        write_size_sum += write_ret;
       }
-      return ret;
+      return gsl::narrow<int64_t>(write_size_sum);
     }
   };
 
@@ -122,25 +127,26 @@ class ArchiveMerge {
   class ArchiveWriter : public io::OutputStream {
    public:
     ArchiveWriter(struct archive *arch, struct archive_entry *entry) : arch_(arch), entry_(entry) {}
-    int write(const uint8_t* data, int size) override {
+    size_t write(const uint8_t* data, size_t size) override {
       if (!header_emitted_) {
         if (archive_write_header(arch_, entry_) != ARCHIVE_OK) {
-          return -1;
+          return io::STREAM_ERROR;
         }
         header_emitted_ = true;
       }
-      int totalWrote = 0;
-      int remaining = size;
+      size_t totalWrote = 0;
+      size_t remaining = size;
       while (remaining > 0) {
         const auto ret = archive_write_data(arch_, data + totalWrote, remaining);
         if (ret < 0) {
-          return ret;
+          return io::STREAM_ERROR;
         }
-        if (ret == 0) {
+        const auto zret = gsl::narrow<size_t>(ret);
+        if (zret == 0) {
           break;
         }
-        totalWrote += ret;
-        remaining -= ret;
+        totalWrote += zret;
+        remaining -= zret;
       }
       return totalWrote;
     }
@@ -161,7 +167,7 @@ class ArchiveMerge {
       size_ = 0;
       stream_ = nullptr;
     }
-    ~WriteCallback() = default;
+    ~WriteCallback() override = default;
 
     std::string merge_type_;
     std::deque<std::shared_ptr<core::FlowFile>> &flows_;
@@ -171,13 +177,13 @@ class ArchiveMerge {
     FlowFileSerializer& serializer_;
 
     static la_ssize_t archive_write(struct archive* /*arch*/, void *context, const void *buff, size_t size) {
-      WriteCallback *callback = (WriteCallback *) context;
+      WriteCallback *callback = reinterpret_cast<WriteCallback *>(context);
       uint8_t* data = reinterpret_cast<uint8_t*>(const_cast<void*>(buff));
       la_ssize_t totalWrote = 0;
-      int remaining = gsl::narrow<int>(size);
+      size_t remaining = size;
       while (remaining > 0) {
-        la_ssize_t ret = callback->stream_->write(data + totalWrote, remaining);
-        if (ret < 0) {
+        const auto ret = callback->stream_->write(data + totalWrote, remaining);
+        if (io::isError(ret)) {
           // libarchive expects us to return -1 on error
           return -1;
         }
@@ -185,13 +191,13 @@ class ArchiveMerge {
           break;
         }
         callback->size_ += ret;
-        totalWrote += ret;
+        totalWrote += static_cast<la_ssize_t>(ret);
         remaining -= ret;
       }
       return totalWrote;
     }
 
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) {
+    int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
       struct archive *arch;
 
       arch = archive_write_new();
@@ -295,7 +301,7 @@ class MergeContent : public processors::BinFiles {
   /*!
    * Create a new processor
    */
-  explicit MergeContent(std::string name, utils::Identifier uuid = utils::Identifier())
+  explicit MergeContent(const std::string& name, const utils::Identifier& uuid = {})
       : processors::BinFiles(name, uuid),
         logger_(logging::LoggerFactory<MergeContent>::getLogger()) {
     mergeStrategy_ = merge_content_options::MERGE_STRATEGY_DEFRAGMENT;
@@ -305,7 +311,7 @@ class MergeContent : public processors::BinFiles {
     attributeStrategy_ = merge_content_options::ATTRIBUTE_STRATEGY_KEEP_COMMON;
   }
   // Destructor
-  virtual ~MergeContent() = default;
+  ~MergeContent() override = default;
   // Processor Name
   static constexpr char const* ProcessorName = "MergeContent";
   // Supported Properties
@@ -329,21 +335,25 @@ class MergeContent : public processors::BinFiles {
    * @param sessionFactory process session factory that is used when creating
    * ProcessSession objects.
    */
-  void onSchedule(core::ProcessContext *context, core::ProcessSessionFactory *sessionFactory);
+  void onSchedule(core::ProcessContext *context, core::ProcessSessionFactory *sessionFactory) override;
   // OnTrigger method, implemented by NiFi MergeContent
-  virtual void onTrigger(core::ProcessContext *context, core::ProcessSession *session);
+  void onTrigger(core::ProcessContext *context, core::ProcessSession *session) override;
   // Initialize, over write by NiFi MergeContent
-  virtual void initialize(void);
-  virtual bool processBin(core::ProcessContext *context, core::ProcessSession *session, std::unique_ptr<Bin> &bin);
+  void initialize() override;
+  bool processBin(core::ProcessContext *context, core::ProcessSession *session, std::unique_ptr<Bin> &bin) override;
 
  protected:
   // Returns a group ID representing a bin. This allows flow files to be binned into like groups
-  virtual std::string getGroupId(core::ProcessContext *context, std::shared_ptr<core::FlowFile> flow);
+  std::string getGroupId(core::ProcessContext *context, std::shared_ptr<core::FlowFile> flow) override;
   // check whether the defragment bin is validate
   bool checkDefragment(std::unique_ptr<Bin> &bin);
 
  private:
   void validatePropertyOptions();
+
+  core::annotation::Input getInputRequirement() const override {
+    return core::annotation::Input::INPUT_REQUIRED;
+  }
 
   std::shared_ptr<logging::Logger> logger_;
   std::string mergeStrategy_;
@@ -371,5 +381,3 @@ REGISTER_RESOURCE(MergeContent, "Merges a Group of FlowFiles together based on a
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif

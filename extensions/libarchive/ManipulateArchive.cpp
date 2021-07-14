@@ -17,16 +17,15 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#include <string.h>
 #include <iostream>
-#include <fstream>
 #include <memory>
 #include <string>
 #include <set>
 #include <list>
+#include <algorithm>
 
-#include <archive.h>
-#include <archive_entry.h>
+#include "archive.h"
+#include "archive_entry.h"
 
 #include "ManipulateArchive.h"
 #include "Exception.h"
@@ -34,6 +33,8 @@
 #include "core/ProcessSession.h"
 #include "core/FlowFile.h"
 #include "utils/file/FileManager.h"
+#include "FocusArchiveEntry.h"
+#include "UnfocusArchiveEntry.h"
 
 namespace org {
 namespace apache {
@@ -81,7 +82,7 @@ void ManipulateArchive::onSchedule(core::ProcessContext *context, core::ProcessS
                      operation_ == OPERATION_TOUCH;
 
     // Operation must be one of copy, move, touch or remove
-    if(!op_create && (operation_ != OPERATION_REMOVE)) {
+    if (!op_create && (operation_ != OPERATION_REMOVE)) {
         logger_->log_error("Invalid operation %s for ManipulateArchive.", operation_);
         invalid = true;
     }
@@ -92,24 +93,24 @@ void ManipulateArchive::onSchedule(core::ProcessContext *context, core::ProcessS
     context->getProperty(After.getName(), after_);
 
     // All operations which create new entries require a set destination
-    if(op_create == destination_.empty()) {
+    if (op_create == destination_.empty()) {
         logger_->log_error("ManipulateArchive requires a destination for %s.", operation_);
         invalid = true;
     }
 
     // The only operation that doesn't require an existing target is touch
-    if((operation_ == OPERATION_TOUCH) != targetEntry_.empty()) {
+    if ((operation_ == OPERATION_TOUCH) != targetEntry_.empty()) {
         logger_->log_error("ManipulateArchive requires a target for %s.", operation_);
         invalid = true;
     }
 
     // Users may specify one or none of before or after, but never both.
-    if(before_.size() && after_.size()) {
+    if (before_.size() && after_.size()) {
         logger_->log_error("ManipulateArchive: cannot specify both before and after.");
         invalid = true;
-    }   
+    }
 
-    if(invalid) {
+    if (invalid) {
         throw Exception(GENERAL_EXCEPTION, "Invalid ManipulateArchive configuration");
     }
 }

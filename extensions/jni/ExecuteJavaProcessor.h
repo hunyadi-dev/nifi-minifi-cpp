@@ -16,10 +16,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef __EXECUTE_JAVA_CLASS__
-#define __EXECUTE_JAVA_CLASS__
+#pragma once
 
 #include <memory>
+#include <vector>
+#include <string>
 
 #include "FlowFileRecord.h"
 #include "core/Processor.h"
@@ -52,12 +53,11 @@ namespace processors {
  */
 class ExecuteJavaProcessor : public core::Processor {
  public:
-
   // Constructor
   /*!
    * Create a new processor
    */
-  explicit ExecuteJavaProcessor(std::string name, utils::Identifier uuid = utils::Identifier())
+  explicit ExecuteJavaProcessor(const std::string& name, const utils::Identifier& uuid = {})
       : Processor(name, uuid),
         logger_instance_(nullptr),
         context_instance_(nullptr),
@@ -82,7 +82,6 @@ class ExecuteJavaProcessor : public core::Processor {
   }
 
  protected:
-
   static JavaSignatures &getLoggerSignatures() {
     static JavaSignatures loggersignatures;
     if (loggersignatures.empty()) {
@@ -104,12 +103,21 @@ class ExecuteJavaProcessor : public core::Processor {
   static JavaSignatures &getProcessContextSignatures() {
     static JavaSignatures methodSignatures;
     if (methodSignatures.empty()) {
-      methodSignatures.addSignature({ "getComponent", "()Lorg/apache/nifi/components/AbstractConfigurableComponent;", reinterpret_cast<void*>(&Java_org_apache_nifi_processor_JniProcessContext_getComponent) });
-      methodSignatures.addSignature({ "getPropertyNames", "()Ljava/util/List;", reinterpret_cast<void*>(&Java_org_apache_nifi_processor_JniProcessContext_getPropertyNames) });
-      methodSignatures.addSignature({ "getPropertyValue", "(Ljava/lang/String;)Ljava/lang/String;", reinterpret_cast<void*>(&Java_org_apache_nifi_processor_JniProcessContext_getPropertyValue) });
-      methodSignatures.addSignature({ "getName", "()Ljava/lang/String;", reinterpret_cast<void*>(&Java_org_apache_nifi_processor_JniProcessContext_getName) });
-      methodSignatures.addSignature({ "getControllerServiceLookup", "()Lorg/apache/nifi/controller/ControllerServiceLookup;",
-          reinterpret_cast<void*>(&Java_org_apache_nifi_processor_JniProcessContext_getControllerServiceLookup) });
+      methodSignatures.addSignature({ "getComponent",
+                                      "()Lorg/apache/nifi/components/AbstractConfigurableComponent;",
+                                      reinterpret_cast<void*>(&Java_org_apache_nifi_processor_JniProcessContext_getComponent) });
+      methodSignatures.addSignature({ "getPropertyNames",
+                                      "()Ljava/util/List;",
+                                      reinterpret_cast<void*>(&Java_org_apache_nifi_processor_JniProcessContext_getPropertyNames) });
+      methodSignatures.addSignature({ "getPropertyValue",
+                                      "(Ljava/lang/String;)Ljava/lang/String;",
+                                      reinterpret_cast<void*>(&Java_org_apache_nifi_processor_JniProcessContext_getPropertyValue) });
+      methodSignatures.addSignature({ "getName",
+                                      "()Ljava/lang/String;",
+                                      reinterpret_cast<void*>(&Java_org_apache_nifi_processor_JniProcessContext_getName) });
+      methodSignatures.addSignature({ "getControllerServiceLookup",
+                                      "()Lorg/apache/nifi/controller/ControllerServiceLookup;",
+                                      reinterpret_cast<void*>(&Java_org_apache_nifi_processor_JniProcessContext_getControllerServiceLookup) });
     }
     return methodSignatures;
   }
@@ -119,7 +127,6 @@ class ExecuteJavaProcessor : public core::Processor {
     if (methodSignatures.empty()) {
       methodSignatures.addSignature({ "read", "()I", reinterpret_cast<void*>(&Java_org_apache_nifi_processor_JniInputStream_read) });
       methodSignatures.addSignature({ "readWithOffset", "([BII)I", reinterpret_cast<void*>(&Java_org_apache_nifi_processor_JniInputStream_readWithOffset) });
-
     }
     return methodSignatures;
   }
@@ -204,7 +211,6 @@ class ExecuteJavaProcessor : public core::Processor {
   }
 
   void notifyStop() override {
-
     auto localEnv = java_servicer_->attach();
 
     auto onStoppedName = java_servicer_->getAnnotation(class_name_, "OnStopped");
@@ -233,11 +239,9 @@ class ExecuteJavaProcessor : public core::Processor {
     if (init_context_.lookup_ref_) {
       localEnv->DeleteGlobalRef(init_context_.lookup_ref_);
     }
-
   }
 
  private:
-
   JniSessionFactory *getFactory(const std::shared_ptr<core::ProcessSessionFactory> &ptr) {
     std::lock_guard<std::mutex> lock(local_mutex_);
     for (const auto &factory : session_factories_) {
@@ -246,7 +250,6 @@ class ExecuteJavaProcessor : public core::Processor {
       }
     }
     return nullptr;
-
   }
 
   JniSessionFactory *setFactory(const std::shared_ptr<core::ProcessSessionFactory> &ptr, jobject obj) {
@@ -254,7 +257,6 @@ class ExecuteJavaProcessor : public core::Processor {
     JniSessionFactory *factory = new JniSessionFactory(ptr, java_servicer_, obj);
     session_factories_.push_back(factory);
     return factory;
-
   }
 
   JNINativeMethod registerNativeMethod(const std::string &name, const std::string &params, const void *ptr);
@@ -292,7 +294,6 @@ class ExecuteJavaProcessor : public core::Processor {
   JniControllerServiceLookup csl_;
 
   JniInitializationContext init_context_;
-
 };
 
 REGISTER_RESOURCE(ExecuteJavaProcessor, "ExecuteJavaClass runs NiFi processors given a provided system path ");
@@ -303,5 +304,3 @@ REGISTER_RESOURCE(ExecuteJavaProcessor, "ExecuteJavaClass runs NiFi processors g
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif

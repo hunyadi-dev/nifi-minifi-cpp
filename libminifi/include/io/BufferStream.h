@@ -35,20 +35,28 @@ class BufferStream : public BaseStream {
  public:
   BufferStream() = default;
 
-  BufferStream(const uint8_t *buf, const unsigned int len) {
+  BufferStream(const uint8_t *buf, const size_t len) {
     write(buf, len);
   }
 
   explicit BufferStream(const std::string& data) {
-    write(reinterpret_cast<const uint8_t*>(data.c_str()), gsl::narrow<int>(data.length()));
+    write(reinterpret_cast<const uint8_t*>(data.c_str()), data.length());
+  }
+
+  /*
+   * prepares the stream to accept and additional byte_count bytes
+   * @param byte_count number of bytes we expect to write
+   */
+  void extend(size_t byte_count) {
+    buffer_.reserve(buffer_.size() + byte_count);
   }
 
   using BaseStream::read;
   using BaseStream::write;
 
-  int write(const uint8_t* data, int len) final;
+  size_t write(const uint8_t* data, size_t len) final;
 
-  int read(uint8_t* buffer, int len) override;
+  size_t read(uint8_t* buffer, size_t len) override;
 
   int initialize() override {
     buffer_.clear();
@@ -56,7 +64,7 @@ class BufferStream : public BaseStream {
     return 0;
   }
 
-  void seek(uint64_t offset) override {
+  void seek(size_t offset) override {
     readOffset_ += offset;
   }
 

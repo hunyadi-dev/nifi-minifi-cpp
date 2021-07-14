@@ -19,12 +19,14 @@
  */
 
 #include "ConsumeWindowsEventLog.h"
+#include <stdio.h>
 #include <vector>
+#include <tuple>
+#include <utility>
 #include <queue>
 #include <map>
 #include <set>
 #include <sstream>
-#include <stdio.h>
 #include <string>
 #include <iostream>
 #include <memory>
@@ -127,8 +129,10 @@ core::Property ConsumeWindowsEventLog::EventHeaderDelimiter(
 core::Property ConsumeWindowsEventLog::EventHeader(
   core::PropertyBuilder::createProperty("Event Header")->
   isRequired(false)->
-  withDefaultValue("LOG_NAME=Log Name, SOURCE = Source, TIME_CREATED = Date,EVENT_RECORDID=Record ID,EVENTID = Event ID,TASK_CATEGORY = Task Category,LEVEL = Level,KEYWORDS = Keywords,USER = User,COMPUTER = Computer, EVENT_TYPE = EventType")->
-  withDescription("Comma seperated list of key/value pairs with the following keys LOG_NAME, SOURCE, TIME_CREATED,EVENT_RECORDID,EVENTID,TASK_CATEGORY,LEVEL,KEYWORDS,USER,COMPUTER, and EVENT_TYPE. Eliminating fields will remove them from the header.")->
+  withDefaultValue("LOG_NAME=Log Name, SOURCE = Source, TIME_CREATED = Date,EVENT_RECORDID=Record ID,EVENTID = Event ID,"
+      "TASK_CATEGORY = Task Category,LEVEL = Level,KEYWORDS = Keywords,USER = User,COMPUTER = Computer, EVENT_TYPE = EventType")->
+  withDescription("Comma seperated list of key/value pairs with the following keys LOG_NAME, SOURCE, TIME_CREATED,EVENT_RECORDID,"
+      "EVENTID,TASK_CATEGORY,LEVEL,KEYWORDS,USER,COMPUTER, and EVENT_TYPE. Eliminating fields will remove them from the header.")->
   build());
 
 core::Property ConsumeWindowsEventLog::OutputFormat(
@@ -170,7 +174,7 @@ core::Property ConsumeWindowsEventLog::ProcessOldEvents(
 
 core::Relationship ConsumeWindowsEventLog::Success("success", "Relationship for successfully consumed events.");
 
-ConsumeWindowsEventLog::ConsumeWindowsEventLog(const std::string& name, utils::Identifier uuid)
+ConsumeWindowsEventLog::ConsumeWindowsEventLog(const std::string& name, const utils::Identifier& uuid)
   : core::Processor(name, uuid),
     logger_(logging::LoggerFactory<ConsumeWindowsEventLog>::getLogger()) {
   char buff[MAX_COMPUTERNAME_LENGTH + 1];
@@ -214,7 +218,6 @@ void ConsumeWindowsEventLog::initialize() {
 }
 
 bool ConsumeWindowsEventLog::insertHeaderName(wel::METADATA_NAMES &header, const std::string &key, const std::string & value) const {
-
   wel::METADATA name = wel::WindowsEventLogMetadata::getMetadataFromString(key);
 
   if (name != wel::METADATA::UNKNOWN) {
@@ -492,15 +495,12 @@ void ConsumeWindowsEventLog::substituteXMLPercentageItems(pugi::xml_document& do
         const auto it = xmlPercentageItemsResolutions_.find(key);
         if (it == xmlPercentageItemsResolutions_.end()) {
           LPTSTR pBuffer{};
-          if (FormatMessage(
-            FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_HMODULE | FORMAT_MESSAGE_IGNORE_INSERTS,
-            hMsobjsDll_,
-            number,
-            MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-            (LPTSTR)&pBuffer,
-            1024,
-            0
-          )) {
+          if (FormatMessage(FORMAT_MESSAGE_ALLOCATE_BUFFER | FORMAT_MESSAGE_FROM_HMODULE | FORMAT_MESSAGE_IGNORE_INSERTS,
+                            hMsobjsDll_,
+                            number,
+                            MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
+                            (LPTSTR)&pBuffer,
+                            1024, 0)) {
             value = pBuffer;
             LocalFree(pBuffer);
 
@@ -598,7 +598,6 @@ bool ConsumeWindowsEventLog::createEventRender(EVT_HANDLE hEvent, EventRender& e
     auto message = handler.getEventMessage(hEvent);
 
     if (!message.empty()) {
-
       for (const auto &mapEntry : walker.getIdentifiers()) {
         // replace the identifiers with their translated strings.
         if (mapEntry.first.empty() || mapEntry.second.empty()) {
@@ -658,7 +657,7 @@ void ConsumeWindowsEventLog::refreshTimeZoneData() {
   DYNAMIC_TIME_ZONE_INFORMATION tzinfo;
   auto ret = GetDynamicTimeZoneInformation(&tzinfo);
   std::wstring tzstr;
-  long tzbias = 0;
+  long tzbias = 0;  // NOLINT long comes from WINDOWS API
   bool dst = false;
   switch (ret) {
     case TIME_ZONE_ID_INVALID:
@@ -691,12 +690,13 @@ void ConsumeWindowsEventLog::refreshTimeZoneData() {
 
 void ConsumeWindowsEventLog::putEventRenderFlowFileToSession(const EventRender& eventRender, core::ProcessSession& session) const {
   struct WriteCallback : public OutputStreamCallback {
-    WriteCallback(const std::string& str)
-      : str_(str) {
+    explicit WriteCallback(const std::string& str)
+        : str_(str) {
     }
 
     int64_t process(const std::shared_ptr<io::BaseStream>& stream) {
-      return stream->write(reinterpret_cast<uint8_t*>(const_cast<char*>(str_.c_str())), gsl::narrow<int>(str_.size()));
+      const auto write_ret = stream->write(reinterpret_cast<const uint8_t*>(str_.c_str()), str_.size());
+      return io::isError(write_ret) ? -1 : gsl::narrow<int64_t>(write_ret);
     }
 
     const std::string& str_;
@@ -757,7 +757,7 @@ void ConsumeWindowsEventLog::LogWindowsError(std::string error) const {
     (LPTSTR)&lpMsg,
     0, NULL);
 
-  logger_->log_error((error + " %x: %s\n").c_str(), (int)error_id, (char *)lpMsg);
+  logger_->log_error((error + " %x: %s\n").c_str(), static_cast<int>(error_id), reinterpret_cast<char *>(lpMsg));
 
   LocalFree(lpMsg);
 }

@@ -15,8 +15,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef EXTENSION_TEMPLATELOADER_H
-#define EXTENSION_TEMPLATELOADER_H
+#pragma once
+
+#include <memory>
+#include <string>
+#include <vector>
 
 #include "ApplyTemplate.h"
 #include "core/ClassLoader.h"
@@ -55,10 +58,8 @@ class TemplateFactory : public core::ObjectFactory {
   }
 
   static bool added;
-
 };
 
 extern "C" {
 DLL_EXPORT void *createTemplateFactory(void);
 }
-#endif /* EXTENSION_TEMPLATELOADER_H */

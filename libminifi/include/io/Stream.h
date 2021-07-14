@@ -24,6 +24,13 @@ namespace nifi {
 namespace minifi {
 namespace io {
 
+constexpr size_t STREAM_ERROR = static_cast<size_t>(-1);
+
+inline bool isError(const size_t read_write_return) noexcept {
+  return read_write_return == STREAM_ERROR  // general error
+      || read_write_return == static_cast<size_t>(-2);  // read: Socket EAGAIN, to be refactored to eliminate this error condition
+}
+
 /**
  * All streams serialize/deserialize in big-endian
  */
@@ -31,7 +38,7 @@ class Stream {
  public:
   virtual void close() {}
 
-  virtual void seek(uint64_t /*offset*/) {
+  virtual void seek(size_t /*offset*/) {
     throw std::runtime_error("Seek is not supported");
   }
 

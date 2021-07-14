@@ -21,15 +21,17 @@
 #include <iomanip>
 #include <random>
 #include <algorithm>
+#include <regex>
+#include <functional>
+#include <string>
 
 #include "rapidjson/reader.h"
 #include "rapidjson/writer.h"
 #include "rapidjson/document.h"
 
-#include <utils/StringUtils.h>
-#include <utils/OsUtils.h>
-#include <expression/Expression.h>
-#include <regex>
+#include "utils/StringUtils.h"
+#include "utils/OsUtils.h"
+#include "expression/Expression.h"
 
 #ifndef DISABLE_CURL
 #ifdef WIN32
@@ -58,7 +60,6 @@
 #include <unistd.h>
 #endif
 
-#include "utils/StringUtils.h"
 #include "Driver.h"
 
 #ifdef EXPRESSION_LANGUAGE_USE_DATE
@@ -91,7 +92,6 @@ Expression make_dynamic(const std::function<Value(const Parameters &params, cons
 
 Expression make_dynamic_attr(const std::string &attribute_id) {
   return make_dynamic([attribute_id](const Parameters &params, const std::vector<Expression>& /*sub_exprs*/) -> Value {
-
     std::string result;
     const auto cur_flow_file = params.flow_file.lock();
     if (cur_flow_file && cur_flow_file->getAttribute(attribute_id, result)) {
@@ -641,8 +641,7 @@ Value expr_toDate(const std::vector<Value> &args) {
 
 #else
 
-Value expr_format(const std::vector<Value>& args)
-{
+Value expr_format(const std::vector<Value>& args) {
   const std::chrono::milliseconds dur(args.at(0).asUnsignedLong());
   const std::chrono::time_point<std::chrono::system_clock> dt(dur);
   const auto unix_time = std::chrono::system_clock::to_time_t(dt);
@@ -687,8 +686,7 @@ Value expr_toDate(const std::vector<Value>&) {
 #endif  // EXPRESSION_LANGUAGE_USE_DATE
 
 Value expr_now(const std::vector<Value>& /*args*/) {
-  using namespace std::chrono;
-  int64_t unix_time_ms{duration_cast<milliseconds>(system_clock::now().time_since_epoch()).count()};
+  int64_t unix_time_ms{std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::system_clock::now().time_since_epoch()).count()};
   return Value(unix_time_ms);
 }
 
@@ -752,7 +750,7 @@ Value expr_urlDecode(const std::vector<Value> &args) {
     int out_len;
     char *output = curl_easy_unescape(curl, arg_0.c_str(), static_cast<int>(arg_0.length()), &out_len);
     if (output != nullptr) {
-      auto result = std::string(output, static_cast<unsigned long>(out_len));
+      auto result = std::string(output, static_cast<size_t>(out_len));
       curl_free(output);
       curl_easy_cleanup(curl);
       return Value(result);
@@ -948,7 +946,6 @@ Value expr_random(const std::vector<Value>& /*args*/) {
 
 template<Value T(const std::vector<Value> &)>
 Expression make_dynamic_function_incomplete(const std::string &function_name, const std::vector<Expression> &args, std::size_t num_args) {
-
   if (args.size() < num_args) {
     std::stringstream message_ss;
     message_ss << "Expression language function " << function_name << " called with " << args.size() << " argument(s), but " << num_args << " are required";
@@ -1558,7 +1555,6 @@ Expression make_dynamic_function(const std::string &function_name, const std::ve
 }
 
 Expression make_function_composition(const Expression &arg, const std::vector<std::pair<std::string, std::vector<Expression>>> &chain) {
-
   auto expr = arg;
 
   for (const auto &chain_part : chain) {

@@ -18,13 +18,13 @@
 
 #include "CoapConnector.h"
 
-#include "core/logging/LoggerConfiguration.h"
-#include "core/controller/ControllerService.h"
 #include <string>
 #include <memory>
 #include <set>
+
+#include "core/logging/LoggerConfiguration.h"
+#include "core/controller/ControllerService.h"
 #include "core/Property.h"
-#include "CoapConnector.h"
 #include "io/validation.h"
 #include "properties/Configure.h"
 
@@ -69,7 +69,6 @@ void CoapConnectorService::onEnable() {
     if (configuration_->get("nifi.c2.agent.coap.host", host_) && configuration_->get("nifi.c2.agent.coap.port", port_str)) {
       core::Property::StringToInt(port_str, port_);
     }
-
   }
 }
 

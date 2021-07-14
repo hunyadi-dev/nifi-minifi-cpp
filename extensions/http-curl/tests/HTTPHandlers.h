@@ -15,18 +15,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef LIBMINIFI_TEST_CURL_TESTS_SITETOSITEHTTP_HTTPHANDLERS_H_
-#define LIBMINIFI_TEST_CURL_TESTS_SITETOSITEHTTP_HTTPHANDLERS_H_
+#pragma once
 
 #include <algorithm>
 #include <cinttypes>
 #include <utility>
+#include <memory>
+#include <string>
+#include <vector>
+#include <map>
+
 #include "civetweb.h"
 #include "CivetServer.h"
 #include "concurrentqueue.h"
 #include "CivetStream.h"
 #include "io/CRCStream.h"
 #include "rapidjson/document.h"
+#include "rapidjson/error/en.h"
 #include "HTTPUtils.h"
 #include "ServerAwareHandler.h"
 #include "utils/gsl.h"
@@ -77,7 +82,6 @@ class SiteToSiteLocationResponder : public ServerAwareHandler {
 
 class PeerResponder : public ServerAwareHandler {
  public:
-
   explicit PeerResponder(std::string base_url) {
     (void)base_url;  // unused in release builds
     std::string scheme;
@@ -85,7 +89,6 @@ class PeerResponder : public ServerAwareHandler {
   }
 
   bool handleGet(CivetServer* /*server*/, struct mg_connection *conn) override {
-
 #ifdef WIN32
     std::string hostname = org::apache::nifi::minifi::io::Socket::getMyHostName();
 #else
@@ -107,14 +110,13 @@ class PeerResponder : public ServerAwareHandler {
 
 class SiteToSiteBaseResponder : public ServerAwareHandler {
  public:
-
   explicit SiteToSiteBaseResponder(std::string base_url)
       : base_url(std::move(base_url)) {
   }
 
   bool handleGet(CivetServer* /*server*/, struct mg_connection *conn) override {
     std::string site2site_rest_resp =
-        "{\"controller\":{\"id\":\"96dab149-0162-1000-7924-ed3122d6ea2b\",\"name\":\"NiFi Flow\",\"comments\":\"\",\"runningCount\":3,\"stoppedCount\":6,\"invalidCount\":1,\"disabledCount\":0,\"inputPortCount\":1,\"outputPortCount\":1,\"remoteSiteListeningPort\":10443,\"siteToSiteSecure\":false,\"instanceId\":\"13881505-0167-1000-be72-aa29341a3e9a\",\"inputPorts\":[{\"id\":\"471deef6-2a6e-4a7d-912a-81cc17e3a204\",\"name\":\"RPGIN\",\"comments\":\"\",\"state\":\"RUNNING\"}],\"outputPorts\":[{\"id\":\"9cf15a63-0166-1000-1b29-027406d96013\",\"name\":\"ddsga\",\"comments\":\"\",\"state\":\"STOPPED\"}]}}";
+        "{\"controller\":{\"id\":\"96dab149-0162-1000-7924-ed3122d6ea2b\",\"name\":\"NiFi Flow\",\"comments\":\"\",\"runningCount\":3,\"stoppedCount\":6,\"invalidCount\":1,\"disabledCount\":0,\"inputPortCount\":1,\"outputPortCount\":1,\"remoteSiteListeningPort\":10443,\"siteToSiteSecure\":false,\"instanceId\":\"13881505-0167-1000-be72-aa29341a3e9a\",\"inputPorts\":[{\"id\":\"471deef6-2a6e-4a7d-912a-81cc17e3a204\",\"name\":\"RPGIN\",\"comments\":\"\",\"state\":\"RUNNING\"}],\"outputPorts\":[{\"id\":\"9cf15a63-0166-1000-1b29-027406d96013\",\"name\":\"ddsga\",\"comments\":\"\",\"state\":\"STOPPED\"}]}}";  // NOLINT line length
     std::stringstream headers;
     headers << "HTTP/1.1 200 OK\r\nContent-Type: application/json\r\nContent-Length: " << site2site_rest_resp.length() << "\r\nConnection: close\r\n\r\n";
     mg_printf(conn, "%s", headers.str().c_str());
@@ -128,7 +130,6 @@ class SiteToSiteBaseResponder : public ServerAwareHandler {
 
 class TransactionResponder : public ServerAwareHandler {
  public:
-
   explicit TransactionResponder(std::string base_url, std::string port_id, bool input_port, bool wrong_uri = false, bool empty_transaction_uri = false)
       : base_url(std::move(base_url)),
         wrong_uri(wrong_uri),
@@ -136,7 +137,6 @@ class TransactionResponder : public ServerAwareHandler {
         input_port(input_port),
         port_id(std::move(port_id)),
         flow_files_feed_(nullptr) {
-
     if (input_port) {
       transaction_id_str = "fe4a3a42-53b6-4af1-a80d-6fdfe60de96";
       transaction_id_str += std::to_string(transaction_id.load());
@@ -178,6 +178,7 @@ class TransactionResponder : public ServerAwareHandler {
   std::string getTransactionId() {
     return transaction_id_str;
   }
+
  protected:
   std::string base_url;
   std::string transaction_id_str;
@@ -190,7 +191,6 @@ class TransactionResponder : public ServerAwareHandler {
 
 class FlowFileResponder : public ServerAwareHandler {
  public:
-
   explicit FlowFileResponder(bool input_port, bool wrong_uri = false, bool invalid_checksum = false)
       : wrong_uri(wrong_uri),
         input_port(input_port),
@@ -213,37 +213,51 @@ class FlowFileResponder : public ServerAwareHandler {
     if (!wrong_uri) {
       minifi::io::CivetStream civet_stream(conn);
       minifi::io::CRCStream < minifi::io::CivetStream > stream(gsl::make_not_null(&civet_stream));
-      uint32_t num_attributes;
-      int read;
+      uint32_t num_attributes = 0;
       uint64_t total_size = 0;
-      read = stream.read(num_attributes);
-      if(!isServerRunning())return false;
-      assert(read > 0); total_size += read;
+      {
+        const auto read = stream.read(num_attributes);
+        if (!isServerRunning()) return false;
+        assert(read > 0);
+        total_size += read;
+      }
 
-      auto flow = std::make_shared<FlowObj>();
+      const auto flow = std::make_shared<FlowObj>();
 
       for (uint32_t i = 0; i < num_attributes; i++) {
         std::string name, value;
-        read = stream.read(name, true);
-        if(!isServerRunning())return false;
-        assert(read > 0); total_size += read;
-        read = stream.read(value, true);
-        if(!isServerRunning())return false;
-        assert(read > 0); total_size += read;
+        {
+          const auto read = stream.read(name, true);
+          if (!isServerRunning()) return false;
+          assert(read > 0);
+          total_size += read;
+        }
+        {
+          const auto read = stream.read(value, true);
+          if (!isServerRunning()) return false;
+          assert(read > 0);
+          total_size += read;
+        }
         flow->attributes[name] = value;
       }
       uint64_t length;
-      read = stream.read(length);
-      if(!isServerRunning())return false;
-      assert(read > 0); total_size += read;
+      {
+        const auto read = stream.read(length);
+        if (!isServerRunning()) return false;
+        assert(read > 0);
+        total_size += read;
+      }
 
       total_size += length;
       flow->data.resize(gsl::narrow<size_t>(length));
       flow->total_size = total_size;
 
-      read = stream.read(flow->data.data(), gsl::narrow<int>(length));
-      if(!isServerRunning())return false;
-      assert(read == gsl::narrow<int>(length));
+      {
+        const auto read = stream.read(flow->data.data(), length);
+        if (!isServerRunning()) return false;
+        (void)read;
+        assert(read == length);
+      }
 
       if (!invalid_checksum) {
         site2site_rest_resp = std::to_string(stream.getCRC());
@@ -263,7 +277,6 @@ class FlowFileResponder : public ServerAwareHandler {
   }
 
   bool handleGet(CivetServer* /*server*/, struct mg_connection *conn) override {
-
     if (flow_files_feed_->size_approx() > 0) {
       std::shared_ptr<FlowObj> flowobj;
       std::vector<std::shared_ptr<FlowObj>> flows;
@@ -290,13 +303,12 @@ class FlowFileResponder : public ServerAwareHandler {
         }
         uint64_t length = flow->data.size();
         stream.write(length);
-        stream.write(flow->data.data(), gsl::narrow<int>(length));
+        stream.write(flow->data.data(), gsl::narrow<size_t>(length));
       }
     } else {
       mg_printf(conn, "HTTP/1.1 200 OK\r\nConnection: "
                 "close\r\nContent-Length: 0\r\n");
       mg_printf(conn, "Content-Type: text/plain\r\n\r\n");
-
     }
     return true;
   }
@@ -320,7 +332,6 @@ class FlowFileResponder : public ServerAwareHandler {
 
 class DeleteTransactionResponder : public ServerAwareHandler {
  public:
-
   explicit DeleteTransactionResponder(std::string base_url, std::string response_code, int expected_resp_code)
       : flow_files_feed_(nullptr),
         base_url(std::move(base_url)),
@@ -401,7 +412,6 @@ class HeartbeatHandler : public ServerAwareHandler {
       assert(bundle.HasMember("artifact"));
       std::string str = bundle["artifact"].GetString();
       if (str == "minifi-standard-processors") {
-
         std::vector<std::string> classes;
         for (auto &proc : bundle["componentManifest"]["processors"].GetArray()) {
           classes.push_back(proc["type"].GetString());
@@ -412,7 +422,6 @@ class HeartbeatHandler : public ServerAwareHandler {
           assert(std::find(classes.begin(), classes.end(), proc.class_name_) != std::end(classes));
           found = true;
         }
-
       }
     }
     assert(found);
@@ -428,11 +437,15 @@ class HeartbeatHandler : public ServerAwareHandler {
 
   void verify(struct mg_connection *conn) {
     auto post_data = readPayload(conn);
+    if (!isServerRunning()) {
+      return;
+    }
     if (!IsNullOrEmpty(post_data)) {
       rapidjson::Document root;
-      rapidjson::ParseResult ok = root.Parse(post_data.data(), post_data.size());
-      assert(ok);
-      (void)ok;  // unused in release builds
+      rapidjson::ParseResult result = root.Parse(post_data.data(), post_data.size());
+      if (!result) {
+        throw std::runtime_error(fmt::format("JSON parse error: {0}\n JSON data: {1}", std::string(rapidjson::GetParseError_En(result.Code())), post_data));
+      }
       std::string operation = root["operation"].GetString();
       if (operation == "heartbeat") {
         handleHeartbeat(root, conn);
@@ -522,28 +535,27 @@ class C2UpdateHandler : public C2FlowProvider {
 };
 
 class C2FailedUpdateHandler : public C2UpdateHandler {
-public:
- explicit C2FailedUpdateHandler(const std::string& test_file_location)
-   : C2UpdateHandler(test_file_location) {
- }
+ public:
+  explicit C2FailedUpdateHandler(const std::string& test_file_location) : C2UpdateHandler(test_file_location) {
+  }
 
- bool handlePost(CivetServer *server, struct mg_connection *conn) override {
-   calls_++;
-   const auto data = readPayload(conn);
+  bool handlePost(CivetServer *server, struct mg_connection *conn) override {
+    calls_++;
+    const auto data = readPayload(conn);
 
-   if (data.find("operationState") != std::string::npos) {
-     assert(data.find("state\": \"NOT_APPLIED") != std::string::npos);
-   }
+    if (data.find("operationState") != std::string::npos) {
+      assert(data.find("state\": \"NOT_APPLIED") != std::string::npos);
+    }
 
-   return C2UpdateHandler::handlePost(server, conn);
- }
+    return C2UpdateHandler::handlePost(server, conn);
+  }
 };
 
 class InvokeHTTPCouldNotConnectHandler : public ServerAwareHandler {
 };
 
 class InvokeHTTPResponseOKHandler : public ServerAwareHandler {
-public:
+ public:
   bool handlePost(CivetServer *, struct mg_connection *conn) override {
     mg_printf(conn, "HTTP/1.1 201 OK\r\nContent-Type: text/plain\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     return true;
@@ -551,7 +563,7 @@ public:
 };
 
 class InvokeHTTPRedirectHandler : public ServerAwareHandler {
-public:
+ public:
   bool handlePost(CivetServer *, struct mg_connection *conn) override {
     mg_printf(conn, "HTTP/1.1 301 OK\r\nContent-Type: text/plain\r\nContent-Length: 0\r\nLocation: /\r\n\r\n");
     return true;
@@ -559,7 +571,7 @@ public:
 };
 
 class InvokeHTTPResponse404Handler : public ServerAwareHandler {
-public:
+ public:
   bool handlePost(CivetServer *, struct mg_connection *conn) override {
     mg_printf(conn, "HTTP/1.1 404 Not Found\r\nContent-Type: text/plain\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     return true;
@@ -567,7 +579,7 @@ public:
 };
 
 class InvokeHTTPResponse501Handler : public ServerAwareHandler {
-public:
+ public:
   bool handlePost(CivetServer *, struct mg_connection *conn) override {
     mg_printf(conn, "HTTP/1.1 501 Not Implemented\r\nContent-Type: text/plain\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
     return true;
@@ -575,8 +587,8 @@ public:
 };
 
 class TimeoutingHTTPHandler : public ServerAwareHandler {
-public:
-  TimeoutingHTTPHandler(std::vector<std::chrono::milliseconds> wait_times)
+ public:
+  explicit TimeoutingHTTPHandler(std::vector<std::chrono::milliseconds> wait_times)
       : wait_times_(wait_times) {
   }
   bool handlePost(CivetServer *, struct mg_connection *conn) override {
@@ -595,6 +607,7 @@ public:
     respond(conn);
     return true;
   }
+
  private:
   void respond(struct mg_connection *conn) {
     if (!wait_times_.empty() && wait_times_[0] > std::chrono::seconds(0)) {
@@ -611,4 +624,25 @@ public:
   }
   std::vector<std::chrono::milliseconds> wait_times_;
 };
-#endif /* LIBMINIFI_TEST_CURL_TESTS_SITETOSITEHTTP_HTTPHANDLERS_H_ */
+
+class HttpGetResponder : public ServerAwareHandler {
+ public:
+  bool handleGet(CivetServer* /*server*/, struct mg_connection *conn) override {
+    puts("handle get");
+    static const std::string site2site_rest_resp = "hi this is a get test";
+    mg_printf(conn, "HTTP/1.1 200 OK\r\nContent-Type: "
+              "text/plain\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n",
+              site2site_rest_resp.length());
+    mg_printf(conn, "%s", site2site_rest_resp.c_str());
+    return true;
+  }
+};
+
+class RetryHttpGetResponder : public ServerAwareHandler {
+ public:
+  bool handleGet(CivetServer* /*server*/, struct mg_connection *conn) override {
+    puts("handle get with retry");
+    mg_printf(conn, "HTTP/1.1 501 Not Implemented\r\nContent-Type: text/plain\r\nContent-Length: 0\r\nConnection: close\r\n\r\n");
+    return true;
+  }
+};

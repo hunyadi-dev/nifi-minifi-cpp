@@ -18,12 +18,9 @@
 
 #include "HTTPStream.h"
 
-#include <algorithm>
 #include <fstream>
-#include <vector>
+#include <utility>
 #include <memory>
-#include <string>
-#include <Exception.h>
 
 #include "HTTPCallback.h"
 #include "io/validation.h"
@@ -36,7 +33,7 @@ namespace minifi {
 namespace io {
 
 HttpStream::HttpStream(std::shared_ptr<utils::HTTPClient> client)
-    : http_client_(client),
+    : http_client_(std::move(client)),
       written(0),
       // given the nature of the stream we don't want to slow libCURL, we will produce
       // a warning instead allowing us to adjust it server side or through the local configuration.
@@ -51,38 +48,33 @@ void HttpStream::close() {
   http_read_callback_.close();
 }
 
-void HttpStream::seek(uint64_t /*offset*/) {
+void HttpStream::seek(size_t /*offset*/) {
   // seek is an unnecessary part of this implementatino
   throw std::logic_error{"HttpStream::seek is unimplemented"};
 }
 
 // data stream overrides
 
-int HttpStream::write(const uint8_t *value, int size) {
-  gsl_Expects(size >= 0);
-  if (size == 0) {
-    return 0;
+size_t HttpStream::write(const uint8_t *value, size_t size) {
+  if (size == 0) return 0;
+  if (IsNullOrEmpty(value)) {
+    return STREAM_ERROR;
   }
-  if (!IsNullOrEmpty(value)) {
+  if (!started_) {
+    std::lock_guard<std::mutex> lock(mutex_);
     if (!started_) {
-      std::lock_guard<std::mutex> lock(mutex_);
-      if (!started_) {
-        callback_.ptr = &http_callback_;
-        callback_.pos = 0;
-        http_client_->setUploadCallback(&callback_);
-        http_client_future_ = std::async(std::launch::async, submit_client, http_client_);
-        started_ = true;
-      }
+      callback_.ptr = &http_callback_;
+      callback_.pos = 0;
+      http_client_->setUploadCallback(&callback_);
+      http_client_future_ = std::async(std::launch::async, submit_client, http_client_);
+      started_ = true;
     }
-    http_callback_.process(value, size);
-    return size;
-  } else {
-    return -1;
   }
+  http_callback_.process(value, size);
+  return size;
 }
 
-int HttpStream::read(uint8_t *buf, int buflen) {
-  gsl_Expects(buflen >= 0);
+size_t HttpStream::read(uint8_t *buf, size_t buflen) {
   if (buflen == 0) {
     return 0;
   }
@@ -97,10 +89,10 @@ int HttpStream::read(uint8_t *buf, int buflen) {
         started_ = true;
       }
     }
-    return gsl::narrow<int>(http_read_callback_.readFully((char*) buf, buflen));
+    return http_read_callback_.readFully(reinterpret_cast<char*>(buf), buflen);
 
   } else {
-    return -1;
+    return STREAM_ERROR;
   }
 }
 

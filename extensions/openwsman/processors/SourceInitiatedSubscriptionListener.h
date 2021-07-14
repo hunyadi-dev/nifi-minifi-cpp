@@ -15,8 +15,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef __SOURCE_INITIATED_SUBSCRIPTION_PROCESSOR_H__
-#define __SOURCE_INITIATED_SUBSCRIPTION_PROCESSOR_H__
+#pragma once
 
 #include <memory>
 #include <string>
@@ -54,7 +53,7 @@ class SourceInitiatedSubscriptionListener : public core::Processor {
 
   static constexpr char const* ProcessorName = "SourceInitiatedSubscriptionListener";
 
-  explicit SourceInitiatedSubscriptionListener(std::string name, utils::Identifier uuid = utils::Identifier());
+  explicit SourceInitiatedSubscriptionListener(const std::string& name, const utils::Identifier& uuid = {});
 
   // Supported Properties
   static core::Property ListenHostname;
@@ -169,5 +168,3 @@ REGISTER_RESOURCE(SourceInitiatedSubscriptionListener, "This processor implement
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif  // __SOURCE_INITIATED_SUBSCRIPTION_PROCESSOR_H__

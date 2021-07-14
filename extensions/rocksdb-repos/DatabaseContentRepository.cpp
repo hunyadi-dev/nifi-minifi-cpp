@@ -16,16 +16,17 @@
  * limitations under the License.
  */
 
-#include "DatabaseContentRepository.h"
-
 #include <memory>
 #include <string>
+#include <utility>
 
+#include "DatabaseContentRepository.h"
+#include "encryption/RocksDbEncryptionProvider.h"
 #include "RocksDbStream.h"
-#include "rocksdb/merge_operator.h"
 #include "utils/GeneralUtils.h"
 #include "utils/gsl.h"
 #include "Exception.h"
+#include "database/StringAppender.h"
 
 namespace org {
 namespace apache {
@@ -41,14 +42,25 @@ bool DatabaseContentRepository::initialize(const std::shared_ptr<minifi::Configu
   } else {
     directory_ = configuration->getHome() + "/dbcontentrepository";
   }
-  rocksdb::Options options;
-  options.create_if_missing = true;
-  options.use_direct_io_for_flush_and_compaction = true;
-  options.use_direct_reads = true;
-  options.merge_operator = std::make_shared<StringAppender>();
-  options.error_if_exists = false;
-  options.max_successive_merges = 0;
-  db_ = utils::make_unique<minifi::internal::RocksDatabase>(options, directory_);
+  const auto encrypted_env = createEncryptingEnv(utils::crypto::EncryptionManager{configuration->getHome()}, DbEncryptionOptions{directory_, ENCRYPTION_KEY_NAME});
+  logger_->log_info("Using %s DatabaseContentRepository", encrypted_env ? "encrypted" : "plaintext");
+
+  auto set_db_opts = [encrypted_env] (internal::Writable<rocksdb::DBOptions>& db_opts) {
+    db_opts.set(&rocksdb::DBOptions::create_if_missing, true);
+    db_opts.set(&rocksdb::DBOptions::use_direct_io_for_flush_and_compaction, true);
+    db_opts.set(&rocksdb::DBOptions::use_direct_reads, true);
+    db_opts.set(&rocksdb::DBOptions::error_if_exists, false);
+    if (encrypted_env) {
+      db_opts.set(&rocksdb::DBOptions::env, encrypted_env.get(), EncryptionEq{});
+    } else {
+      db_opts.set(&rocksdb::DBOptions::env, rocksdb::Env::Default());
+    }
+  };
+  auto set_cf_opts = [] (internal::Writable<rocksdb::ColumnFamilyOptions>& cf_opts){
+    cf_opts.set(&rocksdb::ColumnFamilyOptions::merge_operator, std::make_shared<StringAppender>(), StringAppender::Eq{});
+    cf_opts.set<size_t>(&rocksdb::ColumnFamilyOptions::max_successive_merges, 0);
+  };
+  db_ = minifi::internal::RocksDatabase::create(set_db_opts, set_cf_opts, directory_);
   if (db_->open()) {
     logger_->log_debug("NiFi Content DB Repository database open %s success", directory_);
     is_valid_ = true;
@@ -81,14 +93,14 @@ void DatabaseContentRepository::Session::commit() {
   if (!opendb) {
     throw Exception(REPOSITORY_EXCEPTION, "Couldn't open rocksdb database to commit content changes");
   }
-  rocksdb::WriteBatch batch;
+  auto batch = opendb->createWriteBatch();
   for (const auto& resource : managedResources_) {
     auto outStream = dbContentRepository->write(*resource.first, false, &batch);
     if (outStream == nullptr) {
       throw Exception(REPOSITORY_EXCEPTION, "Couldn't open the underlying resource for write: " + resource.first->getContentFullPath());
     }
-    const int size = gsl::narrow<int>(resource.second->size());
-    if (outStream->write(const_cast<uint8_t*>(resource.second->getBuffer()), size) != size) {
+    const auto size = resource.second->size();
+    if (outStream->write(resource.second->getBuffer(), size) != size) {
       throw Exception(REPOSITORY_EXCEPTION, "Failed to write new resource: " + resource.first->getContentFullPath());
     }
   }
@@ -97,8 +109,8 @@ void DatabaseContentRepository::Session::commit() {
     if (outStream == nullptr) {
       throw Exception(REPOSITORY_EXCEPTION, "Couldn't open the underlying resource for append: " + resource.first->getContentFullPath());
     }
-    const int size = gsl::narrow<int>(resource.second->size());
-    if (outStream->write(const_cast<uint8_t*>(resource.second->getBuffer()), size) != size) {
+    const auto size = resource.second->size();
+    if (outStream->write(resource.second->getBuffer(), size) != size) {
       throw Exception(REPOSITORY_EXCEPTION, "Failed to append to resource: " + resource.first->getContentFullPath());
     }
   }
@@ -161,7 +173,7 @@ bool DatabaseContentRepository::remove(const minifi::ResourceClaim &claim) {
   }
 }
 
-std::shared_ptr<io::BaseStream> DatabaseContentRepository::write(const minifi::ResourceClaim& claim, bool /*append*/, rocksdb::WriteBatch* batch) {
+std::shared_ptr<io::BaseStream> DatabaseContentRepository::write(const minifi::ResourceClaim& claim, bool /*append*/, minifi::internal::WriteBatch* batch) {
   // the traditional approach with these has been to return -1 from the stream; however, since we have the ability here
   // we can simply return a nullptr, which is also valid from the API when this stream is not valid.
   if (!is_valid_ || !db_)

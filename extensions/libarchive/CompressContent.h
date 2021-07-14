@@ -17,10 +17,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef __COMPRESS_CONTENT_H__
-#define __COMPRESS_CONTENT_H__
+#pragma once
 
 #include <cinttypes>
+#include <vector>
+#include <utility>
+#include <memory>
+#include <map>
+#include <string>
 
 #include "archive_entry.h"
 #include "archive.h"
@@ -43,20 +47,20 @@ namespace minifi {
 namespace processors {
 
 // CompressContent Class
-class CompressContent: public core::Processor {
-public:
+class CompressContent : public core::Processor {
+ public:
   // Constructor
   /*!
    * Create a new processor
    */
-  explicit CompressContent(std::string name, utils::Identifier uuid = utils::Identifier())
+  explicit CompressContent(const std::string& name, const utils::Identifier& uuid = {})
     : core::Processor(name, uuid)
     , logger_(logging::LoggerFactory<CompressContent>::getLogger())
     , updateFileName_(false)
     , encapsulateInTar_(false) {
   }
   // Destructor
-  virtual ~CompressContent() = default;
+  ~CompressContent() override = default;
   // Processor Name
   static constexpr char const* ProcessorName = "CompressContent";
   // Supported Properties
@@ -87,15 +91,15 @@ public:
     (USE_MIME_TYPE, "use mime.type attribute")
   )
 
-public:
+ public:
   // Nest Callback Class for read stream from flow for compress
   class ReadCallbackCompress: public InputStreamCallback {
-  public:
+   public:
     ReadCallbackCompress(std::shared_ptr<core::FlowFile> &flow, struct archive *arch, struct archive_entry *entry) :
         flow_(flow), arch_(arch), entry_(entry), status_(0), logger_(logging::LoggerFactory<CompressContent>::getLogger()) {
     }
-    ~ReadCallbackCompress() = default;
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) {
+    ~ReadCallbackCompress() override = default;
+    int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
       uint8_t buffer[4096U];
       int64_t ret = 0;
       uint64_t read_size = 0;
@@ -107,24 +111,24 @@ public:
         return -1;
       }
       while (read_size < flow_->getSize()) {
-        ret = stream->read(buffer, sizeof(buffer));
-        if (ret < 0) {
+        const auto readret = stream->read(buffer, sizeof(buffer));
+        if (io::isError(readret)) {
           status_ = -1;
           return -1;
         }
-        if (ret > 0) {
-          ret = archive_write_data(arch_, buffer, gsl::narrow<size_t>(ret));
+        if (readret > 0) {
+          ret = archive_write_data(arch_, buffer, readret);
           if (ret < 0) {
             logger_->log_error("Compress Content archive error %s", archive_error_string(arch_));
             status_ = -1;
             return -1;
           }
-          read_size += ret;
+          read_size += gsl::narrow<uint64_t>(ret);
         } else {
           break;
         }
       }
-      return read_size;
+      return gsl::narrow<int64_t>(read_size);
     }
     std::shared_ptr<core::FlowFile> flow_;
     struct archive *arch_;
@@ -133,32 +137,28 @@ public:
     std::shared_ptr<logging::Logger> logger_;
   };
   // Nest Callback Class for read stream from flow for decompress
-  class ReadCallbackDecompress: public InputStreamCallback {
-  public:
-    ReadCallbackDecompress(const std::shared_ptr<core::FlowFile> &flow) :
-        read_size_(0), offset_(0), flow_(flow) {
-      origin_offset_ = flow_->getOffset();
+  struct ReadCallbackDecompress : InputStreamCallback {
+    explicit ReadCallbackDecompress(std::shared_ptr<core::FlowFile> flow) :
+        flow_file(std::move(flow)) {
     }
-    ~ReadCallbackDecompress() = default;
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) {
-      read_size_ = 0;
-      stream->seek(offset_);
-      int readRet = stream->read(buffer_, sizeof(buffer_));
-      read_size_ = readRet;
-      if (readRet > 0) {
-        offset_ += read_size_;
+    ~ReadCallbackDecompress() override = default;
+    int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
+      stream->seek(offset);
+      const auto readRet = stream->read(buffer, sizeof(buffer));
+      stream_read_result = readRet;
+      if (!io::isError(readRet)) {
+        offset += readRet;
       }
-      return readRet;
+      return gsl::narrow<int64_t>(readRet);
     }
-    int64_t read_size_;
-    uint8_t buffer_[8192];
-    uint64_t offset_;
-    uint64_t origin_offset_;
-    std::shared_ptr<core::FlowFile> flow_;
+    size_t stream_read_result = 0;  // read size or error code, to be checked with io::isError
+    uint8_t buffer[8192] = {0};
+    size_t offset = 0;
+    std::shared_ptr<core::FlowFile> flow_file;
   };
   // Nest Callback Class for write stream
   class WriteCallback: public OutputStreamCallback {
-  public:
+   public:
     WriteCallback(CompressionMode compress_mode, int compress_level, CompressionFormat compress_format,
         const std::shared_ptr<core::FlowFile> &flow, const std::shared_ptr<core::ProcessSession> &session) :
         compress_mode_(compress_mode), compress_level_(compress_level), compress_format_(compress_format),
@@ -183,23 +183,21 @@ public:
     int status_;
 
     static la_ssize_t archive_write(struct archive* /*arch*/, void *context, const void *buff, size_t size) {
-      WriteCallback *callback = (WriteCallback *) context;
-      la_ssize_t ret = callback->stream_->write(reinterpret_cast<uint8_t*>(const_cast<void*>(buff)), gsl::narrow<int>(size));
-      if (ret > 0)
-        callback->size_ += (int64_t) ret;
-      return ret;
+      auto* const callback = static_cast<WriteCallback*>(context);
+      const auto ret = callback->stream_->write(reinterpret_cast<const uint8_t*>(buff), size);
+      if (!io::isError(ret)) callback->size_ += gsl::narrow<int64_t>(ret);
+      return io::isError(ret) ? -1 : gsl::narrow<la_ssize_t>(ret);
     }
 
-    static la_ssize_t archive_read(struct archive *arch, void *context, const void **buff) {
-      WriteCallback *callback = (WriteCallback *) context;
+    static la_ssize_t archive_read(struct archive* archive, void *context, const void **buff) {
+      auto *callback = reinterpret_cast<WriteCallback *>(context);
       callback->session_->read(callback->flow_, &callback->readDecompressCb_);
-      if (callback->readDecompressCb_.read_size_ >= 0) {
-        *buff = callback->readDecompressCb_.buffer_;
-        return gsl::narrow<la_ssize_t>(callback->readDecompressCb_.read_size_);
-      } else {
-        archive_set_error(arch, EIO, "Error reading flowfile");
+      *buff = callback->readDecompressCb_.buffer;
+      if (io::isError(callback->readDecompressCb_.stream_read_result)) {
+        archive_set_error(archive, EIO, "Error reading flowfile");
         return -1;
       }
+      return gsl::narrow<la_ssize_t>(callback->readDecompressCb_.stream_read_result);
     }
 
     static la_int64_t archive_skip(struct archive* /*a*/, void* /*client_data*/, la_int64_t /*request*/) {
@@ -341,8 +339,8 @@ public:
           if (read_result == 0)
             break;
           size_ += read_result;
-          const auto write_result = stream_->write(reinterpret_cast<uint8_t*>(buffer), gsl::narrow<int>(read_result));
-          if (write_result < 0) {
+          const auto write_result = stream_->write(reinterpret_cast<uint8_t*>(buffer), gsl::narrow<size_t>(read_result));
+          if (io::isError(write_result)) {
             archive_read_log_error_cleanup(arch);
             return -1;
           }
@@ -381,22 +379,23 @@ public:
 
         int64_t process(const std::shared_ptr<io::BaseStream>& inputStream) override {
           std::vector<uint8_t> buffer(16 * 1024U);
-          int64_t read_size = 0;
-          while (read_size < gsl::narrow<int64_t>(writer_.flow_->getSize())) {
-            int ret = inputStream->read(buffer.data(), gsl::narrow<int>(buffer.size()));
-            if (ret < 0) {
+          size_t read_size = 0;
+          while (read_size < writer_.flow_->getSize()) {
+            const auto ret = inputStream->read(buffer.data(), buffer.size());
+            if (io::isError(ret)) {
               return -1;
             } else if (ret == 0) {
               break;
             } else {
-              if (outputStream_->write(buffer.data(), ret) != ret) {
+              const auto writeret = outputStream_->write(buffer.data(), ret);
+              if (io::isError(writeret) || gsl::narrow<size_t>(writeret) != ret) {
                 return -1;
               }
               read_size += ret;
             }
           }
           outputStream_->close();
-          return read_size;
+          return gsl::narrow<int64_t>(read_size);
         }
 
         GzipWriteCallback& writer_;
@@ -414,33 +413,37 @@ public:
 
       success_ = filterStream->isFinished();
 
-      return flow_->getSize();
+      return gsl::narrow<int64_t>(flow_->getSize());
     }
   };
 
-public:
+ public:
   /**
    * Function that's executed when the processor is scheduled.
    * @param context process context.
    * @param sessionFactory process session factory that is used when creating
    * ProcessSession objects.
    */
-  void onSchedule(core::ProcessContext *context, core::ProcessSessionFactory *sessionFactory);
+  void onSchedule(core::ProcessContext *context, core::ProcessSessionFactory *sessionFactory) override;
   // OnTrigger method, implemented by NiFi CompressContent
-  virtual void onTrigger(core::ProcessContext* /*context*/, core::ProcessSession* /*session*/) {
+  void onTrigger(core::ProcessContext* /*context*/, core::ProcessSession* /*session*/) override {
   }
   // OnTrigger method, implemented by NiFi CompressContent
-  virtual void onTrigger(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSession> &session);
+  void onTrigger(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSession> &session) override;
   // Initialize, over write by NiFi CompressContent
-  virtual void initialize(void);
+  void initialize() override;
 
-private:
+ private:
   static std::string toMimeType(CompressionFormat format);
 
   void processFlowFile(const std::shared_ptr<core::FlowFile>& flowFile, const std::shared_ptr<core::ProcessSession>& session);
 
+  core::annotation::Input getInputRequirement() const override {
+    return core::annotation::Input::INPUT_REQUIRED;
+  }
+
   std::shared_ptr<logging::Logger> logger_;
-  int compressLevel_;
+  int compressLevel_{};
   CompressionMode compressMode_;
   ExtendedCompressionFormat compressFormat_;
   bool updateFileName_;
@@ -457,5 +460,3 @@ REGISTER_RESOURCE(CompressContent, "Compresses or decompresses the contents of F
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif

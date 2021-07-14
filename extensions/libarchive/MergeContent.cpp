@@ -21,16 +21,13 @@
 #include <stdio.h>
 #include <memory>
 #include <string>
-#include <vector>
 #include <set>
-#include <queue>
 #include <map>
 #include <deque>
 #include <utility>
 #include <algorithm>
 #include <numeric>
 #include "utils/TimeUtil.h"
-#include "utils/StringUtils.h"
 #include "utils/GeneralUtils.h"
 #include "core/ProcessContext.h"
 #include "core/ProcessSession.h"
@@ -289,11 +286,11 @@ bool MergeContent::processBin(core::ProcessContext *context, core::ProcessSessio
   }
 
   std::shared_ptr<core::FlowFile> merge_flow = std::static_pointer_cast<FlowFileRecord>(session->create());
-  if (attributeStrategy_ == merge_content_options::ATTRIBUTE_STRATEGY_KEEP_COMMON)
+  if (attributeStrategy_ == merge_content_options::ATTRIBUTE_STRATEGY_KEEP_COMMON) {
     KeepOnlyCommonAttributesMerger(bin->getFlowFile()).mergeAttributes(session, merge_flow);
-  else if (attributeStrategy_ == merge_content_options::ATTRIBUTE_STRATEGY_KEEP_ALL_UNIQUE)
+  } else if (attributeStrategy_ == merge_content_options::ATTRIBUTE_STRATEGY_KEEP_ALL_UNIQUE) {
     KeepAllUniqueAttributesMerger(bin->getFlowFile()).mergeAttributes(session, merge_flow);
-  else {
+  } else {
     logger_->log_error("Attribute strategy not supported %s", attributeStrategy_);
     return false;
   }
@@ -425,13 +422,13 @@ void KeepOnlyCommonAttributesMerger::processFlowFile(const std::shared_ptr<core:
 void KeepAllUniqueAttributesMerger::processFlowFile(const std::shared_ptr<core::FlowFile> &flow_file, std::map<std::string, std::string> &merged_attributes) {
   auto flow_attributes = flow_file->getAttributes();
   for (auto&& attr : flow_attributes) {
-    if(std::find(removed_attributes_.cbegin(), removed_attributes_.cend(), attr.first) != removed_attributes_.cend()) {
+    if (std::find(removed_attributes_.cbegin(), removed_attributes_.cend(), attr.first) != removed_attributes_.cend()) {
       continue;
     }
     std::map<std::string, std::string>::iterator insertion_res;
     bool insertion_happened;
     std::tie(insertion_res, insertion_happened) = merged_attributes.insert(attr);
-    if(!insertion_happened && insertion_res->second != attr.second) {
+    if (!insertion_happened && insertion_res->second != attr.second) {
       merged_attributes.erase(insertion_res);
       removed_attributes_.push_back(attr.first);
     }

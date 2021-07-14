@@ -15,16 +15,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef LIBMINIFI_INCLUDE_C2_AGENTPRINTER_H_
-#define LIBMINIFI_INCLUDE_C2_AGENTPRINTER_H_
+#pragma once
 
 #include <string>
-#include <mutex>
+#include <memory>
 #include "core/Resource.h"
 #include "c2/protocols/RESTProtocol.h"
-#include "CivetServer.h"
 #include "c2/C2Protocol.h"
-#include "controllers/SSLContextService.h"
 
 namespace org {
 namespace apache {
@@ -38,9 +35,9 @@ namespace c2 {
  * Will be used to print agent information from the C2 response to stdout, selecting the agent's manifest
  *
  */
-class AgentPrinter : public RESTProtocol, public HeartBeatReporter {
+class AgentPrinter : public HeartbeatJsonSerializer, public HeartbeatReporter {
  public:
-  AgentPrinter(std::string name, utils::Identifier uuid = utils::Identifier());
+  explicit AgentPrinter(const std::string& name, const utils::Identifier& uuid = {});
 
   /**
    * Initialize agent printer.
@@ -54,16 +51,9 @@ class AgentPrinter : public RESTProtocol, public HeartBeatReporter {
   int16_t heartbeat(const C2Payload &heartbeat) override;
 
   /**
-   * Overrides extracting the agent information from the root.
-   */
-  std::string serializeJsonRootPayload(const C2Payload& payload) override;
-
-  /**
    * Overrides extracting the agent information from the payload.
    */
   rapidjson::Value serializeJsonPayload(const C2Payload &payload, rapidjson::Document::AllocatorType &alloc) override;
-
- protected:
 
  private:
   std::shared_ptr<logging::Logger> logger_;
@@ -71,10 +61,8 @@ class AgentPrinter : public RESTProtocol, public HeartBeatReporter {
 
 REGISTER_RESOURCE(AgentPrinter, "Encapsulates printing agent information.");
 
-} /* namesapce c2 */
+} /* namespace c2 */
 } /* namespace minifi */
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif /* LIBMINIFI_INCLUDE_C2_AGENTPRINTER_H_ */

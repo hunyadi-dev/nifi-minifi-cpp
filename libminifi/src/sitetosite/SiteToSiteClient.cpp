@@ -31,47 +31,43 @@ namespace sitetosite {
 
 int SiteToSiteClient::readResponse(const std::shared_ptr<Transaction>& /*transaction*/, RespondCode &code, std::string &message) {
   uint8_t firstByte;
-
-  int ret = peer_->read(firstByte);
-
-  if (ret <= 0 || firstByte != CODE_SEQUENCE_VALUE_1)
-    return -1;
+  {
+    const auto ret = peer_->read(firstByte);
+    if (ret == 0 || io::isError(ret) || firstByte != CODE_SEQUENCE_VALUE_1)
+      return -1;
+  }
 
   uint8_t secondByte;
-
-  ret = peer_->read(secondByte);
-
-  if (ret <= 0 || secondByte != CODE_SEQUENCE_VALUE_2)
-    return -1;
+  {
+    const auto ret = peer_->read(secondByte);
+    if (ret == 0 || io::isError(ret) || secondByte != CODE_SEQUENCE_VALUE_2)
+      return -1;
+  }
 
   uint8_t thirdByte;
-
-  ret = peer_->read(thirdByte);
-
-  if (ret <= 0)
-    return ret;
+  {
+    const auto ret = peer_->read(thirdByte);
+    if (ret == 0 || io::isError(ret))
+      return static_cast<int>(ret);
+  }
 
   code = (RespondCode) thirdByte;
-
   RespondCodeContext *resCode = this->getRespondCodeContext(code);
-
-  if (resCode == NULL) {
-    // Not a valid respond code
+  if (!resCode) {
     return -1;
   }
   if (resCode->hasDescription) {
-    ret = peer_->read(message);
-    if (ret <= 0)
+    const auto ret = peer_->read(message);
+    if (ret == 0 || io::isError(ret))
       return -1;
   }
   return gsl::narrow<int>(3 + message.size());
 }
 
 void SiteToSiteClient::deleteTransaction(const utils::Identifier& transactionID) {
-  std::shared_ptr<Transaction> transaction = NULL;
+  std::shared_ptr<Transaction> transaction;
 
   auto it = this->known_transactions_.find(transactionID);
-
   if (it == known_transactions_.end()) {
     return;
   } else {
@@ -84,29 +80,22 @@ void SiteToSiteClient::deleteTransaction(const utils::Identifier& transactionID)
 
 int SiteToSiteClient::writeResponse(const std::shared_ptr<Transaction>& /*transaction*/, RespondCode code, std::string message) {
   RespondCodeContext *resCode = this->getRespondCodeContext(code);
-
-  if (resCode == NULL) {
-    // Not a valid respond code
+  if (!resCode) {
     return -1;
   }
 
-  uint8_t codeSeq[3];
-  codeSeq[0] = CODE_SEQUENCE_VALUE_1;
-  codeSeq[1] = CODE_SEQUENCE_VALUE_2;
-  codeSeq[2] = (uint8_t) code;
-
-  int ret = peer_->write(codeSeq, 3);
-
-  if (ret != 3)
-    return -1;
+  {
+    const uint8_t codeSeq[3] { CODE_SEQUENCE_VALUE_1, CODE_SEQUENCE_VALUE_2, static_cast<uint8_t>(code) };
+    const auto ret = peer_->write(codeSeq, 3);
+    if (ret != 3)
+      return -1;
+  }
 
   if (resCode->hasDescription) {
-    ret = peer_->write(message);
-    if (ret > 0) {
-      return (3 + ret);
-    } else {
-      return ret;
-    }
+    const auto ret = peer_->write(message);
+    if (io::isError(ret)) return -1;
+    if (ret == 0) return 0;
+    return 3 + gsl::narrow<int>(ret);
   } else {
     return 3;
   }
@@ -205,7 +194,7 @@ bool SiteToSiteClient::transferFlowFiles(const std::shared_ptr<core::ProcessCont
 
 bool SiteToSiteClient::confirm(const utils::Identifier& transactionID) {
   int ret;
-  std::shared_ptr<Transaction> transaction = NULL;
+  std::shared_ptr<Transaction> transaction;
 
   if (peer_state_ != READY) {
     bootstrap();
@@ -410,9 +399,7 @@ bool SiteToSiteClient::complete(const utils::Identifier& transactionID) {
   }
 }
 
-int16_t SiteToSiteClient::send(const utils::Identifier& transactionID, DataPacket *packet, const std::shared_ptr<core::FlowFile> &flowFile, const std::shared_ptr<core::ProcessSession> &session) {
-  int ret;
-
+int16_t SiteToSiteClient::send(const utils::Identifier &transactionID, DataPacket *packet, const std::shared_ptr<core::FlowFile> &flowFile, const std::shared_ptr<core::ProcessSession> &session) {
   if (peer_state_ != READY) {
     bootstrap();
   }
@@ -422,7 +409,6 @@ int16_t SiteToSiteClient::send(const utils::Identifier& transactionID, DataPacke
   }
 
   auto it = this->known_transactions_.find(transactionID);
-
   if (it == known_transactions_.end()) {
     return -1;
   }
@@ -439,30 +425,34 @@ int16_t SiteToSiteClient::send(const utils::Identifier& transactionID, DataPacke
   }
 
   if (transaction->current_transfers_ > 0) {
-    ret = writeResponse(transaction, CONTINUE_TRANSACTION, "CONTINUE_TRANSACTION");
+    const auto ret = writeResponse(transaction, CONTINUE_TRANSACTION, "CONTINUE_TRANSACTION");
     if (ret <= 0) {
       return -1;
     }
   }
   // start to read the packet
-  uint32_t numAttributes = gsl::narrow<uint32_t>(packet->_attributes.size());
-  ret = transaction->getStream().write(numAttributes);
-  if (ret != 4) {
-    return -1;
+  {
+    const auto numAttributes = gsl::narrow<uint32_t>(packet->_attributes.size());
+    const auto ret = transaction->getStream().write(numAttributes);
+    if (ret != 4) {
+      return -1;
+    }
   }
 
-  std::map<std::string, std::string>::iterator itAttribute;
-  for (itAttribute = packet->_attributes.begin(); itAttribute != packet->_attributes.end(); itAttribute++) {
-    ret = transaction->getStream().write(itAttribute->first, true);
-
-    if (ret <= 0) {
-      return -1;
+  for (const auto& attribute : packet->_attributes) {
+    {
+      const auto ret = transaction->getStream().write(attribute.first, true);
+      if (ret == 0 || io::isError(ret)) {
+        return -1;
+      }
     }
-    ret = transaction->getStream().write(itAttribute->second, true);
-    if (ret <= 0) {
-      return -1;
+    {
+      const auto ret = transaction->getStream().write(attribute.second, true);
+      if (ret == 0 || io::isError(ret)) {
+        return -1;
+      }
     }
-    logger_->log_debug("Site2Site transaction %s send attribute key %s value %s", transactionID.to_string(), itAttribute->first, itAttribute->second);
+    logger_->log_debug("Site2Site transaction %s send attribute key %s value %s", transactionID.to_string(), attribute.first, attribute.second);
   }
 
   bool flowfile_has_content = (flowFile != nullptr);
@@ -476,7 +466,7 @@ int16_t SiteToSiteClient::send(const utils::Identifier& transactionID, DataPacke
   uint64_t len = 0;
   if (flowFile && flowfile_has_content) {
     len = flowFile->getSize();
-    ret = transaction->getStream().write(len);
+    const auto ret = transaction->getStream().write(len);
     if (ret != 8) {
       logger_->log_debug("Failed to write content size!");
       return -1;
@@ -497,20 +487,22 @@ int16_t SiteToSiteClient::send(const utils::Identifier& transactionID, DataPacke
     }
   } else if (packet->payload_.length() > 0) {
     len = packet->payload_.length();
-
-    ret = transaction->getStream().write(len);
-    if (ret != 8) {
-      return -1;
+    {
+      const auto ret = transaction->getStream().write(len);
+      if (ret != 8) {
+        return -1;
+      }
     }
-
-    ret = transaction->getStream().write(reinterpret_cast<uint8_t *>(const_cast<char*>(packet->payload_.c_str())), gsl::narrow<int>(len));
-    if (ret != gsl::narrow<int64_t>(len)) {
-      logger_->log_debug("Failed to write payload size!");
-      return -1;
+    {
+      const auto ret = transaction->getStream().write(reinterpret_cast<const uint8_t*>(packet->payload_.c_str()), gsl::narrow<size_t>(len));
+      if (ret != gsl::narrow<size_t>(len)) {
+        logger_->log_debug("Failed to write payload size!");
+        return -1;
+      }
     }
     packet->_size += len;
   } else if (flowFile && !flowfile_has_content) {
-    ret = transaction->getStream().write(len);  // Indicate zero length
+    const auto ret = transaction->getStream().write(len);  // Indicate zero length
     if (ret != 8) {
       logger_->log_debug("Failed to write content size (0)!");
       return -1;
@@ -529,8 +521,7 @@ int16_t SiteToSiteClient::send(const utils::Identifier& transactionID, DataPacke
 }
 
 bool SiteToSiteClient::receive(const utils::Identifier& transactionID, DataPacket *packet, bool &eof) {
-  int ret;
-  std::shared_ptr<Transaction> transaction = NULL;
+  std::shared_ptr<Transaction> transaction;
 
   if (peer_state_ != READY) {
     bootstrap();
@@ -568,9 +559,7 @@ bool SiteToSiteClient::receive(const utils::Identifier& transactionID, DataPacke
     RespondCode code;
     std::string message;
 
-    ret = readResponse(transaction, code, message);
-
-    if (ret <= 0) {
+    if (readResponse(transaction, code, message) <= 0) {
       return false;
     }
     if (code == CONTINUE_TRANSACTION) {
@@ -595,9 +584,11 @@ bool SiteToSiteClient::receive(const utils::Identifier& transactionID, DataPacke
 
   // start to read the packet
   uint32_t numAttributes;
-  ret = transaction->getStream().read(numAttributes);
-  if (ret <= 0 || numAttributes > MAX_NUM_ATTRIBUTES) {
-    return false;
+  {
+    const auto ret = transaction->getStream().read(numAttributes);
+    if (ret == 0 || io::isError(ret) || numAttributes > MAX_NUM_ATTRIBUTES) {
+      return false;
+    }
   }
 
   // read the attributes
@@ -605,22 +596,28 @@ bool SiteToSiteClient::receive(const utils::Identifier& transactionID, DataPacke
   for (unsigned int i = 0; i < numAttributes; i++) {
     std::string key;
     std::string value;
-    ret = transaction->getStream().read(key, true);
-    if (ret <= 0) {
-      return false;
+    {
+      const auto ret = transaction->getStream().read(key, true);
+      if (ret == 0 || io::isError(ret)) {
+        return false;
+      }
     }
-    ret = transaction->getStream().read(value, true);
-    if (ret <= 0) {
-      return false;
+    {
+      const auto ret = transaction->getStream().read(value, true);
+      if (ret == 0 || io::isError(ret)) {
+        return false;
+      }
     }
     packet->_attributes[key] = value;
     logger_->log_debug("Site2Site transaction %s receives attribute key %s value %s", transactionID.to_string(), key, value);
   }
 
   uint64_t len;
-  ret = transaction->getStream().read(len);
-  if (ret <= 0) {
-    return false;
+  {
+    const auto ret = transaction->getStream().read(len);
+    if (ret == 0 || io::isError(ret)) {
+      return false;
+    }
   }
 
   packet->_size = len;

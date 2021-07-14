@@ -15,14 +15,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef LIBMINIFI_INCLUDE_IO_TLS_RocksDbStream_H_
-#define LIBMINIFI_INCLUDE_IO_TLS_RocksDbStream_H_
+#pragma once
 
-#include "RocksDatabase.h"
 #include <iostream>
 #include <cstdint>
 #include <string>
-#include "io/EndianCheck.h"
+#include <memory>
+#include "database/RocksDatabase.h"
 #include "io/BaseStream.h"
 #include "core/logging/LoggerConfiguration.h"
 
@@ -45,7 +44,7 @@ class RocksDbStream : public io::BaseStream {
    * File Stream constructor that accepts an fstream shared pointer.
    * It must already be initialized for read and write.
    */
-  explicit RocksDbStream(std::string path, gsl::not_null<minifi::internal::RocksDatabase*> db, bool write_enable = false, rocksdb::WriteBatch* batch = nullptr);
+  explicit RocksDbStream(std::string path, gsl::not_null<minifi::internal::RocksDatabase*> db, bool write_enable = false, minifi::internal::WriteBatch* batch = nullptr);
 
   ~RocksDbStream() override {
     close();
@@ -56,7 +55,7 @@ class RocksDbStream : public io::BaseStream {
    * Skip to the specified offset.
    * @param offset offset to which we will skip
    */
-  void seek(uint64_t offset) override;
+  void seek(size_t offset) override;
 
   size_t size() const override {
     return size_;
@@ -70,14 +69,14 @@ class RocksDbStream : public io::BaseStream {
    * @param buf buffer in which we extract data
    * @param buflen
    */
-  int read(uint8_t *buf, int buflen) override;
+  size_t read(uint8_t *buf, size_t buflen) override;
 
   /**
    * writes value to stream
    * @param value value to write
    * @param size size of value
    */
-  int write(const uint8_t *value, int size) override;
+  size_t write(const uint8_t *value, size_t size) override;
 
  protected:
   std::string path_;
@@ -92,14 +91,12 @@ class RocksDbStream : public io::BaseStream {
 
   gsl::not_null<minifi::internal::RocksDatabase*> db_;
 
-  rocksdb::WriteBatch* batch_;
+  minifi::internal::WriteBatch* batch_;
 
   size_t size_;
 
  private:
-
   std::shared_ptr<logging::Logger> logger_;
-
 };
 
 } /* namespace io */
@@ -107,5 +104,3 @@ class RocksDbStream : public io::BaseStream {
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif /* LIBMINIFI_INCLUDE_IO_TLS_RocksDbStream_H_ */

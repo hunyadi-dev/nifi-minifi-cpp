@@ -44,7 +44,7 @@ class GenerateFlowFile : public core::Processor {
   /*!
    * Create a new processor
    */
-  GenerateFlowFile(std::string name, utils::Identifier uuid = utils::Identifier()) // NOLINT
+  GenerateFlowFile(const std::string& name, const utils::Identifier& uuid = {}) // NOLINT
       : Processor(name, uuid), logger_(logging::LoggerFactory<GenerateFlowFile>::getLogger()) {
     batchSize_ = 1;
     uniqueFlowFile_ = true;
@@ -52,7 +52,7 @@ class GenerateFlowFile : public core::Processor {
     textData_ = false;
   }
   // Destructor
-  virtual ~GenerateFlowFile() = default;
+  ~GenerateFlowFile() override = default;
   // Processor Name
   static constexpr char const* ProcessorName = "GenerateFlowFile";
   // Supported Properties
@@ -60,22 +60,21 @@ class GenerateFlowFile : public core::Processor {
   static core::Property BatchSize;
   static core::Property DataFormat;
   static core::Property UniqueFlowFiles;
+  static core::Property CustomText;
   static const char *DATA_FORMAT_TEXT;
   // Supported Relationships
   static core::Relationship Success;
   // Nest Callback Class for write stream
   class WriteCallback : public OutputStreamCallback {
    public:
-    WriteCallback(std::vector<char> && data) : data_(std::move(data)) { // NOLINT
-    }
-    WriteCallback(const std::vector<char>& data) : data_(data) { // NOLINT
-    }
-    std::vector<char> data_;
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) {
-      int64_t ret = 0;
-      if (data_.size() > 0)
-        ret = stream->write(reinterpret_cast<uint8_t*>(&data_[0]), gsl::narrow<int>(data_.size()));
-      return ret;
+    explicit WriteCallback(const std::vector<char>& data)
+        :data_(&data)
+    { }
+    gsl::not_null<const std::vector<char>*> data_;
+    int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
+      if (data_->empty()) return 0;
+      const auto write_ret = stream->write(reinterpret_cast<const uint8_t*>(data_->data()), data_->size());
+      return io::isError(write_ret) ? -1 : gsl::narrow<int64_t>(write_ret);
     }
   };
 
@@ -84,7 +83,7 @@ class GenerateFlowFile : public core::Processor {
   // OnTrigger method, implemented by NiFi GenerateFlowFile
   void onTrigger(core::ProcessContext *context, core::ProcessSession *session) override;
   // Initialize, over write by NiFi GenerateFlowFile
-  void initialize(void) override;
+  void initialize() override;
 
  protected:
   std::vector<char> data_;
@@ -95,6 +94,10 @@ class GenerateFlowFile : public core::Processor {
   bool textData_;
 
  private:
+  core::annotation::Input getInputRequirement() const override {
+    return core::annotation::Input::INPUT_FORBIDDEN;
+  }
+
   // logger instance
   std::shared_ptr<logging::Logger> logger_;
 };

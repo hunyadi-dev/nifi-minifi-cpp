@@ -17,16 +17,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include "ApplyTemplate.h"
+
 #include <iostream>
 #include <fstream>
 #include <memory>
 #include <set>
+#include <string>
 
 #include <boost/iostreams/device/mapped_file.hpp>
 
 #include <bustache/model.hpp>
 
-#include "ApplyTemplate.h"
 
 namespace org {
 namespace apache {
@@ -82,8 +84,7 @@ int64_t ApplyTemplate::WriteCallback::process(const std::shared_ptr<io::BaseStre
 
   // TODO(calebj) write ostream reciever for format() to prevent excessive copying
   std::string ostring = to_string(format(data));
-  stream->write(reinterpret_cast<uint8_t *>(const_cast<char *>(ostring.c_str())),
-                    ostring.length());
+  stream->write(reinterpret_cast<const uint8_t *>(ostring.c_str()), ostring.length());
 
   return ostring.length();
 }

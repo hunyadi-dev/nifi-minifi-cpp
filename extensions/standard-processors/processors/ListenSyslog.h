@@ -50,6 +50,7 @@
 #include "core/ProcessSession.h"
 #include "core/Resource.h"
 #include "FlowFileRecord.h"
+#include "utils/gsl.h"
 
 #ifndef WIN32
 
@@ -73,7 +74,7 @@ class ListenSyslog : public core::Processor {
   /*!
    * Create a new processor
    */
-  ListenSyslog(std::string name,  utils::Identifier uuid = utils::Identifier()) // NOLINT
+  ListenSyslog(const std::string& name,  const utils::Identifier& uuid = {}) // NOLINT
       : Processor(name, uuid),
         logger_(logging::LoggerFactory<ListenSyslog>::getLogger()) {
     _eventQueueByteSize = 0;
@@ -89,15 +90,14 @@ class ListenSyslog : public core::Processor {
     _serverSocket = 0;
     _maxFds = 0;
     FD_ZERO(&_readfds);
-    _thread = NULL;
+    _thread = nullptr;
     _resetServerSocket = false;
     _serverTheadRunning = false;
   }
   // Destructor
-  virtual ~ListenSyslog() {
+  ~ListenSyslog() override {
     _serverTheadRunning = false;
-    if (this->_thread)
-      delete this->_thread;
+    delete this->_thread;
     // need to reset the socket
     std::vector<int>::iterator it;
     for (it = _clientSockets.begin(); it != _clientSockets.end(); ++it) {
@@ -134,21 +134,24 @@ class ListenSyslog : public core::Processor {
     }
     uint8_t *_data;
     uint64_t _dataSize;
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) {
-      int64_t ret = 0;
-      if (_data && _dataSize > 0)
-        ret = stream->write(_data, _dataSize);
-      return ret;
+    int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
+      if (!_data || _dataSize <= 0) return 0;
+      const auto write_ret = stream->write(_data, _dataSize);
+      return io::isError(write_ret) ? -1 : gsl::narrow<int64_t>(write_ret);
     }
   };
 
  public:
   // OnTrigger method, implemented by NiFi ListenSyslog
-  virtual void onTrigger(core::ProcessContext *context, core::ProcessSession *session);
+  void onTrigger(core::ProcessContext *context, core::ProcessSession *session) override;
   // Initialize, over write by NiFi ListenSyslog
-  virtual void initialize(void);
+  void initialize() override;
 
  private:
+  core::annotation::Input getInputRequirement() const override {
+    return core::annotation::Input::INPUT_FORBIDDEN;
+  }
+
   // Logger
   std::shared_ptr<logging::Logger> logger_;
   // Run function for the thread

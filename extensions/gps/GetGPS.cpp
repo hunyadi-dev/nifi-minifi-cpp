@@ -17,33 +17,23 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-
-#include <vector>
-#include <queue>
-#include <map>
-#include <set>
-#include <sys/time.h>
-#include <sys/types.h>
-#include <sys/stat.h>
-#include <time.h>
-#include <sstream>
-#include <stdio.h>
-#include <string>
-#include <iostream>
-#include <dirent.h>
-#include <limits.h>
-#include <unistd.h>
-#include <regex>
-
 #include "GetGPS.h"
-#include "core/ProcessContext.h"
-#include "core/ProcessSession.h"
-#include "core/PropertyValidation.h"
+#include <sys/types.h>
+#include <dirent.h>
 
 #define policy_t gps_policy_t
 #include <libgpsmm.h>
 #undef  policy_t
 #define policy_t ambiguous use gps_policy_t
+
+#include <vector>
+#include <set>
+#include <string>
+#include <memory>
+
+#include "core/ProcessContext.h"
+#include "core/ProcessSession.h"
+#include "core/PropertyValidation.h"
 
 namespace org {
 namespace apache {
@@ -113,9 +103,7 @@ void GetGPS::onTrigger(const std::shared_ptr<core::ProcessContext>& /*context*/,
         logger_->log_error("Read error");
         return;
       } else {
-
         if (get_gps_status(gpsdata) > 0) {
-
           if (gpsdata->fix.longitude != gpsdata->fix.longitude || gpsdata->fix.altitude != gpsdata->fix.altitude) {
             logger_->log_info("No GPS fix.");
             continue;
@@ -155,7 +143,6 @@ void GetGPS::onTrigger(const std::shared_ptr<core::ProcessContext>& /*context*/,
         }
       }
     }
-
   } catch (std::exception &exception) {
     logger_->log_error("GetGPS Caught Exception %s", exception.what());
     throw;

@@ -19,20 +19,22 @@
 #include "../TestBase.h"
 #include "../../extensions/rocksdb-repos/RocksDbStream.h"
 #include "../../extensions/rocksdb-repos/DatabaseContentRepository.h"
+#include "../../extensions/rocksdb-repos/database/StringAppender.h"
 
 class RocksDBStreamTest : TestController {
  public:
   RocksDBStreamTest() {
     char format[] = "/var/tmp/testdb.XXXXXX";
     dbPath = createTempDirectory(format);
-    rocksdb::Options options;
-    options.create_if_missing = true;
-    options.use_direct_io_for_flush_and_compaction = true;
-    options.use_direct_reads = true;
-    options.merge_operator = std::make_shared<core::repository::StringAppender>();
-    options.error_if_exists = false;
-    options.max_successive_merges = 0;
-    db = utils::make_unique<minifi::internal::RocksDatabase>(options, dbPath);
+    auto set_db_opts = [] (minifi::internal::Writable<rocksdb::DBOptions>& db_opts) {
+      db_opts.set(&rocksdb::DBOptions::create_if_missing, true);
+      db_opts.set(&rocksdb::DBOptions::use_direct_io_for_flush_and_compaction, true);
+      db_opts.set(&rocksdb::DBOptions::use_direct_reads, true);
+    };
+    auto set_cf_opts = [] (minifi::internal::Writable<rocksdb::ColumnFamilyOptions>& cf_opts) {
+      cf_opts.set(&rocksdb::ColumnFamilyOptions::merge_operator, std::make_shared<core::repository::StringAppender>(), core::repository::StringAppender::Eq{});
+    };
+    db = minifi::internal::RocksDatabase::create(set_db_opts, set_cf_opts, dbPath);
     REQUIRE(db->open());
   }
 
@@ -45,7 +47,9 @@ TEST_CASE_METHOD(RocksDBStreamTest, "Verify simple operation") {
   std::string content = "banana";
   minifi::io::RocksDbStream outStream("one", gsl::make_not_null(db.get()), true);
   outStream.write(content);
-  REQUIRE(outStream.write(content) > 0);
+  const auto second_write_result = outStream.write(content);
+  REQUIRE(second_write_result > 0);
+  REQUIRE_FALSE(minifi::io::isError(second_write_result));
   minifi::io::RocksDbStream inStream("one", gsl::make_not_null(db.get()));
   std::string str;
   inStream.read(str);
@@ -59,12 +63,14 @@ TEST_CASE_METHOD(RocksDBStreamTest, "Write zero bytes") {
 
   minifi::io::RocksDbStream readonlyStream("two", gsl::make_not_null(db.get()), false);
 
-  REQUIRE(readonlyStream.write(nullptr, 0) == -1);
+  REQUIRE(minifi::io::isError(readonlyStream.write(nullptr, 0)));
 }
 
 TEST_CASE_METHOD(RocksDBStreamTest, "Read zero bytes") {
   minifi::io::RocksDbStream one("one", gsl::make_not_null(db.get()), true);
-  REQUIRE(one.write("banana") > 0);
+  const auto banana_write_result = one.write("banana");
+  REQUIRE_FALSE(minifi::io::isError(banana_write_result));
+  REQUIRE(banana_write_result > 0);
 
   minifi::io::RocksDbStream stream("one", gsl::make_not_null(db.get()));
 
@@ -72,5 +78,5 @@ TEST_CASE_METHOD(RocksDBStreamTest, "Read zero bytes") {
 
   minifi::io::RocksDbStream nonExistingStream("two", gsl::make_not_null(db.get()));
 
-  REQUIRE(nonExistingStream.read(nullptr, 0) == -1);
+  REQUIRE(minifi::io::isError(nonExistingStream.read(nullptr, 0)));
 }

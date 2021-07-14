@@ -27,13 +27,12 @@
 #include <string>
 #include <set>
 
-#include <iostream>
-#include <fstream>
 #include <memory>
 
 #include "core/ProcessContext.h"
 #include "core/ProcessSession.h"
 #include "Exception.h"
+#include "utils/gsl.h"
 
 namespace org {
 namespace apache {
@@ -122,10 +121,7 @@ void FocusArchiveEntry::onTrigger(core::ProcessContext *context, core::ProcessSe
 
     archiveStack.push(archiveMetadata);
 
-    std::string stackStr = archiveStack.toJsonString();
-  
-    flowFile->setAttribute("lens.archive.stack", stackStr);
-
+    flowFile->setAttribute("lens.archive.stack", archiveStack.toJsonString());
   }
 
   // Update filename attribute to that of focused entry
@@ -150,20 +146,20 @@ typedef struct {
 la_ssize_t FocusArchiveEntry::ReadCallback::read_cb(struct archive * a, void *d, const void **buf) {
   auto data = static_cast<FocusArchiveEntryReadData *>(d);
   *buf = data->buf;
-  int read = 0;
-  int last_read = 0;
+  size_t read = 0;
+  size_t last_read = 0;
 
   do {
     last_read = data->stream->read(reinterpret_cast<uint8_t *>(data->buf), 8196 - read);
     read += last_read;
-  } while (data->processor->isRunning() && last_read > 0 && read < 8196);
+  } while (data->processor->isRunning() && last_read > 0 && !io::isError(last_read) && read < 8196);
 
   if (!data->processor->isRunning()) {
     archive_set_error(a, EINTR, "Processor shut down during read");
     return -1;
   }
 
-  return read;
+  return gsl::narrow<la_ssize_t>(read);
 }
 
 int64_t FocusArchiveEntry::ReadCallback::process(const std::shared_ptr<io::BaseStream>& stream) {

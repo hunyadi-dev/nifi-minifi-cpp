@@ -66,10 +66,9 @@ int16_t TLSContext::initialize(bool server_method) {
   }
 
   std::string clientAuthStr;
-  bool needClientCert = true;
-  if (!(configure_->get(Configure::nifi_security_need_ClientAuth, clientAuthStr) && org::apache::nifi::minifi::utils::StringUtils::StringToBool(clientAuthStr, needClientCert))) {
-    needClientCert = true;
-  }
+  bool need_client_cert = (!configure_->get(Configure::nifi_security_need_ClientAuth, clientAuthStr) ||
+       org::apache::nifi::minifi::utils::StringUtils::toBool(clientAuthStr).value_or(true));
+
   const SSL_METHOD *method;
   method = server_method ? TLSv1_2_server_method() : TLSv1_2_client_method();
   auto local_context = std::unique_ptr<SSL_CTX, decltype(&deleteContext)>(SSL_CTX_new(method), deleteContext);
@@ -79,7 +78,7 @@ int16_t TLSContext::initialize(bool server_method) {
     return error_value;
   }
 
-  if (needClientCert) {
+  if (need_client_cert) {
     std::string certificate;
     std::string privatekey;
     std::string passphrase;
@@ -351,100 +350,100 @@ int16_t TLSSocket::select_descriptor(const uint16_t msec) {
   return -1;
 }
 
-int TLSSocket::read(uint8_t *buf, int buflen, bool /*retrieve_all_bytes*/) {
-  gsl_Expects(buflen >= 0);
-  int total_read = 0;
+size_t TLSSocket::read(uint8_t *buf, size_t buflen, bool /*retrieve_all_bytes*/) {
+  size_t total_read = 0;
   int status = 0;
   int loc = 0;
   int16_t fd = select_descriptor(1000);
   if (fd < 0) {
     close();
-    return -1;
+    return STREAM_ERROR;
   }
   auto fd_ssl = get_ssl(fd);
   if (IsNullOrEmpty(fd_ssl)) {
-    return -1;
+    return STREAM_ERROR;
   }
   if (!SSL_pending(fd_ssl)) {
     return 0;
   }
   while (buflen) {
     if (fd <= 0) {
-      return -1;
+      return STREAM_ERROR;
     }
     int sslStatus;
     do {
-      status = SSL_read(fd_ssl, buf + loc, buflen);
+      const auto ssl_read_size = gsl::narrow<int>(std::min(buflen, gsl::narrow<size_t>(std::numeric_limits<int>::max())));
+      status = SSL_read(fd_ssl, buf + loc, ssl_read_size);
       sslStatus = SSL_get_error(fd_ssl, status);
     } while (status < 0 && sslStatus == SSL_ERROR_WANT_READ && SSL_pending(fd_ssl));
 
-    buflen -= status;
+    if (status < 0) break;
+
+    buflen -= gsl::narrow<size_t>(status);
     loc += status;
-    total_read += status;
+    total_read += gsl::narrow<size_t>(status);
   }
 
   return total_read;
 }
 
-int TLSSocket::writeData(const uint8_t *value, unsigned int size, int fd) {
-  unsigned int bytes = 0;
-  int sent = 0;
+size_t TLSSocket::writeData(const uint8_t *value, size_t size, int fd) {
+  size_t bytes = 0;
   auto fd_ssl = get_ssl(fd);
   if (IsNullOrEmpty(fd_ssl)) {
-    return -1;
+    return STREAM_ERROR;
   }
   while (bytes < size) {
-    sent = SSL_write(fd_ssl, value + bytes, gsl::narrow<int>(size - bytes));
+    const auto sent = SSL_write(fd_ssl, value + bytes, gsl::narrow<int>(size - bytes));
     // check for errors
     if (sent < 0) {
       int ret = 0;
       ret = SSL_get_error(fd_ssl, sent);
       logger_->log_trace("WriteData socket %d send failed %s %d", fd, strerror(errno), ret);
-
-      return sent;
+      return STREAM_ERROR;
     }
     logger_->log_trace("WriteData socket %d send succeed %d", fd, sent);
-    bytes += sent;
+    bytes += gsl::narrow<size_t>(sent);
   }
-  return gsl::narrow<int>(size);
+  return size;
 }
 
-int TLSSocket::write(const uint8_t *value, int size) {
-  int fd = select_descriptor(1000);
+size_t TLSSocket::write(const uint8_t *value, size_t size) {
+  const int fd = select_descriptor(1000);
   if (fd < 0) {
     close();
-    return -1;
+    return STREAM_ERROR;
   }
   return writeData(value, size, fd);
 }
 
-int TLSSocket::read(uint8_t *buf, int buflen) {
-  gsl_Expects(buflen >= 0);
-  int total_read = 0;
+size_t TLSSocket::read(uint8_t *buf, size_t buflen) {
+  size_t total_read = 0;
   int status = 0;
   while (buflen) {
-    int16_t fd = select_descriptor(1000);
+    const int16_t fd = select_descriptor(1000);
     if (fd < 0) {
       close();
-      return -1;
+      return STREAM_ERROR;
     }
 
     int sslStatus;
     do {
-      auto fd_ssl = get_ssl(fd);
+      const auto fd_ssl = get_ssl(fd);
       if (IsNullOrEmpty(fd_ssl)) {
-        return -1;
+        return STREAM_ERROR;
       }
-      status = SSL_read(fd_ssl, buf, buflen);
+      const auto ssl_read_size = gsl::narrow<int>(std::min(buflen, gsl::narrow<size_t>(std::numeric_limits<int>::max())));
+      status = SSL_read(fd_ssl, buf, ssl_read_size);
       sslStatus = SSL_get_error(fd_ssl, status);
     } while (status < 0 && sslStatus == SSL_ERROR_WANT_READ);
 
     if (status < 0)
       break;
 
-    buflen -= status;
+    buflen -= gsl::narrow<size_t>(status);
     buf += status;
-    total_read += status;
+    total_read += gsl::narrow<size_t>(status);
   }
 
   return total_read;

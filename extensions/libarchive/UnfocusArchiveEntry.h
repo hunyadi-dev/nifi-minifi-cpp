@@ -17,13 +17,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef LIBMINIFI_INCLUDE_PROCESSORS_UNFOCUSARCHIVEENTRY_H_
-#define LIBMINIFI_INCLUDE_PROCESSORS_UNFOCUSARCHIVEENTRY_H_
+#pragma once
 
 #include <memory>
 #include <string>
 
-#include <archive.h>
+#include "archive.h"
 
 #include "FocusArchiveEntry.h"
 #include "FlowFileRecord.h"
@@ -49,9 +48,9 @@ class UnfocusArchiveEntry : public core::Processor {
   /*!
    * Create a new processor
    */
-  explicit UnfocusArchiveEntry(std::string name, utils::Identifier uuid = utils::Identifier())
+  explicit UnfocusArchiveEntry(const std::string& name, const utils::Identifier& uuid = {})
   : core::Processor(name, uuid),
-    logger_(logging::LoggerFactory<UnfocusArchiveEntry>::getLogger()){
+    logger_(logging::LoggerFactory<UnfocusArchiveEntry>::getLogger()) {
   }
   //! Destructor
   virtual ~UnfocusArchiveEntry() = default;
@@ -91,5 +90,3 @@ REGISTER_RESOURCE(UnfocusArchiveEntry, "Restores a FlowFile which has had an arc
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif  // LIBMINIFI_INCLUDE_PROCESSORS_UNFOCUSARCHIVEENTRY_H_

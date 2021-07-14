@@ -32,6 +32,8 @@
 #include <string>
 #include <utility>
 #include <vector>
+#include <tuple>
+#include <deque>
 
 #include "utils/ByteArrayCallback.h"
 #include "utils/TimeUtil.h"
@@ -57,73 +59,85 @@ namespace nifi {
 namespace minifi {
 namespace processors {
 
-core::Property ListSFTP::ListingStrategy(
-    core::PropertyBuilder::createProperty("Listing Strategy")->withDescription("Specify how to determine new/updated entities. See each strategy descriptions for detail.")
-        ->isRequired(true)
-        ->withAllowableValues<std::string>({LISTING_STRATEGY_TRACKING_TIMESTAMPS,
-                                            LISTING_STRATEGY_TRACKING_ENTITIES})
-        ->withDefaultValue(LISTING_STRATEGY_TRACKING_TIMESTAMPS)->build());
-core::Property ListSFTP::RemotePath(
-    core::PropertyBuilder::createProperty("Remote Path")->withDescription("The fully qualified filename on the remote system")
-        ->isRequired(false)->supportsExpressionLanguage(true)->build());
-core::Property ListSFTP::SearchRecursively(
-    core::PropertyBuilder::createProperty("Search Recursively")->withDescription("If true, will pull files from arbitrarily nested subdirectories; "
-                                                                                 "otherwise, will not traverse subdirectories")
-        ->isRequired(true)->withDefaultValue<bool>(false)->build());
-core::Property ListSFTP::FollowSymlink(
-    core::PropertyBuilder::createProperty("Follow symlink")->withDescription("If true, will pull even symbolic files and also nested symbolic subdirectories; "
-                                                                             "otherwise, will not read symbolic files and will not traverse symbolic link subdirectories")
-        ->isRequired(true)->withDefaultValue<bool>(false)->build());
-core::Property ListSFTP::FileFilterRegex(
-    core::PropertyBuilder::createProperty("File Filter Regex")->withDescription("Provides a Java Regular Expression for filtering Filenames; "
-                                                                                "if a filter is supplied, only files whose names match that Regular Expression will be fetched")
-        ->isRequired(false)->build());
-core::Property ListSFTP::PathFilterRegex(
-    core::PropertyBuilder::createProperty("Path Filter Regex")->withDescription("When Search Recursively is true, then only subdirectories whose path matches the given Regular Expression will be scanned")
-        ->isRequired(false)->build());
-core::Property ListSFTP::IgnoreDottedFiles(
-    core::PropertyBuilder::createProperty("Ignore Dotted Files")->withDescription("If true, files whose names begin with a dot (\".\") will be ignored")
-        ->isRequired(true)->withDefaultValue<bool>(true)->build());
-core::Property ListSFTP::TargetSystemTimestampPrecision(
-    core::PropertyBuilder::createProperty("Target System Timestamp Precision")->withDescription("Specify timestamp precision at the target system. "
-                                                                                                "Since this processor uses timestamp of entities to decide which should be listed, "
-                                                                                                "it is crucial to use the right timestamp precision.")
-        ->isRequired(true)
-        ->withAllowableValues<std::string>({TARGET_SYSTEM_TIMESTAMP_PRECISION_AUTO_DETECT,
+core::Property ListSFTP::ListingStrategy(core::PropertyBuilder::createProperty("Listing Strategy")
+    ->withDescription("Specify how to determine new/updated entities. See each strategy descriptions for detail.")
+    ->isRequired(true)
+    ->withAllowableValues<std::string>({LISTING_STRATEGY_TRACKING_TIMESTAMPS, LISTING_STRATEGY_TRACKING_ENTITIES})
+    ->withDefaultValue(LISTING_STRATEGY_TRACKING_TIMESTAMPS)->build());
+
+core::Property ListSFTP::RemotePath(core::PropertyBuilder::createProperty("Remote Path")
+    ->withDescription("The fully qualified filename on the remote system")
+    ->isRequired(false)->supportsExpressionLanguage(true)->build());
+
+core::Property ListSFTP::SearchRecursively(core::PropertyBuilder::createProperty("Search Recursively")
+    ->withDescription("If true, will pull files from arbitrarily nested subdirectories; "
+                      "otherwise, will not traverse subdirectories")
+    ->isRequired(true)->withDefaultValue<bool>(false)->build());
+
+core::Property ListSFTP::FollowSymlink(core::PropertyBuilder::createProperty("Follow symlink")
+    ->withDescription("If true, will pull even symbolic files and also nested symbolic subdirectories; "
+                      "otherwise, will not read symbolic files and will not traverse symbolic link subdirectories")
+    ->isRequired(true)->withDefaultValue<bool>(false)->build());
+
+core::Property ListSFTP::FileFilterRegex(core::PropertyBuilder::createProperty("File Filter Regex")
+    ->withDescription("Provides a Java Regular Expression for filtering Filenames; "
+                      "if a filter is supplied, only files whose names match that Regular Expression will be fetched")
+    ->isRequired(false)->build());
+
+core::Property ListSFTP::PathFilterRegex(core::PropertyBuilder::createProperty("Path Filter Regex")
+    ->withDescription("When Search Recursively is true, then only subdirectories whose path matches the given Regular Expression will be scanned")
+    ->isRequired(false)->build());
+
+core::Property ListSFTP::IgnoreDottedFiles(core::PropertyBuilder::createProperty("Ignore Dotted Files")
+    ->withDescription("If true, files whose names begin with a dot (\".\") will be ignored")
+    ->isRequired(true)->withDefaultValue<bool>(true)->build());
+
+core::Property ListSFTP::TargetSystemTimestampPrecision(core::PropertyBuilder::createProperty("Target System Timestamp Precision")
+    ->withDescription("Specify timestamp precision at the target system. "
+                      "Since this processor uses timestamp of entities to decide which should be listed, "
+                      "it is crucial to use the right timestamp precision.")
+    ->isRequired(true)
+    ->withAllowableValues<std::string>({TARGET_SYSTEM_TIMESTAMP_PRECISION_AUTO_DETECT,
                                             TARGET_SYSTEM_TIMESTAMP_PRECISION_MILLISECONDS,
                                             TARGET_SYSTEM_TIMESTAMP_PRECISION_SECONDS,
                                             TARGET_SYSTEM_TIMESTAMP_PRECISION_MINUTES})
-        ->withDefaultValue(TARGET_SYSTEM_TIMESTAMP_PRECISION_AUTO_DETECT)->build());
-core::Property ListSFTP::EntityTrackingTimeWindow(
-    core::PropertyBuilder::createProperty("Entity Tracking Time Window")->withDescription("Specify how long this processor should track already-listed entities. "
-                                                                                          "'Tracking Entities' strategy can pick any entity whose timestamp is inside the specified time window. "
-                                                                                          "For example, if set to '30 minutes', any entity having timestamp in recent 30 minutes will be the listing target when this processor runs. "
-                                                                                          "A listed entity is considered 'new/updated' and a FlowFile is emitted if one of following condition meets: "
-                                                                                          "1. does not exist in the already-listed entities, "
-                                                                                          "2. has newer timestamp than the cached entity, "
-                                                                                          "3. has different size than the cached entity. "
-                                                                                          "If a cached entity's timestamp becomes older than specified time window, that entity will be removed from the cached already-listed entities. "
-                                                                                          "Used by 'Tracking Entities' strategy.")
-        ->isRequired(false)->build());
-core::Property ListSFTP::EntityTrackingInitialListingTarget(
-    core::PropertyBuilder::createProperty("Entity Tracking Initial Listing Target")->withDescription("Specify how initial listing should be handled. Used by 'Tracking Entities' strategy.")
-        ->withAllowableValues<std::string>({ENTITY_TRACKING_INITIAL_LISTING_TARGET_TRACKING_TIME_WINDOW,
+    ->withDefaultValue(TARGET_SYSTEM_TIMESTAMP_PRECISION_AUTO_DETECT)->build());
+
+core::Property ListSFTP::EntityTrackingTimeWindow(core::PropertyBuilder::createProperty("Entity Tracking Time Window")
+    ->withDescription("Specify how long this processor should track already-listed entities. "
+                      "'Tracking Entities' strategy can pick any entity whose timestamp is inside the specified time window. "
+                      "For example, if set to '30 minutes', any entity having timestamp in recent 30 minutes will be the listing target when this processor runs. "
+                      "A listed entity is considered 'new/updated' and a FlowFile is emitted if one of following condition meets: "
+                      "1. does not exist in the already-listed entities, "
+                      "2. has newer timestamp than the cached entity, "
+                      "3. has different size than the cached entity. "
+                      "If a cached entity's timestamp becomes older than specified time window, that entity will be removed from the cached already-listed entities. "
+                      "Used by 'Tracking Entities' strategy.")
+    ->isRequired(false)->build());
+
+core::Property ListSFTP::EntityTrackingInitialListingTarget(core::PropertyBuilder::createProperty("Entity Tracking Initial Listing Target")
+    ->withDescription("Specify how initial listing should be handled. Used by 'Tracking Entities' strategy.")
+    ->withAllowableValues<std::string>({ENTITY_TRACKING_INITIAL_LISTING_TARGET_TRACKING_TIME_WINDOW,
                                             ENTITY_TRACKING_INITIAL_LISTING_TARGET_ALL_AVAILABLE})
-        ->isRequired(false)->withDefaultValue(ENTITY_TRACKING_INITIAL_LISTING_TARGET_ALL_AVAILABLE)->build());
-core::Property ListSFTP::MinimumFileAge(
-    core::PropertyBuilder::createProperty("Minimum File Age")->withDescription("The minimum age that a file must be in order to be pulled; "
-                                                                               "any file younger than this amount of time (according to last modification date) will be ignored")
-        ->isRequired(true)->withDefaultValue<core::TimePeriodValue>("0 sec")->build());
-core::Property ListSFTP::MaximumFileAge(
-    core::PropertyBuilder::createProperty("Maximum File Age")->withDescription("The maximum age that a file must be in order to be pulled; "
-                                                                               "any file older than this amount of time (according to last modification date) will be ignored")
-        ->isRequired(false)->build());
-core::Property ListSFTP::MinimumFileSize(
-    core::PropertyBuilder::createProperty("Minimum File Size")->withDescription("The minimum size that a file must be in order to be pulled")
-        ->isRequired(true)->withDefaultValue<core::DataSizeValue>("0 B")->build());
-core::Property ListSFTP::MaximumFileSize(
-    core::PropertyBuilder::createProperty("Maximum File Size")->withDescription("The maximum size that a file must be in order to be pulled")
-        ->isRequired(false)->build());
+    ->isRequired(false)->withDefaultValue(ENTITY_TRACKING_INITIAL_LISTING_TARGET_ALL_AVAILABLE)->build());
+
+core::Property ListSFTP::MinimumFileAge(core::PropertyBuilder::createProperty("Minimum File Age")
+    ->withDescription("The minimum age that a file must be in order to be pulled; "
+                      "any file younger than this amount of time (according to last modification date) will be ignored")
+    ->isRequired(true)->withDefaultValue<core::TimePeriodValue>("0 sec")->build());
+
+core::Property ListSFTP::MaximumFileAge(core::PropertyBuilder::createProperty("Maximum File Age")
+    ->withDescription("The maximum age that a file must be in order to be pulled; "
+                      "any file older than this amount of time (according to last modification date) will be ignored")
+    ->isRequired(false)->build());
+
+core::Property ListSFTP::MinimumFileSize(core::PropertyBuilder::createProperty("Minimum File Size")
+    ->withDescription("The minimum size that a file must be in order to be pulled")
+    ->isRequired(true)->withDefaultValue<core::DataSizeValue>("0 B")->build());
+
+core::Property ListSFTP::MaximumFileSize(core::PropertyBuilder::createProperty("Maximum File Size")
+    ->withDescription("The maximum size that a file must be in order to be pulled")
+    ->isRequired(false)->build());
 
 core::Relationship ListSFTP::Success("success", "All FlowFiles that are received are routed to success");
 
@@ -173,7 +187,7 @@ void ListSFTP::initialize() {
   setSupportedRelationships(relationships);
 }
 
-ListSFTP::ListSFTP(std::string name, utils::Identifier uuid /*= utils::Identifier()*/)
+ListSFTP::ListSFTP(const std::string& name, const utils::Identifier& uuid /*= utils::Identifier()*/)
     : SFTPProcessorBase(name, uuid)
     , search_recursively_(false)
     , follow_symlink_(false)
@@ -210,12 +224,12 @@ void ListSFTP::onSchedule(const std::shared_ptr<core::ProcessContext> &context, 
   if (!context->getProperty(SearchRecursively.getName(), value)) {
     logger_->log_error("Search Recursively attribute is missing or invalid");
   } else {
-    utils::StringUtils::StringToBool(value, search_recursively_);
+    search_recursively_ = utils::StringUtils::toBool(value).value_or(false);
   }
   if (!context->getProperty(FollowSymlink.getName(), value)) {
     logger_->log_error("Follow symlink attribute is missing or invalid");
   } else {
-    utils::StringUtils::StringToBool(value, follow_symlink_);
+    follow_symlink_ = utils::StringUtils::toBool(value).value_or(false);
   }
   if (context->getProperty(FileFilterRegex.getName(), file_filter_regex_)) {
     try {
@@ -242,7 +256,7 @@ void ListSFTP::onSchedule(const std::shared_ptr<core::ProcessContext> &context, 
   if (!context->getProperty(IgnoreDottedFiles.getName(), value)) {
     logger_->log_error("Ignore Dotted Files attribute is missing or invalid");
   } else {
-    utils::StringUtils::StringToBool(value, ignore_dotted_files_);
+    ignore_dotted_files_ = utils::StringUtils::toBool(value).value_or(true);
   }
   context->getProperty(TargetSystemTimestampPrecision.getName(), target_system_timestamp_precision_);
   context->getProperty(EntityTrackingInitialListingTarget.getName(), entity_tracking_initial_listing_target_);
@@ -319,7 +333,7 @@ bool ListSFTP::filter(const std::string& parent_path, const std::tuple<std::stri
     return false;
   }
   if (!(attrs.flags & LIBSSH2_SFTP_ATTR_PERMISSIONS)) {
-    // TODO: maybe do a fallback stat here
+    // TODO(Bakai): maybe do a fallback stat here
     logger_->log_error("Failed to get permissions in stat for \"%s/%s\"", parent_path.c_str(), filename.c_str());
     return false;
   }
@@ -337,7 +351,7 @@ bool ListSFTP::filterFile(const std::string& parent_path, const std::string& fil
   if (!(attrs.flags & LIBSSH2_SFTP_ATTR_UIDGID) ||
       !(attrs.flags & LIBSSH2_SFTP_ATTR_SIZE) ||
       !(attrs.flags & LIBSSH2_SFTP_ATTR_ACMODTIME)) {
-    // TODO: maybe do a fallback stat here
+    // TODO(Bakai): maybe do a fallback stat here
     logger_->log_error("Failed to get all attributes in stat for \"%s/%s\"", parent_path.c_str(), filename.c_str());
     return false;
   }

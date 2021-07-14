@@ -14,8 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef __FETCH_SFTP_H__
-#define __FETCH_SFTP_H__
+#pragma once
 
 #include <memory>
 #include <string>
@@ -40,7 +39,6 @@ namespace processors {
 
 class FetchSFTP : public SFTPProcessorBase {
  public:
-
   static constexpr char const *COMPLETION_STRATEGY_NONE = "None";
   static constexpr char const *COMPLETION_STRATEGY_MOVE_FILE = "Move File";
   static constexpr char const *COMPLETION_STRATEGY_DELETE_FILE = "Delete File";
@@ -51,7 +49,7 @@ class FetchSFTP : public SFTPProcessorBase {
   /*!
    * Create a new processor
    */
-  FetchSFTP(std::string name, utils::Identifier uuid = utils::Identifier());
+  explicit FetchSFTP(const std::string& name, const utils::Identifier& uuid = {});
   virtual ~FetchSFTP();
 
   // Supported Properties
@@ -91,6 +89,9 @@ class FetchSFTP : public SFTPProcessorBase {
   };
 
  private:
+  core::annotation::Input getInputRequirement() const override {
+    return core::annotation::Input::INPUT_REQUIRED;
+  }
 
   std::string completion_strategy_;
   bool create_directory_;
@@ -104,5 +105,3 @@ REGISTER_RESOURCE(FetchSFTP, "Fetches the content of a file from a remote SFTP s
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif

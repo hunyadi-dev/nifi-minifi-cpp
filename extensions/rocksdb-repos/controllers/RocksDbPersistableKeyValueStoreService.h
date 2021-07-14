@@ -14,25 +14,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef LIBMINIFI_INCLUDE_CONTROLLERS_KEYVALUE_RocksDbPersistableKeyValueStoreService_H_
-#define LIBMINIFI_INCLUDE_CONTROLLERS_KEYVALUE_RocksDbPersistableKeyValueStoreService_H_
-
-#include "controllers/keyvalue/AbstractAutoPersistingKeyValueStoreService.h"
-#include "core/Core.h"
-#include "properties/Configure.h"
-#include "core/logging/Logger.h"
-#include "core/logging/LoggerConfiguration.h"
-#include "../RocksDatabase.h"
-
-#include "rocksdb/db.h"
-#include "rocksdb/options.h"
-#include "rocksdb/slice.h"
+#pragma once
 
 #include <unordered_map>
 #include <string>
-#include <mutex>
 #include <memory>
-#include <utility>
+
+#include "controllers/keyvalue/AbstractAutoPersistingKeyValueStoreService.h"
+#include "core/Core.h"
+#include "core/logging/Logger.h"
+#include "core/logging/LoggerConfiguration.h"
+#include "../database/RocksDatabase.h"
+
+#include "rocksdb/options.h"
+
+
 
 namespace org {
 namespace apache {
@@ -42,7 +38,9 @@ namespace controllers {
 
 class RocksDbPersistableKeyValueStoreService : public AbstractAutoPersistingKeyValueStoreService {
  public:
-  explicit RocksDbPersistableKeyValueStoreService(const std::string& name, utils::Identifier uuid = utils::Identifier());
+  static constexpr const char* ENCRYPTION_KEY_NAME = "nifi.state.management.provider.local.encryption.key";
+
+  explicit RocksDbPersistableKeyValueStoreService(const std::string& name, const utils::Identifier& uuid = {});
 
   ~RocksDbPersistableKeyValueStoreService() override = default;
 
@@ -83,5 +81,3 @@ REGISTER_RESOURCE(RocksDbPersistableKeyValueStoreService, "A key-value service i
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif /* LIBMINIFI_INCLUDE_CONTROLLERS_KEYVALUE_RocksDbPersistableKeyValueStoreService_H_ */

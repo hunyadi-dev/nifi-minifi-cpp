@@ -17,9 +17,18 @@
  */
 
 #include <windows.h>
+#include <strsafe.h>
+
+#include <map>
+#include <functional>
+#include <codecvt>
+#include <regex>
+#include <string>
+#include <utility>
+#include <vector>
+
 #include "MetadataWalker.h"
 #include "XMLString.h"
-#include <strsafe.h>
 
 namespace org {
 namespace apache {
@@ -64,24 +73,18 @@ bool MetadataWalker::for_each(pugi::xml_node &node) {
       }
       node.text().set(nodeText.c_str());
     }
-
-  }
-  else if (node_name == "TimeCreated") {
+  } else if (node_name == "TimeCreated") {
     metadata_["TimeCreated"] = node.attribute("SystemTime").value();
-  }
-  else if (node_name == "EventRecordID") {
+  } else if (node_name == "EventRecordID") {
     metadata_["EventRecordID"] = node.text().get();
-  }
-  else if (node_name == "Provider") {
+  } else if (node_name == "Provider") {
     metadata_["Provider"] = node.attribute("Name").value();
-  }
-  else if (node_name == "EventID") {
+  } else if (node_name == "EventID") {
     metadata_["EventID"] = node.text().get();
-  }
-  else {
+  } else {
     static std::map<std::string, EVT_FORMAT_MESSAGE_FLAGS> formatFlagMap = {
         {"Channel", EvtFormatMessageChannel}, {"Keywords", EvtFormatMessageKeyword}, {"Level", EvtFormatMessageLevel},
-        {"Opcode", EvtFormatMessageOpcode}, {"Task",EvtFormatMessageTask}
+        {"Opcode", EvtFormatMessageOpcode}, {"Task", EvtFormatMessageTask}
     };
     auto it = formatFlagMap.find(node_name);
     if (it != formatFlagMap.end()) {
@@ -95,8 +98,7 @@ bool MetadataWalker::for_each(pugi::xml_node &node) {
         return input;
       };
       updateText(node, node.name(), std::move(updateFunc));
-    }
-    else {
+    } else {
       // no conversion is required here, so let the node fall through
     }
   }
@@ -112,7 +114,7 @@ std::vector<std::string> MetadataWalker::getIdentifiers(const std::string &text)
     if (next_pos != std::string::npos) {
       auto potential_identifier = text.substr(pos + 2, next_pos - (pos + 2));
       std::smatch match;
-      if (potential_identifier.find("S-") != std::string::npos){
+      if (potential_identifier.find("S-") != std::string::npos) {
         found_strings.push_back(potential_identifier);
       }
     }
@@ -126,26 +128,26 @@ std::string MetadataWalker::getMetadata(METADATA metadata) const {
       case LOG_NAME:
         return log_name_;
       case SOURCE:
-        return getString(metadata_,"Provider");
+        return getString(metadata_, "Provider");
       case TIME_CREATED:
         return windows_event_log_metadata_.getEventTimestamp();
       case EVENTID:
-        return getString(metadata_,"EventID");
+        return getString(metadata_, "EventID");
       case EVENT_RECORDID:
         return getString(metadata_, "EventRecordID");
       case OPCODE:
         return getString(metadata_, "Opcode");
       case TASK_CATEGORY:
-        return getString(metadata_,"Task");
+        return getString(metadata_, "Task");
       case LEVEL:
-        return getString(metadata_,"Level");
+        return getString(metadata_, "Level");
       case KEYWORDS:
-        return getString(metadata_,"Keywords");
+        return getString(metadata_, "Keywords");
       case EVENT_TYPE:
         return std::to_string(windows_event_log_metadata_.getEventTypeIndex());
       case COMPUTER:
         return windows_event_log_metadata_.getComputerName();
-    };
+    }
     return "N/A";
 }
 
@@ -169,8 +171,7 @@ std::string MetadataWalker::updateXmlMetadata(const std::string &xml, EVT_HANDLE
     wel::XmlString writer;
     doc.print(writer, "", pugi::format_raw);  // no indentation or formatting
     return writer.xml_;
-  }
-  else {
+  } else {
     throw std::runtime_error("Could not parse XML document");
   }
 }

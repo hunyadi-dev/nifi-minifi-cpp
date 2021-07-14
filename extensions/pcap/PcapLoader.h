@@ -15,8 +15,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef EXTENSIONS_PCAPLOADER_H
-#define EXTENSIONS_PCAPLOADER_H
+#pragma once
+
+#include <vector>
+#include <string>
+#include <memory>
 
 #include "core/ClassLoader.h"
 #include "CapturePacket.h"
@@ -48,7 +51,7 @@ class PcapFactory : public core::ObjectFactory {
   }
 
   virtual std::unique_ptr<ObjectFactory> assign(const std::string &class_name) {
-    if (utils::StringUtils::equalsIgnoreCase(class_name,"CapturePacket")) {
+    if (utils::StringUtils::equalsIgnoreCase(class_name, "CapturePacket")) {
       return std::unique_ptr<ObjectFactory>(new core::DefautObjectFactory<processors::CapturePacket>());
     } else {
       return nullptr;
@@ -56,10 +59,8 @@ class PcapFactory : public core::ObjectFactory {
   }
 
   static bool added;
-
 };
 
 extern "C" {
 DLL_EXPORT void *createPcapFactory(void);
 }
-#endif /* EXTENSIONS_PCAPLOADER_H */

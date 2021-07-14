@@ -33,7 +33,7 @@
 #include "utils/IntegrationTestUtils.h"
 
 class VerifyC2Server : public HTTPIntegrationBase {
-public:
+ public:
   explicit VerifyC2Server(bool isSecure)
       : isSecure(isSecure) {
     char format[] = "/tmp/ssth.XXXXXX";
@@ -57,7 +57,7 @@ public:
   void runAssertions() override {
     using org::apache::nifi::minifi::utils::verifyLogLinePresenceInPollTime;
     assert(verifyLogLinePresenceInPollTime(std::chrono::milliseconds(wait_time_),
-        "C2Agent] [debug] Could not instantiate null",
+        "C2Agent] [error] Could not instantiate null",
         "Class is RESTSender"));
   }
 

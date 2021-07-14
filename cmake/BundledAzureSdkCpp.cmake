@@ -16,7 +16,12 @@
 # under the License.
 
 function(use_bundled_libazure SOURCE_DIR BINARY_DIR)
-    set(PC "${Patch_EXECUTABLE}" -p1 -i "${SOURCE_DIR}/thirdparty/azure-sdk-cpp-for-cpp/azure-sdk-for-cpp-old-compiler.patch")
+    set(PATCH_FILE1 "${SOURCE_DIR}/thirdparty/azure-sdk-cpp-for-cpp/azure-sdk-for-cpp-old-compiler.patch")
+    set(PATCH_FILE2 "${SOURCE_DIR}/thirdparty/azure-sdk-cpp-for-cpp/fix-illegal-qualified-name-in-member.patch")
+    set(PC bash -c "set -x &&\
+            (\"${Patch_EXECUTABLE}\" -p1 -R -s -f --dry-run -i \"${PATCH_FILE1}\" || \"${Patch_EXECUTABLE}\" -p1 -N -i \"${PATCH_FILE1}\") &&\
+            (\"${Patch_EXECUTABLE}\" -p1 -R -s -f --dry-run -i \"${PATCH_FILE2}\" || \"${Patch_EXECUTABLE}\" -p1 -N -i \"${PATCH_FILE2}\") ")
+
 
     # Define byproducts
     if (WIN32)

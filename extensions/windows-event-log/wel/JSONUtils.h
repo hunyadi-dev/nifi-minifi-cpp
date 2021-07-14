@@ -20,9 +20,11 @@
 #undef RAPIDJSON_ASSERT
 #define RAPIDJSON_ASSERT(x) if (!(x)) throw std::logic_error("rapidjson exception");  // NOLINT
 
-#include <pugixml.hpp>
+#include <stdexcept>  // for the RAPIDJSON_ASSERT redefine
+#include <string>
 
-#include <stdexcept>  // for std::logic_error
+
+#include "pugixml.hpp"
 #include "rapidjson/document.h"
 
 namespace org {
@@ -77,7 +79,7 @@ rapidjson::Document toSimpleJSON(const pugi::xml_node& root);
  */
 rapidjson::Document toFlattenedJSON(const pugi::xml_node& root);
 
-std::string jsonToString(rapidjson::Document& doc);
+std::string jsonToString(const rapidjson::Document& doc);
 
 }  // namespace wel
 }  // namespace minifi

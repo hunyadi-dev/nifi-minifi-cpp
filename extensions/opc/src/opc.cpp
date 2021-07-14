@@ -15,23 +15,23 @@
  * limitations under the License.
  */
 
-// OPC includes
 #include "opc.h"
 
-// MiNiFi includes
+#include <stdlib.h>
+#include <memory>
+#include <vector>
+#include <string>
+#include <functional>
+
 #include "utils/StringUtils.h"
 #include "logging/Logger.h"
 #include "Exception.h"
 
 #include "utils/gsl.h"
 
-// Standard includes
-#include <stdlib.h>
-#include <iostream>
-#include <memory>
-#include <vector>
-#include <string>
-#include <functional>
+#include "open62541/client_highlevel.h"
+#include "open62541/client_config_default.h"
+
 
 namespace org {
 namespace apache {
@@ -45,70 +45,70 @@ namespace opc {
 
 namespace {
 
-  void add_value_to_variant(UA_Variant *variant, std::string &value) {
-    UA_String ua_value = UA_STRING(&value[0]);
-    UA_Variant_setScalarCopy(variant, &ua_value, &UA_TYPES[UA_TYPES_STRING]);
-  }
+void add_value_to_variant(UA_Variant *variant, std::string &value) {
+  UA_String ua_value = UA_STRING(&value[0]);
+  UA_Variant_setScalarCopy(variant, &ua_value, &UA_TYPES[UA_TYPES_STRING]);
+}
 
-  void add_value_to_variant(UA_Variant *variant, const char *value) {
-    std::string strvalue(value);
-    add_value_to_variant(variant, strvalue);
-  }
+void add_value_to_variant(UA_Variant *variant, const char *value) {
+  std::string strvalue(value);
+  add_value_to_variant(variant, strvalue);
+}
 
-  void add_value_to_variant(UA_Variant *variant, int64_t value) {
-    UA_Int64 ua_value = value;
-    UA_Variant_setScalarCopy(variant, &ua_value, &UA_TYPES[UA_TYPES_INT64]);
-  }
+void add_value_to_variant(UA_Variant *variant, int64_t value) {
+  UA_Int64 ua_value = value;
+  UA_Variant_setScalarCopy(variant, &ua_value, &UA_TYPES[UA_TYPES_INT64]);
+}
 
-  void add_value_to_variant(UA_Variant *variant, uint64_t value) {
-    UA_UInt64 ua_value = value;
-    UA_Variant_setScalarCopy(variant, &ua_value, &UA_TYPES[UA_TYPES_UINT64]);
-  }
+void add_value_to_variant(UA_Variant *variant, uint64_t value) {
+  UA_UInt64 ua_value = value;
+  UA_Variant_setScalarCopy(variant, &ua_value, &UA_TYPES[UA_TYPES_UINT64]);
+}
 
-  void add_value_to_variant(UA_Variant *variant, int32_t value) {
-    UA_Int32 ua_value = value;
-    UA_Variant_setScalarCopy(variant, &ua_value, &UA_TYPES[UA_TYPES_INT32]);
-  }
+void add_value_to_variant(UA_Variant *variant, int32_t value) {
+  UA_Int32 ua_value = value;
+  UA_Variant_setScalarCopy(variant, &ua_value, &UA_TYPES[UA_TYPES_INT32]);
+}
 
-  void add_value_to_variant(UA_Variant *variant, uint32_t value) {
-    UA_UInt32 ua_value = value;
-    UA_Variant_setScalarCopy(variant, &ua_value, &UA_TYPES[UA_TYPES_UINT32]);
-  }
+void add_value_to_variant(UA_Variant *variant, uint32_t value) {
+  UA_UInt32 ua_value = value;
+  UA_Variant_setScalarCopy(variant, &ua_value, &UA_TYPES[UA_TYPES_UINT32]);
+}
 
-  void add_value_to_variant(UA_Variant *variant, bool value) {
-    UA_Boolean ua_value = value;
-    UA_Variant_setScalarCopy(variant, &ua_value, &UA_TYPES[UA_TYPES_BOOLEAN]);
-  }
+void add_value_to_variant(UA_Variant *variant, bool value) {
+  UA_Boolean ua_value = value;
+  UA_Variant_setScalarCopy(variant, &ua_value, &UA_TYPES[UA_TYPES_BOOLEAN]);
+}
 
-  void add_value_to_variant(UA_Variant *variant, float value) {
-    UA_Float ua_value = value;
-    UA_Variant_setScalarCopy(variant, &ua_value, &UA_TYPES[UA_TYPES_FLOAT]);
-  }
+void add_value_to_variant(UA_Variant *variant, float value) {
+  UA_Float ua_value = value;
+  UA_Variant_setScalarCopy(variant, &ua_value, &UA_TYPES[UA_TYPES_FLOAT]);
+}
 
-  void add_value_to_variant(UA_Variant *variant, double value) {
-    UA_Double ua_value = value;
-    UA_Variant_setScalarCopy(variant, &ua_value, &UA_TYPES[UA_TYPES_DOUBLE]);
-  }
+void add_value_to_variant(UA_Variant *variant, double value) {
+  UA_Double ua_value = value;
+  UA_Variant_setScalarCopy(variant, &ua_value, &UA_TYPES[UA_TYPES_DOUBLE]);
+}
 
-  core::logging::LOG_LEVEL MapOPCLogLevel(UA_LogLevel ualvl) {
-    switch (ualvl) {
-      case UA_LOGLEVEL_TRACE:
-        return core::logging::trace;
-      case UA_LOGLEVEL_DEBUG:
-        return core::logging::debug;
-      case UA_LOGLEVEL_INFO:
-        return core::logging::info;
-      case UA_LOGLEVEL_WARNING:
-        return core::logging::warn;
-      case UA_LOGLEVEL_ERROR:
-        return core::logging::err;
-      case UA_LOGLEVEL_FATAL:
-        return core::logging::critical;
-      default:
-        return core::logging::critical;
-    }
+core::logging::LOG_LEVEL MapOPCLogLevel(UA_LogLevel ualvl) {
+  switch (ualvl) {
+    case UA_LOGLEVEL_TRACE:
+      return core::logging::trace;
+    case UA_LOGLEVEL_DEBUG:
+      return core::logging::debug;
+    case UA_LOGLEVEL_INFO:
+      return core::logging::info;
+    case UA_LOGLEVEL_WARNING:
+      return core::logging::warn;
+    case UA_LOGLEVEL_ERROR:
+      return core::logging::err;
+    case UA_LOGLEVEL_FATAL:
+      return core::logging::critical;
+    default:
+      return core::logging::critical;
   }
 }
+}  // namespace
 
 /*
  * End of internal functions
@@ -117,7 +117,6 @@ namespace {
 Client::Client(std::shared_ptr<core::logging::Logger> logger, const std::string& applicationURI,
                const std::vector<char>& certBuffer, const std::vector<char>& keyBuffer,
                const std::vector<std::vector<char>>& trustBuffers) {
-
   client_ = UA_Client_new();
   if (certBuffer.empty()) {
     UA_ClientConfig_setDefault(UA_Client_getConfig(client_));
@@ -128,13 +127,13 @@ Client::Client(std::shared_ptr<core::logging::Logger> logger, const std::string&
     // Certificate
     UA_ByteString certByteString = UA_STRING_NULL;
     certByteString.length = certBuffer.size();
-    certByteString.data = (UA_Byte*)UA_malloc(certByteString.length * sizeof(UA_Byte));
+    certByteString.data = reinterpret_cast<UA_Byte*>(UA_malloc(certByteString.length * sizeof(UA_Byte)));
     memcpy(certByteString.data, certBuffer.data(), certByteString.length);
 
     // Key
     UA_ByteString keyByteString = UA_STRING_NULL;
     keyByteString.length = keyBuffer.size();
-    keyByteString.data = (UA_Byte*)UA_malloc(keyByteString.length * sizeof(UA_Byte));
+    keyByteString.data = reinterpret_cast<UA_Byte*>(UA_malloc(keyByteString.length * sizeof(UA_Byte)));
     memcpy(keyByteString.data, keyBuffer.data(), keyByteString.length);
 
     // Trusted certificates
@@ -143,7 +142,7 @@ Client::Client(std::shared_ptr<core::logging::Logger> logger, const std::string&
     for (size_t i = 0; i < trustBuffers.size(); i++) {
       trustList[i] = UA_STRING_NULL;
       trustList[i].length = trustBuffers[i].size();
-      trustList[i].data = (UA_Byte*)UA_malloc(trustList[i].length * sizeof(UA_Byte));
+      trustList[i].data = reinterpret_cast<UA_Byte*>(UA_malloc(trustList[i].length * sizeof(UA_Byte)));
       memcpy(trustList[i].data, trustBuffers[i].data(), trustList[i].length);
     }
     UA_StatusCode sc = UA_ClientConfig_setDefaultEncryption(cc, certByteString, keyByteString,
@@ -166,7 +165,7 @@ Client::Client(std::shared_ptr<core::logging::Logger> logger, const std::string&
   UA_ClientConfig *configPtr = UA_Client_getConfig(client_);
   configPtr->logger = MinifiUALogger;
 
-  if(applicationURI.length() > 0) {
+  if (applicationURI.length() > 0) {
     UA_String_clear(&configPtr->clientDescription.applicationUri);
     configPtr->clientDescription.applicationUri = UA_STRING_ALLOC(applicationURI.c_str());
   }
@@ -175,12 +174,12 @@ Client::Client(std::shared_ptr<core::logging::Logger> logger, const std::string&
 }
 
 Client::~Client() {
-  if(client_ == nullptr) {
+  if (client_ == nullptr) {
     return;
   }
-  if(UA_Client_getState(client_) != UA_CLIENTSTATE_DISCONNECTED) {
+  if (UA_Client_getState(client_) != UA_CLIENTSTATE_DISCONNECTED) {
     auto sc = UA_Client_disconnect(client_);
-    if(sc != UA_STATUSCODE_GOOD) {
+    if (sc != UA_STATUSCODE_GOOD) {
       logger_->log_warn("Failed to disconnect OPC client: %s", UA_StatusCode_name(sc));
     }
   }
@@ -188,7 +187,7 @@ Client::~Client() {
 }
 
 bool Client::isConnected() {
-  if(!client_) {
+  if (!client_) {
     return false;
   }
   return UA_Client_getState(client_) != UA_CLIENTSTATE_DISCONNECTED;
@@ -203,16 +202,16 @@ UA_StatusCode Client::connect(const std::string& url, const std::string& usernam
 }
 
 NodeData Client::getNodeData(const UA_ReferenceDescription *ref, const std::string& basePath) {
-  if(ref->nodeClass == UA_NODECLASS_VARIABLE) {
+  if (ref->nodeClass == UA_NODECLASS_VARIABLE) {
     opc::NodeData nodedata;
     std::string browsename(reinterpret_cast<const char*>(ref->browseName.name.data), ref->browseName.name.length);
 
-    if(ref->nodeId.nodeId.identifierType == UA_NODEIDTYPE_STRING) {
+    if (ref->nodeId.nodeId.identifierType == UA_NODEIDTYPE_STRING) {
       std::string nodeidstr(reinterpret_cast<const char*>(ref->nodeId.nodeId.identifier.string.data),
                             ref->nodeId.nodeId.identifier.string.length);
       nodedata.attributes["NodeID"] = nodeidstr;
       nodedata.attributes["NodeID type"] = "string";
-    } else if(ref->nodeId.nodeId.identifierType == UA_NODEIDTYPE_BYTESTRING) {
+    } else if (ref->nodeId.nodeId.identifierType == UA_NODEIDTYPE_BYTESTRING) {
       std::string nodeidstr(reinterpret_cast<const char*>(ref->nodeId.nodeId.identifier.byteString.data), ref->nodeId.nodeId.identifier.byteString.length);
       nodedata.attributes["NodeID"] = nodeidstr;
       nodedata.attributes["NodeID type"] = "bytestring";
@@ -224,7 +223,7 @@ NodeData Client::getNodeData(const UA_ReferenceDescription *ref, const std::stri
     nodedata.attributes["Full path"] = basePath + "/" + browsename;
     nodedata.dataTypeID = UA_TYPES_COUNT;
     UA_Variant* var = UA_Variant_new();
-    if(UA_Client_readValueAttribute(client_, ref->nodeId.nodeId, var) == UA_STATUSCODE_GOOD && var->type != NULL && var->data != NULL) {
+    if (UA_Client_readValueAttribute(client_, ref->nodeId.nodeId, var) == UA_STATUSCODE_GOOD && var->type != NULL && var->data != NULL) {
       // Because the timestamps are eliminated in readValueAttribute for simplification
       // We need to call the inner function UA_Client_Service_read.
       UA_ReadValueId item;
@@ -246,10 +245,10 @@ NodeData Client::getNodeData(const UA_ReferenceDescription *ref, const std::stri
 
       nodedata.dataTypeID = var->type->typeIndex;
       nodedata.addVariant(var);
-      if(var->type->typeName) {
+      if (var->type->typeName) {
         nodedata.attributes["Typename"] = std::string(var->type->typeName);
       }
-      if(var->type->memSize) {
+      if (var->type->memSize) {
         nodedata.attributes["Datasize"] = std::to_string(var->type->memSize);
         nodedata.data = std::vector<uint8_t>(var->type->memSize);
         memcpy(nodedata.data.data(), var->data, var->type->memSize);
@@ -286,9 +285,9 @@ void Client::traverse(UA_NodeId nodeId, std::function<nodeFoundCallBackFunc> cb,
     UA_ReferenceDescription_delete(rootRef);
   }
 
-  if(maxDepth != 0) {
+  if (maxDepth != 0) {
     maxDepth--;
-    if(maxDepth == 0) {
+    if (maxDepth == 0) {
       return;
     }
   }
@@ -309,13 +308,13 @@ void Client::traverse(UA_NodeId nodeId, std::function<nodeFoundCallBackFunc> cb,
 
   UA_BrowseRequest_deleteMembers(&bReq);
 
-  for(size_t i = 0; i < bResp.resultsSize; ++i) {
-    for(size_t j = 0; j < bResp.results[i].referencesSize; ++j) {
+  for (size_t i = 0; i < bResp.resultsSize; ++i) {
+    for (size_t j = 0; j < bResp.results[i].referencesSize; ++j) {
       UA_ReferenceDescription *ref = &(bResp.results[i].references[j]);
       if (cb(*this, ref, basePath)) {
         if (ref->nodeClass == UA_NODECLASS_VARIABLE || ref->nodeClass == UA_NODECLASS_OBJECT) {
-          std::string browsename((char *) ref->browseName.name.data, ref->browseName.name.length);
-          traverse(ref->nodeId.nodeId, cb, basePath + browsename, maxDepth, false);
+          std::string browse_name(reinterpret_cast<char *>(ref->browseName.name.data), ref->browseName.name.length);
+          traverse(ref->nodeId.nodeId, cb, basePath + browse_name, maxDepth, false);
         }
       } else {
         return;
@@ -339,7 +338,7 @@ UA_StatusCode Client::translateBrowsePathsToNodeIdsRequest(const std::string& pa
 
   auto tokens = utils::StringUtils::split(path, "/");
   std::vector<UA_UInt32> ids;
-  for(size_t i = 0; i < tokens.size(); ++i) {
+  for (size_t i = 0; i < tokens.size(); ++i) {
     UA_UInt32 val = (i ==0) ? UA_NS0ID_ORGANIZES : UA_NS0ID_HASCOMPONENT;
     ids.push_back(val);
   }
@@ -348,10 +347,10 @@ UA_StatusCode Client::translateBrowsePathsToNodeIdsRequest(const std::string& pa
   UA_BrowsePath_init(&browsePath);
   browsePath.startingNode = UA_NODEID_NUMERIC(0, UA_NS0ID_OBJECTSFOLDER);
 
-  browsePath.relativePath.elements = (UA_RelativePathElement*)UA_Array_new(tokens.size(), &UA_TYPES[UA_TYPES_RELATIVEPATHELEMENT]);
+  browsePath.relativePath.elements = reinterpret_cast<UA_RelativePathElement*>(UA_Array_new(tokens.size(), &UA_TYPES[UA_TYPES_RELATIVEPATHELEMENT]));
   browsePath.relativePath.elementsSize = tokens.size();
 
-  for(size_t i = 0; i < tokens.size(); ++i) {
+  for (size_t i = 0; i < tokens.size(); ++i) {
     UA_RelativePathElement *elem = &browsePath.relativePath.elements[i];
     elem->referenceTypeId = UA_NODEID_NUMERIC(0, ids[i]);
     elem->targetName = UA_QUALIFIEDNAME_ALLOC(0, tokens[i].c_str());
@@ -368,27 +367,27 @@ UA_StatusCode Client::translateBrowsePathsToNodeIdsRequest(const std::string& pa
     UA_BrowsePath_deleteMembers(&browsePath);
   });
 
-  if(response.resultsSize < 1) {
+  if (response.resultsSize < 1) {
     logger->log_warn("No node id in response for %s", path.c_str());
     return UA_STATUSCODE_BADNODATAAVAILABLE;
   }
 
   bool foundData = false;
 
-  for(size_t i = 0; i < response.resultsSize; ++i) {
+  for (size_t i = 0; i < response.resultsSize; ++i) {
     UA_BrowsePathResult res = response.results[i];
-    for(size_t j = 0; j < res.targetsSize; ++j) {
+    for (size_t j = 0; j < res.targetsSize; ++j) {
       foundData = true;
       UA_NodeId resultId;
       UA_NodeId_copy(&res.targets[j].targetId.nodeId, &resultId);
       foundNodeIDs.push_back(resultId);
-      std::string namespaceUri((char*)res.targets[j].targetId.namespaceUri.data, res.targets[j].targetId.namespaceUri.length);
+      std::string namespaceUri(reinterpret_cast<char*>(res.targets[j].targetId.namespaceUri.data), res.targets[j].targetId.namespaceUri.length);
     }
   }
 
   UA_TranslateBrowsePathsToNodeIdsResponse_deleteMembers(&response);
 
-  if(foundData) {
+  if (foundData) {
     logger->log_debug("Found %lu nodes for path %s", foundNodeIDs.size(), path.c_str());
     return UA_STATUSCODE_GOOD;
   } else {
@@ -451,11 +450,13 @@ template UA_StatusCode Client::add_node<uint32_t>(const UA_NodeId parentNodeId, 
 template UA_StatusCode Client::add_node<float>(const UA_NodeId parentNodeId, const UA_NodeId targetNodeId, std::string browseName, float value, OPCNodeDataType dt, UA_NodeId *receivedNodeId);
 template UA_StatusCode Client::add_node<double>(const UA_NodeId parentNodeId, const UA_NodeId targetNodeId, std::string browseName, double value, OPCNodeDataType dt, UA_NodeId *receivedNodeId);
 template UA_StatusCode Client::add_node<bool>(const UA_NodeId parentNodeId, const UA_NodeId targetNodeId, std::string browseName, bool value, OPCNodeDataType dt, UA_NodeId *receivedNodeId);
-template UA_StatusCode Client::add_node<const char *>(const UA_NodeId parentNodeId, const UA_NodeId targetNodeId, std::string browseName, const char * value, OPCNodeDataType dt, UA_NodeId *receivedNodeId);
-template UA_StatusCode Client::add_node<std::string>(const UA_NodeId parentNodeId, const UA_NodeId targetNodeId, std::string browseName, std::string value, OPCNodeDataType dt, UA_NodeId *receivedNodeId);
+template UA_StatusCode Client::add_node<const char *>(const UA_NodeId parentNodeId, const UA_NodeId targetNodeId, std::string browseName,
+    const char * value, OPCNodeDataType dt, UA_NodeId *receivedNodeId);
+template UA_StatusCode Client::add_node<std::string>(const UA_NodeId parentNodeId, const UA_NodeId targetNodeId, std::string browseName,
+    std::string value, OPCNodeDataType dt, UA_NodeId *receivedNodeId);
 
 int32_t OPCNodeDataTypeToTypeID(OPCNodeDataType dt) {
-  switch(dt) {
+  switch (dt) {
     case OPCNodeDataType::Boolean:
       return UA_NS0ID_BOOLEAN;
     case OPCNodeDataType::Int32:
@@ -483,7 +484,7 @@ std::string nodeValue2String(const NodeData& nd) {
     case UA_TYPES_STRING:
     case UA_TYPES_LOCALIZEDTEXT:
     case UA_TYPES_BYTESTRING: {
-      UA_String value = *(UA_String *)(nd.var_->data);
+      UA_String value = *reinterpret_cast<UA_String *>(nd.var_->data);
       ret_val = std::string(reinterpret_cast<const char *>(value.data), value.length);
       break;
     }
@@ -533,7 +534,7 @@ std::string nodeValue2String(const NodeData& nd) {
       ret_val = std::to_string(ui64t);
       break;
     case UA_TYPES_FLOAT:
-      if(sizeof(float) == 4 && std::numeric_limits<float>::is_iec559){
+      if (sizeof(float) == 4 && std::numeric_limits<float>::is_iec559) {
         float f;
         memcpy(&f, nd.data.data(), sizeof(float));
         ret_val = std::to_string(f);
@@ -542,7 +543,7 @@ std::string nodeValue2String(const NodeData& nd) {
       }
       break;
     case UA_TYPES_DOUBLE:
-      if(sizeof(double) == 8 && std::numeric_limits<double>::is_iec559){
+      if (sizeof(double) == 8 && std::numeric_limits<double>::is_iec559) {
         double d;
         memcpy(&d, nd.data.data(), sizeof(double));
         ret_val = std::to_string(d);
@@ -573,7 +574,7 @@ std::string OPCDateTime2String(UA_DateTime raw_date) {
 
 void logFunc(void *context, UA_LogLevel level, UA_LogCategory /*category*/, const char *msg, va_list args) {
   char buffer[1024];
-  vsnprintf(buffer, 1024, msg, args);
+  vsnprintf(buffer, sizeof buffer, msg, args);
   auto loggerPtr = reinterpret_cast<core::logging::BaseLogger*>(context);
   loggerPtr->log_string(MapOPCLogLevel(level), buffer);
 }

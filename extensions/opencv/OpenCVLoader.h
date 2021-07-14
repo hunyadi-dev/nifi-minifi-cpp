@@ -15,8 +15,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef EXTENSIONS_OPENCVLOADER_H_
-#define EXTENSIONS_OPENCVLOADER_H_
+#pragma once
+
+#include <vector>
+#include <string>
+#include <memory>
 
 #include "CaptureRTSPFrame.h"
 #include "core/ClassLoader.h"
@@ -45,24 +48,24 @@ class OpenCVObjectFactory : public core::ObjectFactory {
    * Gets the name of the object.
    * @return class name of processor
    */
-  std::string getName() override{
+  std::string getName() override {
     return "OpenCVObjectFactory";
   }
 
-  std::string getClassName() override{
+  std::string getClassName() override {
     return "OpenCVObjectFactory";
   }
   /**
    * Gets the class name for the object
    * @return class name for the processor.
    */
-  std::vector<std::string> getClassNames() override{
+  std::vector<std::string> getClassNames() override {
     std::vector<std::string> class_names;
     class_names.push_back("CaptureRTSPFrame");
     return class_names;
   }
 
-  std::unique_ptr<ObjectFactory> assign(const std::string &class_name) override{
+  std::unique_ptr<ObjectFactory> assign(const std::string &class_name) override {
     if (utils::StringUtils::equalsIgnoreCase(class_name, "CaptureRTSPFrame")) {
       return std::unique_ptr<ObjectFactory>(new core::DefautObjectFactory<minifi::processors::CaptureRTSPFrame>());
     } else {
@@ -70,15 +73,13 @@ class OpenCVObjectFactory : public core::ObjectFactory {
     }
   }
 
-  virtual std::unique_ptr<core::ObjectFactoryInitializer> getInitializer() override {
+  std::unique_ptr<core::ObjectFactoryInitializer> getInitializer() override {
     return std::unique_ptr<core::ObjectFactoryInitializer>(new OpenCVObjectFactoryInitializer());
   }
 
   static bool added;
-
 };
 
 extern "C" {
   DLL_EXPORT void *createOpenCVFactory(void);
 }
-#endif /* EXTENSIONS_OPENCVLOADER_H_ */

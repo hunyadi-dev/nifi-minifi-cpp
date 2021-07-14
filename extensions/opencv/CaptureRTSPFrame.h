@@ -15,17 +15,21 @@
  * limitations under the License.
  */
 
-#ifndef NIFI_MINIFI_CPP_CAPTURERTSPFRAME_H
-#define NIFI_MINIFI_CPP_CAPTURERTSPFRAME_H
+#pragma once
 
 #include <atomic>
-
-#include <core/Resource.h>
-#include <core/Processor.h>
-#include <opencv2/opencv.hpp>
-
 #include <iomanip>
 #include <ctime>
+#include <utility>
+#include <vector>
+#include <memory>
+#include <string>
+#include <opencv2/opencv.hpp>
+
+#include "core/Resource.h"
+#include "core/Processor.h"
+#include "utils/gsl.h"
+
 
 namespace org {
 namespace apache {
@@ -34,10 +38,8 @@ namespace minifi {
 namespace processors {
 
 class CaptureRTSPFrame : public core::Processor {
-
  public:
-
-  explicit CaptureRTSPFrame(const std::string &name, utils::Identifier uuid = utils::Identifier())
+  explicit CaptureRTSPFrame(const std::string &name, const utils::Identifier &uuid = {})
       : Processor(name, uuid),
         logger_(logging::LoggerFactory<CaptureRTSPFrame>::getLogger()) {
   }
@@ -64,16 +66,15 @@ class CaptureRTSPFrame : public core::Processor {
 
   class CaptureRTSPFrameWriteCallback : public OutputStreamCallback {
    public:
-    explicit CaptureRTSPFrameWriteCallback(cv::Mat image_mat, std::string image_encoding_)
-        : image_mat_(std::move(image_mat)), image_encoding_(image_encoding_) {
+    explicit CaptureRTSPFrameWriteCallback(cv::Mat image_mat, std::string image_encoding)
+        : image_mat_(std::move(image_mat)), image_encoding_(image_encoding) {
     }
     ~CaptureRTSPFrameWriteCallback() override = default;
 
     int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
-      int64_t ret = 0;
       imencode(image_encoding_, image_mat_, image_buf_);
-      ret = stream->write(image_buf_.data(), image_buf_.size());
-      return ret;
+      const auto ret = stream->write(image_buf_.data(), image_buf_.size());
+      return io::isError(ret) ? -1 : gsl::narrow<int64_t>(ret);
     }
 
    private:
@@ -128,7 +129,6 @@ class CaptureRTSPFrame : public core::Processor {
 //  std::mutex mutex_;
 //
 //  std::shared_ptr<minifi::controllers::SSLContextService> ssl_service_;
-
 };
 
 REGISTER_RESOURCE(CaptureRTSPFrame, "Captures a frame from the RTSP stream at specified intervals."); // NOLINT
@@ -138,6 +138,3 @@ REGISTER_RESOURCE(CaptureRTSPFrame, "Captures a frame from the RTSP stream at sp
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-
-#endif  // NIFI_MINIFI_CPP_CAPTURERTSPFRAME_H

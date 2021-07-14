@@ -17,11 +17,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef __LISTEN_HTTP_H__
-#define __LISTEN_HTTP_H__
+#pragma once
 
+#include <map>
 #include <memory>
 #include <regex>
+#include <string>
+#include <utility>
 
 #include <CivetServer.h>
 
@@ -32,6 +34,7 @@
 #include "core/Resource.h"
 #include "core/logging/LoggerConfiguration.h"
 #include "utils/MinifiConcurrentQueue.h"
+#include "utils/gsl.h"
 
 namespace org {
 namespace apache {
@@ -42,13 +45,13 @@ namespace processors {
 // ListenHTTP Class
 class ListenHTTP : public core::Processor {
  public:
-  using FlowFileBufferPair=std::pair<std::shared_ptr<FlowFileRecord>, std::unique_ptr<io::BufferStream>>;
+  using FlowFileBufferPair = std::pair<std::shared_ptr<FlowFileRecord>, std::unique_ptr<io::BufferStream>>;
 
   // Constructor
   /*!
    * Create a new processor
    */
-  ListenHTTP(std::string name, utils::Identifier uuid = utils::Identifier())
+  explicit ListenHTTP(const std::string& name, const utils::Identifier& uuid = {})
       : Processor(name, uuid),
         logger_(logging::LoggerFactory<ListenHTTP>::getLogger()),
         batch_size_(0) {
@@ -56,7 +59,7 @@ class ListenHTTP : public core::Processor {
     callbacks_.log_access = &logAccess;
   }
   // Destructor
-  virtual ~ListenHTTP();
+  ~ListenHTTP() override;
   // Processor Name
   static constexpr char const *ProcessorName = "ListenHTTP";
   // Supported Properties
@@ -131,14 +134,12 @@ class ListenHTTP : public core::Processor {
     }
     int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
       out_str_->resize(stream->size());
-      uint64_t num_read = stream->read(reinterpret_cast<uint8_t *>(&(*out_str_)[0]),
-                                           gsl::narrow<int>(stream->size()));
-
+      const auto num_read = stream->read(reinterpret_cast<uint8_t *>(&(*out_str_)[0]), stream->size());
       if (num_read != stream->size()) {
         throw std::runtime_error("GraphReadCallback failed to fully read flow file input stream");
       }
 
-      return num_read;
+      return gsl::narrow<int64_t>(num_read);
     }
 
    private:
@@ -148,7 +149,7 @@ class ListenHTTP : public core::Processor {
   // Write callback for transferring data from HTTP request to content repo
   class WriteCallback : public OutputStreamCallback {
    public:
-    WriteCallback(std::unique_ptr<io::BufferStream>);
+    explicit WriteCallback(std::unique_ptr<io::BufferStream>);
     int64_t process(const std::shared_ptr<io::BaseStream>& stream) override;
 
    private:
@@ -159,11 +160,11 @@ class ListenHTTP : public core::Processor {
     try {
       struct mg_context* ctx = mg_get_context(conn);
       /* CivetServer stores 'this' as the userdata when calling mg_start */
-      CivetServer* server = static_cast<CivetServer*>(mg_get_user_data(ctx));
+      auto* const server = static_cast<CivetServer*>(mg_get_user_data(ctx));
       if (server == nullptr) {
         return 0;
       }
-      std::shared_ptr<logging::Logger>* logger = static_cast<std::shared_ptr<logging::Logger>*>(const_cast<void*>(server->getUserContext()));
+      auto* const logger = static_cast<std::shared_ptr<logging::Logger>*>(const_cast<void*>(server->getUserContext()));
       if (logger == nullptr) {
         return 0;
       }
@@ -190,11 +191,16 @@ class ListenHTTP : public core::Processor {
     }
     return 0;
   }
+
  protected:
   void notifyStop() override;
 
  private:
   static const uint64_t DEFAULT_BUFFER_SIZE;
+
+  core::annotation::Input getInputRequirement() const override {
+    return core::annotation::Input::INPUT_FORBIDDEN;
+  }
 
   void processIncomingFlowFile(core::ProcessSession *session);
   void processRequestBuffer(core::ProcessSession *session);
@@ -219,5 +225,3 @@ REGISTER_RESOURCE(ListenHTTP, "Starts an HTTP Server and listens on a given base
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif

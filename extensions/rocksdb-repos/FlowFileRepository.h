@@ -15,8 +15,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef LIBMINIFI_INCLUDE_CORE_REPOSITORY_FLOWFILEREPOSITORY_H_
-#define LIBMINIFI_INCLUDE_CORE_REPOSITORY_FLOWFILEREPOSITORY_H_
+#pragma once
+
+#include <utility>
+#include <vector>
+#include <string>
+#include <memory>
 
 #include "utils/file/FileUtils.h"
 #include "rocksdb/db.h"
@@ -28,7 +32,9 @@
 #include "Connection.h"
 #include "core/logging/LoggerConfiguration.h"
 #include "concurrentqueue.h"
-#include "RocksDatabase.h"
+#include "database/RocksDatabase.h"
+#include "encryption/RocksDbEncryptionProvider.h"
+#include "utils/crypto/EncryptionProvider.h"
 
 namespace org {
 namespace apache {
@@ -55,13 +61,15 @@ namespace repository {
  */
 class FlowFileRepository : public core::Repository, public std::enable_shared_from_this<FlowFileRepository> {
  public:
+  static constexpr const char* ENCRYPTION_KEY_NAME = "nifi.flowfile.repository.encryption.key";
   // Constructor
 
-  FlowFileRepository(std::string name, utils::Identifier /*uuid*/)
+  FlowFileRepository(const std::string& name, const utils::Identifier& /*uuid*/)
       : FlowFileRepository(name) {
   }
 
-  FlowFileRepository(const std::string repo_name = "", const std::string& checkpoint_dir = FLOWFILE_CHECKPOINT_DIRECTORY, std::string directory = FLOWFILE_REPOSITORY_DIRECTORY, int64_t maxPartitionMillis = MAX_FLOWFILE_REPOSITORY_ENTRY_LIFE_TIME,
+  FlowFileRepository(const std::string repo_name = "", const std::string& checkpoint_dir = FLOWFILE_CHECKPOINT_DIRECTORY,
+                     std::string directory = FLOWFILE_REPOSITORY_DIRECTORY, int64_t maxPartitionMillis = MAX_FLOWFILE_REPOSITORY_ENTRY_LIFE_TIME,
                      int64_t maxPartitionBytes = MAX_FLOWFILE_REPOSITORY_STORAGE_SIZE, uint64_t purgePeriod = FLOWFILE_REPOSITORY_PURGE_PERIOD)
       : core::SerializableComponent(repo_name),
         Repository(repo_name.length() > 0 ? repo_name : core::getClassName<FlowFileRepository>(), directory, maxPartitionMillis, maxPartitionBytes, purgePeriod),
@@ -82,6 +90,7 @@ class FlowFileRepository : public core::Repository, public std::enable_shared_fr
 
   // initialize
   virtual bool initialize(const std::shared_ptr<Configure> &configure) {
+    config_ = configure;
     std::string value;
 
     if (configure->get(Configure::nifi_flowfile_repository_directory_default, value)) {
@@ -94,14 +103,25 @@ class FlowFileRepository : public core::Repository, public std::enable_shared_fr
     logger_->log_debug("NiFi FlowFile Max Partition Bytes %d", max_partition_bytes_);
     if (configure->get(Configure::nifi_flowfile_repository_max_storage_time, value)) {
       TimeUnit unit;
-      if (Property::StringToTime(value, max_partition_millis_, unit) && Property::ConvertTimeUnitToMS(max_partition_millis_, unit, max_partition_millis_)) {
+      if (Property::StringToTime(value, max_partition_millis_, unit)) {
+        Property::ConvertTimeUnitToMS(max_partition_millis_, unit, max_partition_millis_);
       }
     }
     logger_->log_debug("NiFi FlowFile Max Storage Time: [%d] ms", max_partition_millis_);
-    rocksdb::Options options;
-    options.create_if_missing = true;
-    options.use_direct_io_for_flush_and_compaction = true;
-    options.use_direct_reads = true;
+
+    const auto encrypted_env = createEncryptingEnv(utils::crypto::EncryptionManager{configure->getHome()}, DbEncryptionOptions{directory_, ENCRYPTION_KEY_NAME});
+    logger_->log_info("Using %s FlowFileRepository", encrypted_env ? "encrypted" : "plaintext");
+
+    auto db_options = [encrypted_env] (minifi::internal::Writable<rocksdb::DBOptions>& options) {
+      options.set(&rocksdb::DBOptions::create_if_missing, true);
+      options.set(&rocksdb::DBOptions::use_direct_io_for_flush_and_compaction, true);
+      options.set(&rocksdb::DBOptions::use_direct_reads, true);
+      if (encrypted_env) {
+        options.set(&rocksdb::DBOptions::env, encrypted_env.get(), EncryptionEq{});
+      } else {
+        options.set(&rocksdb::DBOptions::env, rocksdb::Env::Default());
+      }
+    };
 
     // Write buffers are used as db operation logs. When they get filled the events are merged and serialized.
     // The default size is 64MB.
@@ -109,10 +129,12 @@ class FlowFileRepository : public core::Repository, public std::enable_shared_fr
     // To avoid DB write issues during heavy load it's recommended to have high number of buffer.
     // Rocksdb's stall feature can also trigger in case the number of buffers is >= 3.
     // The more buffers we have the more memory rocksdb can utilize without significant memory consumption under low load.
-    options.write_buffer_size = 8 << 20;
-    options.max_write_buffer_number = 20;
-    options.min_write_buffer_number_to_merge = 1;
-    db_ = utils::make_unique<minifi::internal::RocksDatabase>(options, directory_);
+    auto cf_options = [] (minifi::internal::Writable<rocksdb::ColumnFamilyOptions>& cf_opts) {
+      cf_opts.set(&rocksdb::ColumnFamilyOptions::write_buffer_size, 8ULL << 20U);
+      cf_opts.set<int>(&rocksdb::ColumnFamilyOptions::max_write_buffer_number, 20);
+      cf_opts.set<int>(&rocksdb::ColumnFamilyOptions::min_write_buffer_number_to_merge, 1);
+    };
+    db_ = minifi::internal::RocksDatabase::create(db_options, cf_options, directory_);
     if (db_->open()) {
       logger_->log_debug("NiFi FlowFile Repository database open %s success", directory_);
       return true;
@@ -140,8 +162,8 @@ class FlowFileRepository : public core::Repository, public std::enable_shared_fr
     if (!opendb) {
       return false;
     }
-    rocksdb::WriteBatch batch;
-    for (const auto &item: data) {
+    auto batch = opendb->createWriteBatch();
+    for (const auto &item : data) {
       rocksdb::Slice value((const char *) item.second->getBuffer(), item.second->size());
       if (!batch.Put(item.first, value).ok()) {
         logger_->log_error("Failed to add item to batch operation");
@@ -189,7 +211,6 @@ class FlowFileRepository : public core::Repository, public std::enable_shared_fr
   }
 
  private:
-
   bool ExecuteWithRetry(std::function<rocksdb::Status()> operation);
 
   /**
@@ -201,7 +222,7 @@ class FlowFileRepository : public core::Repository, public std::enable_shared_fr
    * Returns true if a checkpoint is needed at startup
    * @return true if a checkpoint is needed.
    */
-  bool need_checkpoint(minifi::internal::OpenRocksDB& opendb);
+  bool need_checkpoint(minifi::internal::OpenRocksDb& opendb);
 
   /**
    * Prunes stored flow files.
@@ -214,6 +235,7 @@ class FlowFileRepository : public core::Repository, public std::enable_shared_fr
   std::unique_ptr<minifi::internal::RocksDatabase> db_;
   std::unique_ptr<rocksdb::Checkpoint> checkpoint_;
   std::shared_ptr<logging::Logger> logger_;
+  std::shared_ptr<minifi::Configure> config_;
 };
 
 } /* namespace repository */
@@ -222,5 +244,3 @@ class FlowFileRepository : public core::Repository, public std::enable_shared_fr
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif /* LIBMINIFI_INCLUDE_CORE_REPOSITORY_FLOWFILEREPOSITORY_H_ */

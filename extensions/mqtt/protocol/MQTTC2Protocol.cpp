@@ -23,9 +23,9 @@ namespace nifi {
 namespace minifi {
 namespace c2 {
 
-MQTTC2Protocol::MQTTC2Protocol(std::string name, utils::Identifier uuid)
+MQTTC2Protocol::MQTTC2Protocol(const std::string& name, const utils::Identifier& uuid)
     : C2Protocol(name, uuid),
-      logger_(logging::LoggerFactory<Connectable>::getLogger()) {
+      logger_(logging::LoggerFactory<MQTTC2Protocol>::getLogger()) {
 }
 
 MQTTC2Protocol::~MQTTC2Protocol() = default;
@@ -34,8 +34,9 @@ void MQTTC2Protocol::initialize(core::controller::ControllerServiceProvider* con
   if (configure->get("nifi.c2.mqtt.connector.service", controller_service_name_)) {
     auto service = controller->getControllerService(controller_service_name_);
     mqtt_service_ = std::static_pointer_cast<controllers::MQTTControllerService>(service);
-  } else
+  } else {
     mqtt_service_ = nullptr;
+  }
 
   agent_identifier_ = configure->getAgentIdentifier();
 

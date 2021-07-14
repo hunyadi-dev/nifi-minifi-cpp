@@ -125,8 +125,8 @@ class Socket : public BaseStream {
    */
   int initialize() override;
 
-  virtual void setInterface(io::NetworkInterface interface) {
-    local_network_interface_ = std::move(interface);
+  virtual void setInterface(io::NetworkInterface network_interface) {
+    local_network_interface_ = std::move(network_interface);
   }
 
   /**
@@ -151,7 +151,7 @@ class Socket : public BaseStream {
   using BaseStream::write;
   using BaseStream::read;
 
-  int write(const uint8_t *value, int size) override;
+  size_t write(const uint8_t *value, size_t size) override;
 
   /**
    * Reads data and places it into buf
@@ -159,7 +159,7 @@ class Socket : public BaseStream {
    * @param buflen
    * @param retrieve_all_bytes determines if we should read all bytes before returning
    */
-  int read(uint8_t *buf, int buflen) override {
+  size_t read(uint8_t *buf, size_t buflen) override {
     return read(buf, buflen, true);
   }
 
@@ -169,7 +169,7 @@ class Socket : public BaseStream {
    * @param buflen
    * @param retrieve_all_bytes determines if we should read all bytes before returning
    */
-  virtual int read(uint8_t *buf, int buflen, bool retrieve_all_bytes);
+  virtual size_t read(uint8_t *buf, size_t buflen, bool retrieve_all_bytes);
 
  protected:
   /**

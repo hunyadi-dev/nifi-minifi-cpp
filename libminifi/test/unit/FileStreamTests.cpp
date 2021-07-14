@@ -45,7 +45,7 @@ TEST_CASE("TestFileOverWrite", "[TestFiles]") {
 
   minifi::io::FileStream stream(path, 0, true);
   std::vector<uint8_t> readBuffer;
-  REQUIRE(stream.read(readBuffer, gsl::narrow<int>(stream.size())) == stream.size());
+  REQUIRE(stream.read(readBuffer, stream.size()) == stream.size());
 
   uint8_t* data = readBuffer.data();
 
@@ -53,13 +53,13 @@ TEST_CASE("TestFileOverWrite", "[TestFiles]") {
 
   stream.seek(4);
 
-  stream.write(reinterpret_cast<uint8_t*>(const_cast<char*>("file")), 4);
+  stream.write(reinterpret_cast<const uint8_t*>("file"), 4);
 
   stream.seek(0);
 
   std::vector<uint8_t> verifybuffer;
 
-  REQUIRE(stream.read(verifybuffer, gsl::narrow<int>(stream.size())) == stream.size());
+  REQUIRE(stream.read(verifybuffer, stream.size()) == stream.size());
 
   data = verifybuffer.data();
 
@@ -83,7 +83,7 @@ TEST_CASE("TestFileBadArgumentNoChange", "[TestLoader]") {
 
   minifi::io::FileStream stream(path, 0, true);
   std::vector<uint8_t> readBuffer;
-  REQUIRE(stream.read(readBuffer, gsl::narrow<int>(stream.size())) == stream.size());
+  REQUIRE(stream.read(readBuffer, stream.size()) == stream.size());
 
   uint8_t* data = readBuffer.data();
 
@@ -91,13 +91,13 @@ TEST_CASE("TestFileBadArgumentNoChange", "[TestLoader]") {
 
   stream.seek(4);
 
-  stream.write(reinterpret_cast<uint8_t*>(const_cast<char*>("file")), 0);
+  stream.write(reinterpret_cast<const uint8_t*>("file"), 0);
 
   stream.seek(0);
 
   std::vector<uint8_t> verifybuffer;
 
-  REQUIRE(stream.read(verifybuffer, gsl::narrow<int>(stream.size())) == stream.size());
+  REQUIRE(stream.read(verifybuffer, stream.size()) == stream.size());
 
   data = verifybuffer.data();
 
@@ -121,7 +121,7 @@ TEST_CASE("TestFileBadArgumentNoChange2", "[TestLoader]") {
 
   minifi::io::FileStream stream(path, 0, true);
   std::vector<uint8_t> readBuffer;
-  REQUIRE(stream.read(readBuffer, gsl::narrow<int>(stream.size())) == stream.size());
+  REQUIRE(stream.read(readBuffer, stream.size()) == stream.size());
 
   uint8_t* data = readBuffer.data();
 
@@ -135,7 +135,7 @@ TEST_CASE("TestFileBadArgumentNoChange2", "[TestLoader]") {
 
   std::vector<uint8_t> verifybuffer;
 
-  REQUIRE(stream.read(verifybuffer, gsl::narrow<int>(stream.size())) == stream.size());
+  REQUIRE(stream.read(verifybuffer, stream.size()) == stream.size());
 
   data = verifybuffer.data();
 
@@ -159,7 +159,7 @@ TEST_CASE("TestFileBadArgumentNoChange3", "[TestLoader]") {
 
   minifi::io::FileStream stream(path, 0, true);
   std::vector<uint8_t> readBuffer;
-  REQUIRE(stream.read(readBuffer, gsl::narrow<int>(stream.size())) == stream.size());
+  REQUIRE(stream.read(readBuffer, stream.size()) == stream.size());
 
   uint8_t* data = readBuffer.data();
 
@@ -173,11 +173,11 @@ TEST_CASE("TestFileBadArgumentNoChange3", "[TestLoader]") {
 
   std::vector<uint8_t> verifybuffer;
 
-  REQUIRE(stream.read(nullptr, gsl::narrow<int>(stream.size())) == -1);
+  REQUIRE(minifi::io::isError(stream.read(nullptr, stream.size())));
 
   data = verifybuffer.data();
 
-  REQUIRE(std::string(reinterpret_cast<char*>(data), verifybuffer.size()) == "");
+  REQUIRE(std::string(reinterpret_cast<char*>(data), verifybuffer.size()).empty());
 
   std::remove(ss.str().c_str());
 }
@@ -197,7 +197,7 @@ TEST_CASE("TestFileBeyondEnd3", "[TestLoader]") {
 
   minifi::io::FileStream stream(path, 0, true);
   std::vector<uint8_t> readBuffer;
-  REQUIRE(stream.read(readBuffer, gsl::narrow<int>(stream.size())) == stream.size());
+  REQUIRE(stream.read(readBuffer, stream.size()) == stream.size());
 
   uint8_t* data = readBuffer.data();
 
@@ -232,7 +232,7 @@ TEST_CASE("TestFileExceedSize", "[TestLoader]") {
 
   minifi::io::FileStream stream(path, 0, true);
   std::vector<uint8_t> readBuffer;
-  REQUIRE(stream.read(readBuffer, gsl::narrow<int>(stream.size())) == stream.size());
+  REQUIRE(stream.read(readBuffer, stream.size()) == stream.size());
 
   uint8_t* data = readBuffer.data();
 
@@ -276,11 +276,11 @@ TEST_CASE("Non-existing file read/write test") {
   minifi::io::FileStream stream(utils::file::concat_path(dir, "non_existing_file.txt"), 0, true);
   REQUIRE(test_controller.getLog().getInstance().contains("Error opening file", std::chrono::seconds(0)));
   REQUIRE(test_controller.getLog().getInstance().contains("No such file or directory", std::chrono::seconds(0)));
-  REQUIRE(stream.write("lorem ipsum", false) == -1);
+  REQUIRE(minifi::io::isError(stream.write("lorem ipsum", false)));
   REQUIRE(test_controller.getLog().getInstance().contains("Error writing to file: invalid file stream", std::chrono::seconds(0)));
   std::vector<uint8_t> readBuffer;
   stream.seek(0);
-  REQUIRE(stream.read(readBuffer, 1) == -1);
+  REQUIRE(minifi::io::isError(stream.read(readBuffer, 1)));
   REQUIRE(test_controller.getLog().getInstance().contains("Error reading from file: invalid file stream", std::chrono::seconds(0)));
 }
 
@@ -296,14 +296,14 @@ TEST_CASE("Existing file read/write test") {
   }
   minifi::io::FileStream stream(path_to_existing_file, 0, true);
   REQUIRE_FALSE(test_controller.getLog().getInstance().contains("Error opening file", std::chrono::seconds(0)));
-  REQUIRE_FALSE(stream.write("dolor sit amet", false) == -1);
+  REQUIRE_FALSE(minifi::io::isError(stream.write("dolor sit amet", false)));
   REQUIRE_FALSE(test_controller.getLog().getInstance().contains("Error writing to file", std::chrono::seconds(0)));
   std::vector<uint8_t> readBuffer;
   stream.seek(0);
-  REQUIRE_FALSE(stream.read(readBuffer, 11) == -1);
+  REQUIRE_FALSE(minifi::io::isError(stream.read(readBuffer, 11)));
   REQUIRE_FALSE(test_controller.getLog().getInstance().contains("Error reading from file", std::chrono::seconds(0)));
   stream.seek(0);
-  REQUIRE(stream.read(nullptr, 11) == -1);
+  REQUIRE(minifi::io::isError(stream.read(nullptr, 11)));
   REQUIRE(test_controller.getLog().getInstance().contains("Error reading from file: invalid buffer", std::chrono::seconds(0)));
 }
 
@@ -341,6 +341,6 @@ TEST_CASE("Readonly filestream write test") {
     outfile.close();
   }
   minifi::io::FileStream stream(path_to_file, 0, false);
-  REQUIRE(stream.write("dolor sit amet", false) == -1);
+  REQUIRE(minifi::io::isError(stream.write("dolor sit amet", false)));
   REQUIRE(test_controller.getLog().getInstance().contains("Error writing to file: write call on file stream failed", std::chrono::seconds(0)));
 }

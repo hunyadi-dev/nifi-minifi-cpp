@@ -35,7 +35,7 @@
 #include "client/HTTPStream.h"
 
 class SiteToSiteTestHarness : public HTTPIntegrationBase {
-public:
+ public:
   explicit SiteToSiteTestHarness(bool isSecure, std::chrono::milliseconds waitTime = std::chrono::milliseconds{2000})
       : HTTPIntegrationBase(waitTime.count()), isSecure(isSecure) {
     char format[] = "/tmp/ssth.XXXXXX";
@@ -120,7 +120,7 @@ void run_variance(std::string test_file_location, bool isSecure, std::string url
   std::string basesitetosite = url + "/site-to-site";
   SiteToSiteBaseResponder *base = new SiteToSiteBaseResponder(basesitetosite);
 
-  harness.setUrl(basesitetosite,base);
+  harness.setUrl(basesitetosite, base);
 
   harness.setUrl(controller_loc, responder);
 

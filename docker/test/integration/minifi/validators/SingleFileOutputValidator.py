@@ -1,9 +1,6 @@
 import logging
 import os
 
-from os import listdir
-from os.path import join
-
 from .FileOutputValidator import FileOutputValidator
 
 
@@ -12,34 +9,14 @@ class SingleFileOutputValidator(FileOutputValidator):
     Validates the content of a single file in the given directory.
     """
 
-    def __init__(self, expected_content, subdir=''):
-        self.valid = False
+    def __init__(self, expected_content):
         self.expected_content = expected_content
-        self.subdir = subdir
 
     def validate(self):
-        self.valid = False
-        full_dir = os.path.join(self.output_dir, self.subdir)
+        full_dir = os.path.join(self.output_dir)
         logging.info("Output folder: %s", full_dir)
 
         if not os.path.isdir(full_dir):
-            return self.valid
+            return False
 
-        listing = listdir(full_dir)
-        if listing:
-            for listed in listing:
-                logging.info("name:: %s", listed)
-            out_file_name = listing[0]
-            full_path = join(full_dir, out_file_name)
-            if not os.path.isfile(full_path):
-                return self.valid
-
-            with open(full_path, 'r') as out_file:
-                contents = out_file.read()
-                logging.info("dir %s -- name %s", full_dir, out_file_name)
-                logging.info("expected %s -- content %s", self.expected_content, contents)
-
-                if self.expected_content in contents:
-                    self.valid = True
-
-        return self.valid
+        return self.get_num_files(full_dir) == 1 and self.num_files_matching_content_in_dir(full_dir, self.expected_content) == 1

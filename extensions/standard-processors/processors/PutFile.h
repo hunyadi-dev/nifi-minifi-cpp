@@ -49,7 +49,7 @@ class PutFile : public core::Processor {
   /*!
    * Create a new processor
    */
-  PutFile(std::string name,  utils::Identifier uuid = utils::Identifier()) // NOLINT
+  PutFile(const std::string& name,  const utils::Identifier& uuid = {}) // NOLINT
       : core::Processor(std::move(name), uuid),
         logger_(logging::LoggerFactory<PutFile>::getLogger()) {
   }
@@ -82,7 +82,7 @@ class PutFile : public core::Processor {
 
   class ReadCallback : public InputStreamCallback {
    public:
-    ReadCallback(const std::string &tmp_file, const std::string &dest_file);
+    ReadCallback(std::string tmp_file, std::string dest_file);
     ~ReadCallback() override;
     int64_t process(const std::shared_ptr<io::BaseStream>& stream) override;
     bool commit();
@@ -103,6 +103,10 @@ class PutFile : public core::Processor {
   std::string tmpWritePath(const std::string &filename, const std::string &directory) const;
 
  private:
+  core::annotation::Input getInputRequirement() const override {
+    return core::annotation::Input::INPUT_REQUIRED;
+  }
+
   std::string conflict_resolution_;
   bool try_mkdirs_ = true;
   int64_t max_dest_files_ = -1;

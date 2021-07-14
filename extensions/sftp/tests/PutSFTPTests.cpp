@@ -57,6 +57,8 @@
 #include "processors/UpdateAttribute.h"
 #include "tools/SFTPTestServer.h"
 
+constexpr const char* PUBLIC_KEY_AUTH_ERROR_MESSAGE = "Failed to authenticate with publickey, error: Unable to extract public key from private key file: Wrong passphrase or invalid/unrecognized private key file format";  // NOLINT(whitespace/line_length)
+
 class PutSFTPTestsFixture {
  public:
   PutSFTPTestsFixture()
@@ -270,8 +272,7 @@ TEST_CASE_METHOD(PutSFTPTestsFixture, "PutSFTP public key authentication bad pas
     std::string expected = minifi::Exception(minifi::PROCESS_SESSION_EXCEPTION, "Can not find the transfer relationship for the updated flow").what();
     REQUIRE(0 == std::string(e.what()).compare(0, expected.size(), expected));
   }
-
-  REQUIRE(LogTestController::getInstance().contains("Failed to authenticate with publickey, error: Unable to extract public key from private key file: Wrong passphrase or invalid/unrecognized private key file format"));
+  REQUIRE(LogTestController::getInstance().contains(PUBLIC_KEY_AUTH_ERROR_MESSAGE));
   REQUIRE(LogTestController::getInstance().contains("Could not authenticate with any available method"));
 }
 
@@ -283,7 +284,7 @@ TEST_CASE_METHOD(PutSFTPTestsFixture, "PutSFTP public key authentication bad pas
 
   testController.runSession(plan, true);
 
-  REQUIRE(LogTestController::getInstance().contains("Failed to authenticate with publickey, error: Unable to extract public key from private key file: Wrong passphrase or invalid/unrecognized private key file format"));
+  REQUIRE(LogTestController::getInstance().contains(PUBLIC_KEY_AUTH_ERROR_MESSAGE));
   REQUIRE(LogTestController::getInstance().contains("Successfully authenticated with password"));
   testFile("nifi_test/tstFile.ext", "tempFile");
 }
@@ -809,7 +810,7 @@ TEST_CASE_METHOD(PutSFTPTestsFixture, "PutSFTP batching does not fail even if on
 }
 
 TEST_CASE_METHOD(PutSFTPTestsFixture, "PutSFTP put large file", "[PutSFTP]") {
-  std::mt19937 rng(std::random_device{}());
+  std::mt19937 rng(std::random_device{}()); // NOLINT
   std::string content(4 * 1024 * 1024U, '\0');
   std::generate_n(content.begin(), 4 * 1024 * 1024U, std::ref(rng));
 

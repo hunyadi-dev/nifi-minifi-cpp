@@ -35,12 +35,10 @@ namespace c2 {
 
 void ControllerSocketProtocol::initialize(core::controller::ControllerServiceProvider* controller, const std::shared_ptr<state::StateMonitor> &updateSink,
                                           const std::shared_ptr<Configure> &configuration) {
-  HeartBeatReporter::initialize(controller, updateSink, configuration);
+  HeartbeatReporter::initialize(controller, updateSink, configuration);
   stream_factory_ = minifi::io::StreamFactory::getInstance(configuration);
 
   std::string host = "localhost", port, limitStr, context_name;
-  bool anyInterface = false;
-
   std::shared_ptr<minifi::controllers::SSLContextService> secure_context = nullptr;
 
   if (configuration_->get("controller.ssl.context.service", context_name)) {
@@ -51,18 +49,13 @@ void ControllerSocketProtocol::initialize(core::controller::ControllerServicePro
   }
   if (nullptr == secure_context) {
     std::string secureStr;
-    bool is_secure = false;
-    if (configuration->get(Configure::nifi_remote_input_secure, secureStr) && org::apache::nifi::minifi::utils::StringUtils::StringToBool(secureStr, is_secure)) {
+    if (configuration->get(Configure::nifi_remote_input_secure, secureStr) && org::apache::nifi::minifi::utils::StringUtils::toBool(secureStr).value_or(false)) {
       secure_context = std::make_shared<minifi::controllers::SSLContextService>("ControllerSocketProtocolSSL", configuration);
       secure_context->onEnable();
     }
   }
 
-  std::string value;
-
-  if (configuration_->get("controller.socket.local.any.interface", limitStr)) {
-    utils::StringUtils::StringToBool(limitStr, anyInterface);
-  }
+  const bool anyInterface = configuration_->get("controller.socket.local.any.interface", limitStr) && utils::StringUtils::toBool(limitStr).value_or(false);
 
   // if host name isn't defined we will use localhost
   configuration_->get("controller.socket.host", host);
@@ -101,8 +94,8 @@ void ControllerSocketProtocol::initialize(core::controller::ControllerServicePro
         case Operation::START:
         {
           std::string componentStr;
-          int size = stream->read(componentStr);
-          if ( size != -1 ) {
+          const auto size = stream->read(componentStr);
+          if (!io::isError(size)) {
             auto components = update_sink_->getComponents(componentStr);
             for (const auto& component : components) {
               component->start();
@@ -115,8 +108,8 @@ void ControllerSocketProtocol::initialize(core::controller::ControllerServicePro
         case Operation::STOP:
         {
           std::string componentStr;
-          int size = stream->read(componentStr);
-          if ( size != -1 ) {
+          const auto size = stream->read(componentStr);
+          if (!io::isError(size)) {
             auto components = update_sink_->getComponents(componentStr);
             for (const auto& component : components) {
               component->stop();
@@ -129,8 +122,8 @@ void ControllerSocketProtocol::initialize(core::controller::ControllerServicePro
         case Operation::CLEAR:
         {
           std::string connection;
-          int size = stream->read(connection);
-          if ( size != -1 ) {
+          const auto size = stream->read(connection);
+          if (!io::isError(size)) {
             update_sink_->clearConnection(connection);
           }
         }
@@ -138,21 +131,25 @@ void ControllerSocketProtocol::initialize(core::controller::ControllerServicePro
         case Operation::UPDATE:
         {
           std::string what;
-          int size = stream->read(what);
-          if (size == -1) {
-            logger_->log_debug("Connection broke");
-            break;
-          }
-          if (what == "flow") {
-            std::string ff_loc;
-            int size = stream->read(ff_loc);
-            std::ifstream tf(ff_loc);
-            std::string configuration((std::istreambuf_iterator<char>(tf)),
-                std::istreambuf_iterator<char>());
-            if (size == -1) {
+          {
+            const auto size = stream->read(what);
+            if (io::isError(size)) {
               logger_->log_debug("Connection broke");
               break;
             }
+          }
+          if (what == "flow") {
+            std::string ff_loc;
+            {
+              const auto size = stream->read(ff_loc);
+              if (io::isError(size)) {
+                logger_->log_debug("Connection broke");
+                break;
+              }
+            }
+            std::ifstream tf(ff_loc);
+            std::string configuration((std::istreambuf_iterator<char>(tf)),
+                std::istreambuf_iterator<char>());
             update_sink_->applyUpdate("ControllerSocketProtocol", configuration);
           }
         }
@@ -160,15 +157,15 @@ void ControllerSocketProtocol::initialize(core::controller::ControllerServicePro
         case Operation::DESCRIBE:
         {
           std::string what;
-          int size = stream->read(what);
-          if (size == -1) {
+          const auto size = stream->read(what);
+          if (io::isError(size)) {
             logger_->log_debug("Connection broke");
             break;
           }
           if (what == "queue") {
             std::string connection;
-            int size = stream->read(connection);
-            if (size == -1) {
+            const auto size_ = stream->read(connection);
+            if (io::isError(size_)) {
               logger_->log_debug("Connection broke");
               break;
             }
@@ -180,17 +177,17 @@ void ControllerSocketProtocol::initialize(core::controller::ControllerServicePro
             io::BufferStream resp;
             resp.write(&head, 1);
             resp.write(response.str());
-            stream->write(const_cast<uint8_t*>(resp.getBuffer()), gsl::narrow<int>(resp.size()));
+            stream->write(resp.getBuffer(), resp.size());
           } else if (what == "components") {
             io::BufferStream resp;
             resp.write(&head, 1);
-            uint16_t size = gsl::narrow<uint16_t>(update_sink_->getAllComponents().size());
-            resp.write(size);
+            const auto size_ = gsl::narrow<uint16_t>(update_sink_->getAllComponents().size());
+            resp.write(size_);
             for (const auto &component : update_sink_->getAllComponents()) {
               resp.write(component->getComponentName());
               resp.write(component->isRunning() ? "true" : "false");
             }
-            stream->write(const_cast<uint8_t*>(resp.getBuffer()), gsl::narrow<int>(resp.size()));
+            stream->write(resp.getBuffer(), resp.size());
           } else if (what == "jstack") {
             io::BufferStream resp;
             resp.write(&head, 1);
@@ -206,34 +203,34 @@ void ControllerSocketProtocol::initialize(core::controller::ControllerServicePro
                 resp.write(line);
               }
             }
-            stream->write(const_cast<uint8_t*>(resp.getBuffer()), gsl::narrow<int>(resp.size()));
+            stream->write(resp.getBuffer(), resp.size());
           } else if (what == "connections") {
             io::BufferStream resp;
             resp.write(&head, 1);
-            uint16_t size = gsl::narrow<uint16_t>(queue_full_.size());
-            resp.write(size);
+            const auto size_ = gsl::narrow<uint16_t>(queue_full_.size());
+            resp.write(size_);
             for (const auto &connection : queue_full_) {
               resp.write(connection.first, false);
             }
-            stream->write(const_cast<uint8_t*>(resp.getBuffer()), gsl::narrow<int>(resp.size()));
+            stream->write(resp.getBuffer(), resp.size());
           } else if (what == "getfull") {
             std::vector<std::string> full_connections;
             {
               std::lock_guard<std::mutex> lock(controller_mutex_);
-              for (auto conn : queue_full_) {
-                if (conn.second == true) {
+              for (const auto& conn : queue_full_) {
+                if (conn.second) {
                   full_connections.push_back(conn.first);
                 }
               }
             }
             io::BufferStream resp;
             resp.write(&head, 1);
-            uint16_t full_connection_count = gsl::narrow<uint16_t>(full_connections.size());
+            const auto full_connection_count = gsl::narrow<uint16_t>(full_connections.size());
             resp.write(full_connection_count);
-            for (auto conn : full_connections) {
+            for (const auto& conn : full_connections) {
               resp.write(conn);
             }
-            stream->write(const_cast<uint8_t*>(resp.getBuffer()), gsl::narrow<int>(resp.size()));
+            stream->write(resp.getBuffer(), resp.size());
           }
         }
         break;
@@ -248,11 +245,10 @@ void ControllerSocketProtocol::initialize(core::controller::ControllerServicePro
 void ControllerSocketProtocol::parse_content(const std::vector<C2ContentResponse> &content) {
   for (const auto &payload_content : content) {
     if (payload_content.name == "Components") {
-      for (auto content : payload_content.operation_arguments) {
-        bool is_enabled = false;
-        minifi::utils::StringUtils::StringToBool(content.second.to_string(), is_enabled);
+      for (const auto& operation_argument : payload_content.operation_arguments) {
+        bool is_enabled = minifi::utils::StringUtils::toBool(operation_argument.second.to_string()).value_or(false);
         std::lock_guard<std::mutex> lock(controller_mutex_);
-        component_map_[content.first] = is_enabled;
+        component_map_[operation_argument.first] = is_enabled;
       }
     }
   }
@@ -261,21 +257,20 @@ void ControllerSocketProtocol::parse_content(const std::vector<C2ContentResponse
 int16_t ControllerSocketProtocol::heartbeat(const C2Payload &payload) {
   if (server_socket_ == nullptr)
     return 0;
-  const std::vector<C2ContentResponse> &content = payload.getContent();
   for (const auto &pc : payload.getNestedPayloads()) {
     if (pc.getLabel() == "flowInfo" || pc.getLabel() == "metrics") {
       for (const auto &metrics_payload : pc.getNestedPayloads()) {
         if (metrics_payload.getLabel() == "QueueMetrics" || metrics_payload.getLabel() == "queues") {
           for (const auto &queue_metrics : metrics_payload.getNestedPayloads()) {
-            auto metric_content = queue_metrics.getContent();
-            for (const auto &payload_content : queue_metrics.getContent()) {
+            const auto& metric_content = queue_metrics.getContent();
+            for (const auto &payload_content : metric_content) {
               uint64_t size = 0;
               uint64_t max = 0;
-              for (auto content : payload_content.operation_arguments) {
+              for (const auto& content : payload_content.operation_arguments) {
                 if (content.first == "datasize") {
-                  size = std::stol(content.second.to_string());
+                  size = std::stoull(content.second.to_string());
                 } else if (content.first == "datasizemax") {
-                  max = std::stol(content.second.to_string());
+                  max = std::stoull(content.second.to_string());
                 }
               }
               std::lock_guard<std::mutex> lock(controller_mutex_);
@@ -293,7 +288,7 @@ int16_t ControllerSocketProtocol::heartbeat(const C2Payload &payload) {
     }
   }
 
-  parse_content(content);
+  parse_content(payload.getContent());
 
   std::vector<uint8_t> buffer;
   buffer.resize(1024);

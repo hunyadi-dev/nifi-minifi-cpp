@@ -16,18 +16,17 @@
  */
 
 
-#ifndef NIFI_MINIFI_CPP_OPC_H
-#define NIFI_MINIFI_CPP_OPC_H
-
-#include "open62541/client.h"
-#include "open62541/client_highlevel.h"
-#include "open62541/client_config_default.h"
-#include "logging/Logger.h"
-#include "Exception.h"
+#pragma once
 
 #include <string>
 #include <functional>
 #include <map>
+#include <vector>
+#include <memory>
+
+#include "open62541/client.h"
+#include "logging/Logger.h"
+#include "Exception.h"
 
 namespace org {
 namespace apache {
@@ -89,8 +88,8 @@ struct NodeData {
   uint16_t dataTypeID;
   std::map<std::string, std::string> attributes;
 
-  virtual ~NodeData(){
-    if(var_) {
+  virtual ~NodeData() {
+    if (var_) {
       UA_Variant_delete(var_);
     }
   }
@@ -108,11 +107,11 @@ struct NodeData {
  private:
   UA_Variant* var_;
 
-  NodeData(UA_Variant * var = nullptr) {
+  explicit NodeData(UA_Variant * var = nullptr) {
     var_ = var;
   }
   void addVariant(UA_Variant * var) {
-    if(var_) {
+    if (var_) {
       UA_Variant_delete(var_);
     }
     var_ = var;
@@ -140,5 +139,3 @@ void logFunc(void *context, UA_LogLevel level, UA_LogCategory category, const ch
 } /* namespace apache */
 } /* namespace org */
 
-
-#endif  // NIFI_MINIFI_CPP_OPC_H

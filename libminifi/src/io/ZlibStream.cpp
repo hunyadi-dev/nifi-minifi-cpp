@@ -19,6 +19,7 @@
 #include "io/ZlibStream.h"
 #include "Exception.h"
 #include "utils/gsl.h"
+#include "core/logging/LoggerConfiguration.h"
 
 namespace org {
 namespace apache {
@@ -39,7 +40,11 @@ bool ZlibBaseStream::isFinished() const {
 }
 
 ZlibCompressStream::ZlibCompressStream(gsl::not_null<OutputStream*> output, ZlibCompressionFormat format, int level)
-  : ZlibBaseStream(output) {
+  : ZlibCompressStream(output, format, level, logging::LoggerFactory<ZlibCompressStream>::getLogger()) {}
+
+ZlibCompressStream::ZlibCompressStream(gsl::not_null<OutputStream*> output, ZlibCompressionFormat format, int level, std::shared_ptr<logging::Logger> logger)
+  : ZlibBaseStream(output),
+    logger_{std::move(logger)} {
   int ret = deflateInit2(
       &strm_,
       level,
@@ -57,19 +62,29 @@ ZlibCompressStream::ZlibCompressStream(gsl::not_null<OutputStream*> output, Zlib
 
 ZlibCompressStream::~ZlibCompressStream() {
   if (state_ != ZlibStreamState::UNINITIALIZED) {
-    deflateEnd(&strm_);
+    int result = deflateEnd(&strm_);
+    if (result == Z_DATA_ERROR) {
+      logger_->log_debug("Stream was freed prematurely");
+    } else if (result == Z_STREAM_ERROR) {
+      logger_->log_debug("Stream state was inconsistent");
+    } else if (result != Z_OK) {
+      logger_->log_debug("Unknown error while finishing compression %d", result);
+    }
   }
 }
 
-int ZlibCompressStream::write(const uint8_t* value, int size) {
-  gsl_Expects(size >= 0);
+size_t ZlibCompressStream::write(const uint8_t *value, size_t size) {
+  return write(value, size, Z_NO_FLUSH);
+}
+
+size_t ZlibCompressStream::write(const uint8_t* value, size_t size, FlushMode mode) {
   if (state_ != ZlibStreamState::INITIALIZED) {
     logger_->log_error("writeData called in invalid ZlibCompressStream state, state is %hhu", state_);
-    return -1;
+    return STREAM_ERROR;
   }
 
   strm_.next_in = const_cast<uint8_t*>(value);
-  strm_.avail_in = size;
+  strm_.avail_in = gsl::narrow<uInt>(size);
 
   /*
    * deflate consumes all input data it can (i.e. if it has enough output buffer it never leaves input data unconsumed)
@@ -85,21 +100,20 @@ int ZlibCompressStream::write(const uint8_t* value, int size) {
     strm_.next_out = outputBuffer_.data();
     strm_.avail_out = gsl::narrow<uInt>(outputBuffer_.size());
 
-    int flush = value == nullptr ? Z_FINISH : Z_NO_FLUSH;
-    logger_->log_trace("calling deflate with flush %d", flush);
+    logger_->log_trace("calling deflate with flush %d", mode);
 
-    int ret = deflate(&strm_, flush);
+    int ret = deflate(&strm_, mode);
     if (ret == Z_STREAM_ERROR) {
       logger_->log_error("deflate failed, error code: %d", ret);
       state_ = ZlibStreamState::ERRORED;
-      return -1;
+      return STREAM_ERROR;
     }
-    int output_size = gsl::narrow<int>(outputBuffer_.size() - strm_.avail_out);
+    const auto output_size = outputBuffer_.size() - strm_.avail_out;
     logger_->log_trace("deflate produced %d B of output data", output_size);
     if (output_->write(outputBuffer_.data(), output_size) != output_size) {
       logger_->log_error("Failed to write to underlying stream");
       state_ = ZlibStreamState::ERRORED;
-      return -1;
+      return STREAM_ERROR;
     }
   } while (strm_.avail_out == 0);
 
@@ -108,14 +122,15 @@ int ZlibCompressStream::write(const uint8_t* value, int size) {
 
 void ZlibCompressStream::close() {
   if (state_ == ZlibStreamState::INITIALIZED) {
-    if (write(nullptr, 0U) == 0) {
+    if (write(nullptr, 0U, Z_FINISH) == 0) {
       state_ = ZlibStreamState::FINISHED;
     }
   }
 }
 
 ZlibDecompressStream::ZlibDecompressStream(gsl::not_null<OutputStream*> output, ZlibCompressionFormat format)
-    : ZlibBaseStream(output) {
+    : ZlibBaseStream(output),
+      logger_{logging::LoggerFactory<ZlibDecompressStream>::getLogger()} {
   int ret = inflateInit2(&strm_, 15 + (format == ZlibCompressionFormat::GZIP ? 16 : 0) /* windowBits */);
   if (ret != Z_OK) {
     logger_->log_error("Failed to initialize z_stream with inflateInit2, error code: %d", ret);
@@ -127,19 +142,23 @@ ZlibDecompressStream::ZlibDecompressStream(gsl::not_null<OutputStream*> output, 
 
 ZlibDecompressStream::~ZlibDecompressStream() {
   if (state_ != ZlibStreamState::UNINITIALIZED) {
-    inflateEnd(&strm_);
+    int result = inflateEnd(&strm_);
+    if (result == Z_STREAM_ERROR) {
+      logger_->log_error("Stream state was inconsistent");
+    } else if (result != Z_OK) {
+      logger_->log_error("Unknown error while finishing decompression %d", result);
+    }
   }
 }
 
-int ZlibDecompressStream::write(const uint8_t* value, int size) {
-  gsl_Expects(size >= 0);
+size_t ZlibDecompressStream::write(const uint8_t* value, size_t size) {
   if (state_ != ZlibStreamState::INITIALIZED) {
     logger_->log_error("writeData called in invalid ZlibDecompressStream state, state is %hhu", state_);
-    return -1;
+    return STREAM_ERROR;
   }
 
   strm_.next_in = const_cast<uint8_t*>(value);
-  strm_.avail_in = size;
+  strm_.avail_in = gsl::narrow<uInt>(size);
 
   /*
    * inflate works similarly to deflate in that it will not leave input data unconsumed, and we have to watch avail_out,
@@ -160,14 +179,14 @@ int ZlibDecompressStream::write(const uint8_t* value, int size) {
         ret == Z_MEM_ERROR) {
       logger_->log_error("inflate failed, error code: %d", ret);
       state_ = ZlibStreamState::ERRORED;
-      return -1;
+      return STREAM_ERROR;
     }
-    int output_size = gsl::narrow<int>(outputBuffer_.size() - strm_.avail_out);
+    const auto output_size = outputBuffer_.size() - strm_.avail_out;
     logger_->log_trace("deflate produced %d B of output data", output_size);
     if (output_->write(outputBuffer_.data(), output_size) != output_size) {
       logger_->log_error("Failed to write to underlying stream");
       state_ = ZlibStreamState::ERRORED;
-      return -1;
+      return STREAM_ERROR;
     }
   } while (strm_.avail_out == 0);
 

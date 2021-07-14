@@ -15,17 +15,20 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef EXTENSIONS_HTTPCURLLOADER_H_
-#define EXTENSIONS_HTTPCURLLOADER_H_
+#pragma once
 
 #ifdef WIN32
 #pragma comment(lib, "wldap32.lib" )
 #pragma comment(lib, "crypt32.lib" )
 #pragma comment(lib, "Ws2_32.lib")
 
-#define CURL_STATICLIB 
+#define CURL_STATICLIB
 #include <curl/curl.h>
 #endif
+
+#include <vector>
+#include <string>
+#include <memory>
 
 #include "c2/protocols/RESTProtocol.h"
 #include "protocols/RESTSender.h"
@@ -54,18 +57,18 @@ class HttpCurlObjectFactory : public core::ObjectFactory {
    * Gets the name of the object.
    * @return class name of processor
    */
-  std::string getName() override{
+  std::string getName() override {
     return "HttpCurlObjectFactory";
   }
 
-  std::string getClassName() override{
+  std::string getClassName() override {
     return "HttpCurlObjectFactory";
   }
   /**
    * Gets the class name for the object
    * @return class name for the processor.
    */
-  std::vector<std::string> getClassNames() override{
+  std::vector<std::string> getClassNames() override {
     std::vector<std::string> class_names;
     class_names.push_back("HttpProtocol");
     class_names.push_back("RESTSender");
@@ -75,7 +78,7 @@ class HttpCurlObjectFactory : public core::ObjectFactory {
     return class_names;
   }
 
-  std::unique_ptr<ObjectFactory> assign(const std::string &class_name) override{
+  std::unique_ptr<ObjectFactory> assign(const std::string &class_name) override {
     if (utils::StringUtils::equalsIgnoreCase(class_name, "RESTSender")) {
       return std::unique_ptr<ObjectFactory>(new core::DefautObjectFactory<minifi::c2::RESTSender>());
     } else if (utils::StringUtils::equalsIgnoreCase(class_name, "InvokeHTTP")) {
@@ -89,15 +92,13 @@ class HttpCurlObjectFactory : public core::ObjectFactory {
     }
   }
 
-  std::unique_ptr<core::ObjectFactoryInitializer> getInitializer() override{
+  std::unique_ptr<core::ObjectFactoryInitializer> getInitializer() override {
     return std::unique_ptr<core::ObjectFactoryInitializer>(new HttpCurlObjectFactoryInitializer());
   }
 
   static bool added;
-
 };
 
 extern "C" {
   DLL_EXPORT void *createHttpCurlFactory(void);
 }
-#endif /* EXTENSIONS_HTTPCURLLOADER_H_ */

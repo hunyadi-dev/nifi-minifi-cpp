@@ -22,9 +22,11 @@
 #include <string>
 #include <exception>
 #include <sstream>
-#include <iomanip>
-#include "utils/StringUtils.h"
+#include <algorithm>
+#include <tuple>
+#include <utility>
 
+#include "utils/StringUtils.h"
 #include "utils/gsl.h"
 
 namespace org {
@@ -35,7 +37,7 @@ namespace utils {
 
 #define SFTP_ERROR(CODE) case CODE: \
                           return #CODE
-static const char* sftp_strerror(unsigned long err) {
+static const char* sftp_strerror(unsigned long err) {  // NOLINT(runtime/int) unsigned long comes from libssh2 API
   switch (err) {
     SFTP_ERROR(LIBSSH2_FX_OK);
     SFTP_ERROR(LIBSSH2_FX_EOF);
@@ -64,7 +66,7 @@ static const char* sftp_strerror(unsigned long err) {
   }
 }
 
-static SFTPError libssh2_sftp_error_to_sftp_error(unsigned long libssh2_sftp_error) {
+static SFTPError libssh2_sftp_error_to_sftp_error(unsigned long libssh2_sftp_error) {  // NOLINT(runtime/int) unsigned long comes from libssh2 API
   switch (libssh2_sftp_error) {
     case LIBSSH2_FX_OK:
       return SFTPError::Ok;
@@ -106,7 +108,7 @@ LastSFTPError::LastSFTPError()
     , sftp_error_(SFTPError::Ok) {
 }
 
-LastSFTPError& LastSFTPError::setLibssh2Error(unsigned long libssh2_sftp_error) {
+LastSFTPError& LastSFTPError::setLibssh2Error(unsigned long libssh2_sftp_error) {  // NOLINT(runtime/int) unsigned long comes from libssh2 API
   sftp_error_set_ = false;
   libssh2_sftp_error_ = libssh2_sftp_error;
   return *this;
@@ -118,7 +120,7 @@ LastSFTPError& LastSFTPError::setSftpError(const SFTPError& sftp_error) {
   return *this;
 }
 
-LastSFTPError::operator unsigned long() const {
+LastSFTPError::operator unsigned long() const {  // NOLINT(runtime/int) unsigned long comes from libssh2 API
   if (sftp_error_set_) {
     return LIBSSH2_FX_OK;
   } else {
@@ -289,7 +291,7 @@ bool SFTPClient::connect() {
   /* Only CURLINFO_ACTIVESOCKET works on Win64 */
   curl_res = curl_easy_getinfo(easy_, CURLINFO_ACTIVESOCKET, &sockfd);
 #else
-  long sockfd;
+  long sockfd;  // NOLINT(runtime/int) long due to libcurl API
   /* Some older cURL versions only support CURLINFO_LASTSOCKET */
   curl_res = curl_easy_getinfo(easy_, CURLINFO_LASTSOCKET, &sockfd);
 #endif
@@ -513,16 +515,16 @@ bool SFTPClient::getFile(const std::string& path, io::BaseStream& output, int64_
       break;
     }
     logger_->log_trace("Read %d bytes from remote file \"%s\"", read_ret, path.c_str());
-    total_read += read_ret;
-    int remaining = read_ret;
+    total_read += gsl::narrow<uint64_t>(read_ret);
+    auto remaining = read_ret;
     while (remaining > 0) {
-      int write_ret = output.write(buf.data() + (read_ret - remaining), remaining);
-      if (write_ret < 0) {
+      const auto write_ret = output.write(buf.data() + (read_ret - remaining), gsl::narrow<size_t>(remaining));
+      if (io::isError(write_ret)) {
         last_error_.setLibssh2Error(LIBSSH2_FX_OK);
         logger_->log_error("Failed to write output");
         return false;
       }
-      remaining -= write_ret;
+      remaining -= gsl::narrow<decltype(remaining)>(write_ret);
     }
   } while (true);
 
@@ -562,12 +564,12 @@ bool SFTPClient::putFile(const std::string& path, io::BaseStream& input, bool ov
     return true;
   }
 
-  const size_t buf_size = expected_size < 0 ? MAX_BUFFER_SIZE : std::min<size_t>(expected_size, MAX_BUFFER_SIZE);
+  const size_t buf_size = expected_size < 0 ? MAX_BUFFER_SIZE : std::min(gsl::narrow<size_t>(expected_size), MAX_BUFFER_SIZE);
   std::vector<uint8_t> buf(buf_size);
   uint64_t total_read = 0U;
   do {
-    int read_ret = input.read(buf.data(), buf.size());
-    if (read_ret < 0) {
+    const auto read_ret = input.read(buf.data(), buf.size());
+    if (io::isError(read_ret)) {
       last_error_.setLibssh2Error(LIBSSH2_FX_OK);
       logger_->log_error("Error while reading input");
       return false;
@@ -577,20 +579,20 @@ bool SFTPClient::putFile(const std::string& path, io::BaseStream& input, bool ov
     }
     logger_->log_trace("Read %d bytes", read_ret);
     total_read += read_ret;
-    ssize_t remaining = read_ret;
+    auto remaining = read_ret;
     while (remaining > 0) {
-      int write_ret = libssh2_sftp_write(file_handle, reinterpret_cast<char*>(buf.data() + (read_ret - remaining)), remaining);
+      const auto write_ret = libssh2_sftp_write(file_handle, reinterpret_cast<char*>(buf.data() + (read_ret - remaining)), remaining);
       if (write_ret < 0) {
         last_error_.setSftpError(SFTPError::IoError);
         logger_->log_error("Failed to write remote file \"%s\"", path.c_str());
         return false;
       }
       logger_->log_trace("Wrote %d bytes to remote file \"%s\"", write_ret, path.c_str());
-      remaining -= write_ret;
+      remaining -= gsl::narrow<size_t>(write_ret);
     }
   } while (true);
 
-  if (expected_size >= 0 && total_read != gsl::narrow<uint64_t>(expected_size)) {
+  if (expected_size >= 0 && total_read != gsl::narrow<size_t>(expected_size)) {
     last_error_.setLibssh2Error(LIBSSH2_FX_OK);
     logger_->log_error("Input has unexpected size, expected: %ld, actual: %lu", path.c_str(), expected_size, total_read);
     return false;

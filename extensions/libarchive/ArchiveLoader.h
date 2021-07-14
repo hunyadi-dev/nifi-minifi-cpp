@@ -15,8 +15,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef EXTENSION_ARCHIVELOADER_H
-#define EXTENSION_ARCHIVELOADER_H
+#pragma once
+
+#include <vector>
+#include <string>
+#include <memory>
 
 #include "MergeContent.h"
 #include "CompressContent.h"
@@ -59,11 +62,11 @@ class ArchiveFactory : public core::ObjectFactory {
       return std::unique_ptr<ObjectFactory>(new core::DefautObjectFactory<minifi::processors::MergeContent>());
     } else if (utils::StringUtils::equalsIgnoreCase(class_name, "CompressContent")) {
       return std::unique_ptr<ObjectFactory>(new core::DefautObjectFactory<minifi::processors::CompressContent>());
-    } else if (utils::StringUtils::equalsIgnoreCase(class_name,"FocusArchiveEntry")) {
+    } else if (utils::StringUtils::equalsIgnoreCase(class_name, "FocusArchiveEntry")) {
       return std::unique_ptr<ObjectFactory>(new core::DefautObjectFactory<minifi::processors::FocusArchiveEntry>());
-    } else if (utils::StringUtils::equalsIgnoreCase(class_name,"UnfocusArchiveEntry")) {
+    } else if (utils::StringUtils::equalsIgnoreCase(class_name, "UnfocusArchiveEntry")) {
       return std::unique_ptr<ObjectFactory>(new core::DefautObjectFactory<minifi::processors::UnfocusArchiveEntry>());
-    } else if (utils::StringUtils::equalsIgnoreCase(class_name,"ManipulateArchive")) {
+    } else if (utils::StringUtils::equalsIgnoreCase(class_name, "ManipulateArchive")) {
       return std::unique_ptr<ObjectFactory>(new core::DefautObjectFactory<minifi::processors::ManipulateArchive>());
     } else {
       return nullptr;
@@ -71,10 +74,8 @@ class ArchiveFactory : public core::ObjectFactory {
   }
 
   static bool added;
-
 };
 
 extern "C" {
 void *createArchiveFactory(void);
 }
-#endif /* EXTENSION_ARCHIVELOADER_H */

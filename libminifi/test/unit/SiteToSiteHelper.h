@@ -15,9 +15,9 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef LIBMINIFI_TEST_UNIT_SITE2SITE_HELPER_H_
-#define LIBMINIFI_TEST_UNIT_SITE2SITE_HELPER_H_
+#pragma once
 
+#include <string>
 #include <queue>
 #include "io/BufferStream.h"
 #include "io/EndianCheck.h"
@@ -31,6 +31,7 @@ class SiteToSiteResponder : public minifi::io::BaseStream {
  private:
   minifi::io::BufferStream server_responses_;
   std::queue<std::string> client_responses_;
+
  public:
   SiteToSiteResponder() = default;
   // initialize
@@ -39,10 +40,10 @@ class SiteToSiteResponder : public minifi::io::BaseStream {
   }
 
   void push_response(const std::string& resp) {
-    server_responses_.write(reinterpret_cast<const uint8_t*>(resp.data()), gsl::narrow<int>(resp.length()));
+    server_responses_.write(reinterpret_cast<const uint8_t*>(resp.data()), resp.length());
   }
 
-  int write(const uint8_t *value, int size) override {
+  size_t write(const uint8_t *value, size_t size) override {
     client_responses_.push(std::string(reinterpret_cast<const char*>(value), size));
     return size;
   }
@@ -59,10 +60,7 @@ class SiteToSiteResponder : public minifi::io::BaseStream {
    * @param len length to read
    * @return resulting read size
    **/
-  int read(uint8_t *value, int len) override {
+  size_t read(uint8_t *value, size_t len) override {
     return server_responses_.read(value, len);
   }
-
 };
-
-#endif /* LIBMINIFI_TEST_UNIT_SITE2SITE_HELPER_H_ */

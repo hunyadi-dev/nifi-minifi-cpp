@@ -28,25 +28,23 @@ namespace nifi {
 namespace minifi {
 namespace io {
 
-int BufferStream::write(const uint8_t *value, int size) {
-  gsl_Expects(size >= 0);
+size_t BufferStream::write(const uint8_t *value, size_t size) {
   size_t originalSize = buffer_.size();
   buffer_.resize(originalSize + size);
   std::memcpy(buffer_.data() + originalSize, value, size);
   return size;
 }
 
-int BufferStream::read(uint8_t *buf, int len) {
-  gsl_Expects(len >= 0);
-  int bytes_available_in_buffer = gsl::narrow<int>(buffer_.size() - readOffset_);
-  len = std::min(len, bytes_available_in_buffer);
-  auto begin = buffer_.begin() + readOffset_;
-  std::copy(begin, begin + len, buf);
+size_t BufferStream::read(uint8_t *buf, size_t len) {
+  const auto bytes_available_in_buffer = buffer_.size() - readOffset_;
+  const auto readlen = std::min(len, gsl::narrow<size_t>(bytes_available_in_buffer));
+  const auto begin = buffer_.begin() + gsl::narrow<decltype(buffer_)::difference_type>(readOffset_);
+  std::copy(begin, begin + gsl::narrow<decltype(buffer_)::difference_type>(readlen), buf);
 
   // increase offset for the next read
-  readOffset_ += len;
+  readOffset_ += readlen;
 
-  return len;
+  return readlen;
 }
 
 } /* namespace io */

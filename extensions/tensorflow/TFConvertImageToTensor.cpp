@@ -115,7 +115,7 @@ void TFConvertImageToTensor::initialize() {
   setSupportedRelationships(std::move(relationships));
 }
 
-void TFConvertImageToTensor::onSchedule(core::ProcessContext *context, core::ProcessSessionFactory *sessionFactory) {
+void TFConvertImageToTensor::onSchedule(core::ProcessContext* context, core::ProcessSessionFactory* /*sessionFactory*/) {
   context->getProperty(ImageFormat.getName(), input_format_);
 
   if (input_format_.empty()) {
@@ -189,8 +189,8 @@ void TFConvertImageToTensor::onSchedule(core::ProcessContext *context, core::Pro
   }
 }
 
-void TFConvertImageToTensor::onTrigger(const std::shared_ptr<core::ProcessContext> &context,
-                                       const std::shared_ptr<core::ProcessSession> &session) {
+void TFConvertImageToTensor::onTrigger(const std::shared_ptr<core::ProcessContext>& /*context*/,
+                                       const std::shared_ptr<core::ProcessSession>& session) {
   auto flow_file = session->get();
 
   if (!flow_file) {
@@ -321,14 +321,10 @@ int64_t TFConvertImageToTensor::ImageReadCallback::process(const std::shared_ptr
   if (tensor_->AllocatedBytes() < stream->size()) {
     throw std::runtime_error("Tensor is not big enough to hold FlowFile bytes");
   }
-
-  auto num_read = stream->read(tensor_->flat<unsigned char>().data(),
-                                   static_cast<int>(stream->size()));
-
+  const auto num_read = stream->read(tensor_->flat<unsigned char>().data(), stream->size());
   if (num_read != stream->size()) {
     throw std::runtime_error("TensorReadCallback failed to fully read flow file input stream");
   }
-
   return num_read;
 }
 

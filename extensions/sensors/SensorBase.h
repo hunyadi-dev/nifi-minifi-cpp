@@ -15,13 +15,11 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef EXTENSIONS_SENSORS_SENSORBASE_H_
-#define EXTENSIONS_SENSORS_SENSORBASE_H_
-
-
+#pragma once
 
 #include <memory>
 #include <regex>
+#include <string>
 
 #include "utils/ByteArrayCallback.h"
 #include "FlowFileRecord.h"
@@ -43,18 +41,17 @@ namespace processors {
 // SensorBase Class
 class SensorBase : public core::Processor {
  public:
-
   // Constructor
   /*!
    * Create a new processor
    */
-  SensorBase(std::string name, utils::Identifier uuid = utils::Identifier())
+  explicit SensorBase(const std::string& name, const utils::Identifier& uuid = {})
       : Processor(name, uuid),
         imu(nullptr),
         logger_(logging::LoggerFactory<SensorBase>::getLogger()) {
   }
   // Destructor
-  virtual ~SensorBase();
+  ~SensorBase() override;
   // Processor Name
   static core::Relationship Success;
   // Supported Properties
@@ -64,20 +61,18 @@ class SensorBase : public core::Processor {
   void onSchedule(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSessionFactory> &sessionFactory) override;
 
   class WriteCallback : public OutputStreamCallback {
-     public:
-      WriteCallback(std::string data)
-          : _data(const_cast<char*>(data.data())),
-            _dataSize(data.size()) {
-      }
-      char *_data;
-      uint64_t _dataSize;
-      int64_t process(const std::shared_ptr<io::BaseStream>& stream) {
-        int64_t ret = 0;
-        if (_data && _dataSize > 0)
-          ret = stream->write(reinterpret_cast<uint8_t*>(_data), _dataSize);
-        return ret;
-      }
-    };
+   public:
+    explicit WriteCallback(std::string data)
+        : data_{std::move(data)} {
+    }
+    std::string data_;
+    int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
+      if (data_.empty()) return 0;
+      const auto write_ret = stream->write(reinterpret_cast<const uint8_t*>(data_.data()), data_.size());
+      return io::isError(write_ret) ? -1 : gsl::narrow<int64_t>(write_ret);
+    }
+  };
+
  protected:
   RTIMUSettings settings;
   std::unique_ptr<RTIMU> imu;
@@ -89,4 +84,3 @@ class SensorBase : public core::Processor {
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-#endif /* EXTENSIONS_SENSORS_SENSORBASE_H_ */

@@ -15,12 +15,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef EXTENSIONS_EXPRESSIONLOADER_H_
-#define EXTENSIONS_EXPRESSIONLOADER_H_
+#pragma once
+#include <vector>
+#include <string>
+#include <memory>
+
 #include "core/ClassLoader.h"
 #include "utils/StringUtils.h"
 #include "ExpressionContextBuilder.h"
-#include "core/controller/ControllerServiceProvider.h"
 
 /**
  * Object factory class loader for this extension.
@@ -61,10 +63,8 @@ class ExpressionObjectFactory : public core::ObjectFactory {
   }
 
   static bool added;
-
 };
 
 extern "C" {
 DLL_EXPORT void *createExpressionFactory(void);
 }
-#endif /* EXTENSIONS_EXPRESSIONLOADER_H_ */

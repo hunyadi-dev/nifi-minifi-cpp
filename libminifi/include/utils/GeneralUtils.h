@@ -19,6 +19,7 @@
 #ifndef LIBMINIFI_INCLUDE_UTILS_GENERALUTILS_H_
 #define LIBMINIFI_INCLUDE_UTILS_GENERALUTILS_H_
 
+#include <algorithm>
 #include <memory>
 #include <type_traits>
 #include <utility>
@@ -60,6 +61,15 @@ struct identity {
     }
 };
 #endif /* < C++20 */
+
+#if __cpp_lib_type_identity >= 201806L
+using std::type_identity;
+#else
+template<typename T>
+struct type_identity {
+  using type = T;
+};
+#endif /* has std::type_identity */
 
 using gsl::owner;
 
@@ -171,8 +181,18 @@ auto invoke_impl(F&& f, Args&&... args) MINIFICPP_UTIL_DEDUCED_CONDITIONAL(
 template<typename F, typename... Args>
 auto invoke(F&& f, Args&&... args) MINIFICPP_UTIL_DEDUCED(detail::invoke_impl(std::forward<F>(f), std::forward<Args>(args)...))
 #else
-using std::invoke
+using std::invoke;
 #endif /* < C++17 */
+
+
+namespace detail {
+struct dereference_t {
+  template<typename T>
+  T &operator()(T *ptr) const noexcept { return *ptr; }
+};
+}  // namespace detail
+
+constexpr detail::dereference_t dereference{};
 
 }  // namespace utils
 }  // namespace minifi

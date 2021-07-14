@@ -17,6 +17,8 @@
  */
 #include "CoapServer.h"
 #include <coap2/coap.h>
+#include <map>
+#include <functional>
 
 namespace org {
 namespace apache {
@@ -29,7 +31,7 @@ std::map<coap_resource_t*, std::function<CoapResponse(CoapQuery)>> CoapServer::f
 CoapServer::~CoapServer() {
   running_ = false;
   future.get();
-  if(server_){
+  if (server_) {
     free_server(server_);
   }
 }

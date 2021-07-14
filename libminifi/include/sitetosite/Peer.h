@@ -46,7 +46,7 @@ namespace sitetosite {
 
 class Peer {
  public:
-  explicit Peer(utils::Identifier &port_id, const std::string &host, uint16_t port, bool secure = false)
+  explicit Peer(const utils::Identifier &port_id, const std::string &host, uint16_t port, bool secure = false)
       : host_(host),
         port_(port),
         secure_(secure) {
@@ -295,11 +295,11 @@ class SiteToSitePeer : public org::apache::nifi::minifi::io::BaseStream {
   using BaseStream::write;
   using BaseStream::read;
 
-  int write(const uint8_t* data, int len) override {
+  size_t write(const uint8_t* data, size_t len) override {
     return stream_->write(data, len);
   }
 
-  int read(uint8_t* data, int len) override {
+  size_t read(uint8_t* data, size_t len) override {
     return stream_->read(data, len);
   }
 

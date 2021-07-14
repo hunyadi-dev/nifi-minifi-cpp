@@ -55,7 +55,10 @@ TestPlan::TestPlan(std::shared_ptr<core::ContentRepository> content_repo, std::s
   } else {
     state_dir_.reset(new StateDir(state_dir));
   }
-  state_manager_provider_ = core::ProcessContext::getOrCreateDefaultStateManagerProvider(controller_services_provider_.get(), configuration_, state_dir_->getPath().c_str());
+  if (!configuration_->get(minifi::Configure::nifi_state_management_provider_local_path)) {
+    configuration_->set(minifi::Configure::nifi_state_management_provider_local_path, state_dir_->getPath());
+  }
+  state_manager_provider_ = core::ProcessContext::getOrCreateDefaultStateManagerProvider(controller_services_provider_.get(), configuration_);
 }
 
 TestPlan::~TestPlan() {
@@ -120,8 +123,8 @@ std::shared_ptr<core::Processor> TestPlan::addProcessor(const std::shared_ptr<co
   return processor;
 }
 
-std::shared_ptr<core::Processor> TestPlan::addProcessor(const std::string &processor_name, const utils::Identifier& uuid, const std::string &name,
-    const std::initializer_list<core::Relationship>& relationships, bool linkToPrevious) {
+std::shared_ptr<core::Processor> TestPlan::addProcessor(const std::string &processor_name, const utils::Identifier &uuid, const std::string &name,
+    const std::initializer_list<core::Relationship> &relationships, bool linkToPrevious) {
   if (finalized) {
     return nullptr;
   }
@@ -436,5 +439,11 @@ void TestPlan::finalize() {
   }
 
   finalized = true;
+}
+
+void TestPlan::validateAnnotations() const {
+  for (const auto& processor : processor_queue_) {
+    processor->validateAnnotations();
+  }
 }
 

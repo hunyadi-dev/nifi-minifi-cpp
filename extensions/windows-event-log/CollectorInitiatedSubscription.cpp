@@ -24,11 +24,10 @@
 #include <map>
 #include <set>
 #include <sstream>
-#include <stdio.h>
 #include <string>
-#include <iostream>
 #include <memory>
 #include <codecvt>
+#include <utility>
 
 #include "io/BufferStream.h"
 #include "core/ProcessContext.h"
@@ -64,8 +63,7 @@ CollectorInitiatedSubscription::CollectorInitiatedSubscription(const std::string
   DWORD size = sizeof(buff);
   if (GetComputerName(buff, &size)) {
     computerName_ = buff;
-  }
-  else {
+  } else {
     LOG_SUBSCRIPTION_WINDOWS_ERROR("GetComputerName");
   }
 
@@ -226,8 +224,7 @@ void CollectorInitiatedSubscription::onTrigger(const std::shared_ptr<core::Proce
 
   if (flowFileCount > 0) {
     lastActivityTimestamp_ = now;
-  }
-  else if (inactiveDurationToReconnect_.value() > 0) {
+  } else if (inactiveDurationToReconnect_.value() > 0) {
     if ((now - lastActivityTimestamp_) > inactiveDurationToReconnect_.value()) {
       logger_->log_info("Exceeds configured 'inactive duration to reconnect' %lld ms. Unsubscribe to reconnect..", inactiveDurationToReconnect_.value());
       unsubscribe();
@@ -285,8 +282,7 @@ bool CollectorInitiatedSubscription::checkSubscriptionRuntimeStatus() {
           LOG_SUBSCRIPTION_WINDOWS_ERROR("EcGetObjectArrayProperty");
           return false;
         }
-      }
-      else {
+      } else {
         LOG_SUBSCRIPTION_WINDOWS_ERROR("EcGetObjectArrayProperty");
         return false;
       }
@@ -302,8 +298,8 @@ bool CollectorInitiatedSubscription::checkSubscriptionRuntimeStatus() {
     buffer.resize(sizeof(EC_VARIANT));
     DWORD dwBufferSize{};
     if (!EcGetSubscriptionRunTimeStatus(
-          subscriptionName_.value().c_str(), 
-          statusInfoID, 
+          subscriptionName_.value().c_str(),
+          statusInfoID,
           eventSource.c_str(),
           flags,
           static_cast<DWORD>(buffer.size()),
@@ -503,7 +499,7 @@ bool CollectorInitiatedSubscription::createSubscription(const std::shared_ptr<co
     {EcSubscriptionCommonUserName, sourceUserName_.value()},
     {EcSubscriptionCommonPassword, sourcePassword_.value()}
   };
-  for (auto& prop: listProperty) {
+  for (auto& prop : listProperty) {
     if (!EcSetSubscriptionProperty(hSubscription, prop.propId_, 0, &prop.prop_)) {
       LOG_SUBSCRIPTION_WINDOWS_ERROR("EcSetSubscriptionProperty id: " + std::to_string(prop.propId_));
       return false;
@@ -516,7 +512,7 @@ bool CollectorInitiatedSubscription::createSubscription(const std::shared_ptr<co
   if (!getSubscriptionProperty(hSubscription, EcSubscriptionEventSources, 0, buffer, vProperty))
     return false;
 
-  // Event Sources is a collection. Ensure that we have obtained handle to the Array Property. 
+  // Event Sources is a collection. Ensure that we have obtained handle to the Array Property.
   if (vProperty->Type != EcVarTypeNull && vProperty->Type != EcVarObjectArrayPropertyHandle) {
     logInvalidSubscriptionPropertyType(__LINE__, vProperty->Type);
     return false;
@@ -542,7 +538,7 @@ bool CollectorInitiatedSubscription::createSubscription(const std::shared_ptr<co
     return false;
   }
 
-  for (auto& prop: std::vector<SubscriptionProperty>{{EcSubscriptionEventSourceAddress, sourceAddress_.value()}, {EcSubscriptionEventSourceEnabled, true}}) {
+  for (auto& prop : std::vector<SubscriptionProperty>{{EcSubscriptionEventSourceAddress, sourceAddress_.value()}, {EcSubscriptionEventSourceEnabled, true}}) {
     if (!EcSetObjectArrayProperty(hArray, prop.propId_, dwEventSourceCount, 0, &prop.prop_)) {
       LOG_SUBSCRIPTION_WINDOWS_ERROR("EcSetObjectArrayProperty id: " + std::to_string(prop.propId_));
       return false;
@@ -628,17 +624,16 @@ void CollectorInitiatedSubscription::unsubscribe() {
 
 int CollectorInitiatedSubscription::processQueue(const std::shared_ptr<core::ProcessSession> &session) {
   struct WriteCallback: public OutputStreamCallback {
-    WriteCallback(const std::string& str)
-      : str_(str) {
-      status_ = 0;
+    explicit WriteCallback(const std::string& str)
+      : str_(&str) {
     }
 
     int64_t process(const std::shared_ptr<io::BaseStream>& stream) {
-      return stream->write((uint8_t*)&str_[0], gsl::narrow<int>(str_.size()));
+      const auto write_ret = stream->write(reinterpret_cast<const uint8_t*>(str_->data()), str_->size());
+      return io::isError(write_ret) ? -1 : gsl::narrow<int64_t>(write_ret);
     }
 
-    std::string str_;
-    int status_;
+    gsl::not_null<const std::string*> str_;
   };
 
   int flowFileCount = 0;
@@ -699,10 +694,10 @@ void CollectorInitiatedSubscription::logWindowsError(int line, const std::string
     error,
     MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
     (LPTSTR)&lpMsg,
-    0, 
+    0,
     NULL);
 
-  logger_->log_error("Line %d: '%s': error %d: %s\n", line, info.c_str(), (int)error, (char *)lpMsg);
+  logger_->log_error("Line %d: '%s': error %d: %s\n", line, info.c_str(), static_cast<int>(error), reinterpret_cast<char *>(lpMsg));
 
   LocalFree(lpMsg);
 }

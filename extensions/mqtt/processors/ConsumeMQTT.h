@@ -17,10 +17,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef __CONSUME_MQTT_H__
-#define __CONSUME_MQTT_H__
+#pragma once
 
 #include <limits>
+#include <string>
+#include <memory>
+
 #include <deque>
 #include "FlowFileRecord.h"
 #include "core/Processor.h"
@@ -32,6 +34,7 @@
 #include "concurrentqueue.h"
 #include "MQTTClient.h"
 #include "AbstractMQTTProcessor.h"
+#include "utils/gsl.h"
 
 namespace org {
 namespace apache {
@@ -49,7 +52,7 @@ class ConsumeMQTT : public processors::AbstractMQTTProcessor {
   /*!
    * Create a new processor
    */
-  explicit ConsumeMQTT(std::string name, utils::Identifier uuid = utils::Identifier())
+  explicit ConsumeMQTT(const std::string& name, const utils::Identifier& uuid = {})
       : processors::AbstractMQTTProcessor(name, uuid),
         logger_(logging::LoggerFactory<ConsumeMQTT>::getLogger()) {
     isSubscriber_ = true;
@@ -57,7 +60,7 @@ class ConsumeMQTT : public processors::AbstractMQTTProcessor {
     maxSegSize_ = ULLONG_MAX;
   }
   // Destructor
-  virtual ~ConsumeMQTT() {
+  ~ConsumeMQTT() override {
     MQTTClient_message *message;
     while (queue_.try_dequeue(message)) {
       MQTTClient_freeMessage(&message);
@@ -74,18 +77,23 @@ class ConsumeMQTT : public processors::AbstractMQTTProcessor {
   // Nest Callback Class for write stream
   class WriteCallback : public OutputStreamCallback {
    public:
-    WriteCallback(MQTTClient_message *message)
+    explicit WriteCallback(MQTTClient_message *message)
         : message_(message) {
-      status_ = 0;
     }
     MQTTClient_message *message_;
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) {
-      int64_t len = stream->write(reinterpret_cast<uint8_t*>(message_->payload), message_->payloadlen);
-      if (len < 0)
+    int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
+      if (message_->payloadlen < 0) {
         status_ = -1;
-      return len;
+        return -1;
+      }
+      const auto len = stream->write(reinterpret_cast<uint8_t*>(message_->payload), gsl::narrow<size_t>(message_->payloadlen));
+      if (io::isError(len)) {
+        status_ = -1;
+        return -1;
+      }
+      return gsl::narrow<int64_t>(len);
     }
-    int status_;
+    int status_ = 0;
   };
 
  public:
@@ -99,7 +107,7 @@ class ConsumeMQTT : public processors::AbstractMQTTProcessor {
   // OnTrigger method, implemented by NiFi ConsumeMQTT
   void onTrigger(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSession> &session) override;
   // Initialize, over write by NiFi ConsumeMQTT
-  void initialize(void) override;
+  void initialize() override;
   bool enqueueReceiveMQTTMsg(MQTTClient_message *message) override;
 
  protected:
@@ -111,6 +119,10 @@ class ConsumeMQTT : public processors::AbstractMQTTProcessor {
   }
 
  private:
+  core::annotation::Input getInputRequirement() const override {
+    return core::annotation::Input::INPUT_FORBIDDEN;
+  }
+
   std::shared_ptr<logging::Logger> logger_;
   std::mutex mutex_;
   uint64_t maxQueueSize_;
@@ -125,5 +137,3 @@ REGISTER_RESOURCE(ConsumeMQTT, "This Processor gets the contents of a FlowFile f
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif

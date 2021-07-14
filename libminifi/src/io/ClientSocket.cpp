@@ -47,6 +47,8 @@
 #include "core/logging/LoggerConfiguration.h"
 #include "utils/file/FileUtils.h"
 #include "utils/GeneralUtils.h"
+#include "utils/gsl.h"
+
 namespace util = org::apache::nifi::minifi::utils;
 namespace mio = org::apache::nifi::minifi::io;
 
@@ -499,33 +501,29 @@ std::string Socket::getHostname() const {
 
 // data stream overrides
 
-int Socket::write(const uint8_t *value, int size) {
-  gsl_Expects(size >= 0);
-
-  int ret = 0, bytes = 0;
-
+size_t Socket::write(const uint8_t *value, size_t size) {
+  size_t bytes = 0;
   int fd = select_descriptor(1000);
-  if (fd < 0) { return -1; }
+  if (fd < 0) { return STREAM_ERROR; }
   while (bytes < size) {
-    ret = send(fd, reinterpret_cast<const char*>(value) + bytes, size - bytes, 0);
+    const auto send_ret = send(fd, reinterpret_cast<const char*>(value) + bytes, size - bytes, 0);
     // check for errors
-    if (ret <= 0) {
+    if (send_ret <= 0) {
       utils::file::FileUtils::close(fd);
       logger_->log_error("Could not send to %d, error: %s", fd, get_last_socket_error_message());
-      return ret;
+      return STREAM_ERROR;
     }
-    bytes += ret;
+    bytes += gsl::narrow<size_t>(send_ret);
   }
 
-  if (ret)
+  if (bytes > 0)
     logger_->log_trace("Send data size %d over socket %d", size, fd);
   total_written_ += bytes;
   return bytes;
 }
 
-int Socket::read(uint8_t *buf, int buflen, bool retrieve_all_bytes) {
-  gsl_Expects(buflen >= 0);
-  int32_t total_read = 0;
+size_t Socket::read(uint8_t *buf, size_t buflen, bool retrieve_all_bytes) {
+  size_t total_read = 0;
   while (buflen) {
     int16_t fd = select_descriptor(1000);
     if (fd < 0) {
@@ -533,9 +531,9 @@ int Socket::read(uint8_t *buf, int buflen, bool retrieve_all_bytes) {
         logger_->log_debug("fd %d close %i", fd, buflen);
         utils::file::FileUtils::close(socket_file_descriptor_);
       }
-      return -1;
+      return STREAM_ERROR;
     }
-    int bytes_read = recv(fd, reinterpret_cast<char*>(buf), buflen, 0);
+    const auto bytes_read = recv(fd, reinterpret_cast<char*>(buf), buflen, 0);
     logger_->log_trace("Recv call %d", bytes_read);
     if (bytes_read <= 0) {
       if (bytes_read == 0) {
@@ -545,23 +543,23 @@ int Socket::read(uint8_t *buf, int buflen, bool retrieve_all_bytes) {
         int err = WSAGetLastError();
         if (err == WSAEWOULDBLOCK) {
           // continue
-          return -2;
+          return static_cast<size_t>(-2);
         }
         logger_->log_error("Could not recv on %d (port %d), error code: %d", fd, port_, err);
 #else
         if (errno == EAGAIN || errno == EWOULDBLOCK) {
           // continue
-          return -2;
+          return static_cast<size_t>(-2);
         }
         logger_->log_error("Could not recv on %d (port %d), error: %s", fd, port_, strerror(errno));
 
 #endif  // WIN32
       }
-      return -1;
+      return STREAM_ERROR;
     }
-    buflen -= bytes_read;
+    buflen -= gsl::narrow<size_t>(bytes_read);
     buf += bytes_read;
-    total_read += bytes_read;
+    total_read += gsl::narrow<size_t>(bytes_read);
     if (!retrieve_all_bytes) {
       break;
     }

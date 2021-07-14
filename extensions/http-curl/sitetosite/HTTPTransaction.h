@@ -18,6 +18,9 @@
 #ifndef EXTENSIONS_HTTP_CURL_SITETOSITE_HTTPTRANSACTION_H_
 #define EXTENSIONS_HTTP_CURL_SITETOSITE_HTTPTRANSACTION_H_
 
+#include <utility>
+#include <string>
+
 #include "sitetosite/SiteToSite.h"
 #include "io/CRCStream.h"
 #include "sitetosite/SiteToSiteClient.h"
@@ -41,7 +44,7 @@ class HttpTransaction : public sitetosite::Transaction {
         client_ref_(nullptr) {
   }
 
-  ~HttpTransaction(){
+  ~HttpTransaction() {
     auto stream = dynamic_cast< org::apache::nifi::minifi::io::HttpStream*>(dynamic_cast<SiteToSitePeer*>(crcStream.getstream())->getStream() );
   if (stream)
     stream->forceClose();
@@ -53,9 +56,10 @@ class HttpTransaction : public sitetosite::Transaction {
   }
 
 
-  const std::string &getTransactionUrl(){
+  const std::string &getTransactionUrl() {
     return transaction_url_;
   }
+
  protected:
   sitetosite::SiteToSiteClient *client_ref_;
   std::string transaction_url_;

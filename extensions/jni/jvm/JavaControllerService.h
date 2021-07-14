@@ -15,13 +15,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef LIBMINIFI_INCLUDE_CONTROLLERS_JAVACONTROLLERSERVICE_H_
-#define LIBMINIFI_INCLUDE_CONTROLLERS_JAVACONTROLLERSERVICE_H_
+#pragma once
 
 #include <iostream>
 #include <memory>
 #include <vector>
 #include <string>
+#include <utility>
+#include <map>
 
 #include "../jvm/JVMLoader.h"
 #include "NarClassLoader.h"
@@ -46,7 +47,7 @@ namespace controllers {
  */
 class JavaControllerService : public core::controller::ControllerService, public std::enable_shared_from_this<JavaControllerService>, public JavaServicer {
  public:
-  explicit JavaControllerService(const std::string &name, const utils::Identifier& uuid = {})
+  explicit JavaControllerService(const std::string &name, const utils::Identifier &uuid = {})
       : ControllerService(name, uuid),
         loader(nullptr),
         logger_(logging::LoggerFactory<JavaControllerService>::getLogger()) {
@@ -143,12 +144,7 @@ class JavaControllerService : public core::controller::ControllerService, public
     return nar_loader_->newInstance(requested_name);
   }
 
- protected:
-
- // void addPath(std::vector<std::string> &jarFiles, const std::string &dir);
-
  private:
-
   JavaClass narClassLoaderClazz;
 
   std::mutex initialization_mutex_;
@@ -162,7 +158,6 @@ class JavaControllerService : public core::controller::ControllerService, public
   JVMLoader *loader;
 
   std::shared_ptr<logging::Logger> logger_;
-
 };
 
 REGISTER_RESOURCE(JavaControllerService, "Allows specification of nars to be used within referenced processors. ");
@@ -173,5 +168,3 @@ REGISTER_RESOURCE(JavaControllerService, "Allows specification of nars to be use
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif /* LIBMINIFI_INCLUDE_CONTROLLERS_JAVACONTROLLERSERVICE_H_ */

@@ -15,19 +15,14 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef EXTENSIONS_HTTP_CURL_CLIENT_CIVETSTREAM_H_
-#define EXTENSIONS_HTTP_CURL_CLIENT_CIVETSTREAM_H_
+#pragma once
 
-#include <algorithm>
 #include <memory>
-#include <thread>
-#include <mutex>
-#include <future>
-#include <vector>
 
 #include "io/BaseStream.h"
 #include "civetweb.h"
-#include "CivetServer.h"
+#include "utils/gsl.h"
+
 namespace org {
 namespace apache {
 namespace nifi {
@@ -49,15 +44,16 @@ class CivetStream : public io::InputStream {
    * @param buf buffer in which we extract data
    * @param buflen
    */
-  int read(uint8_t *buf, int buflen) override {
-    return mg_read(conn, buf, buflen);
+  size_t read(uint8_t *buf, size_t buflen) override {
+    const auto ret = mg_read(conn, buf, buflen);
+    if (ret < 0) return STREAM_ERROR;
+    return gsl::narrow<size_t>(ret);
   }
 
  protected:
   struct mg_connection *conn;
 
  private:
-
   std::shared_ptr<logging::Logger> logger_;
 };
 } /* namespace io */
@@ -65,5 +61,3 @@ class CivetStream : public io::InputStream {
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif /* EXTENSIONS_HTTP_CURL_CLIENT_CIVETSTREAM_H_ */

@@ -33,16 +33,7 @@ if (WIN32)
         COMPONENT tzdata
     )
 
-    FetchContent_Declare(cldr_common
-        URL         https://unicode.org/Public/cldr/38.1/cldr-common-38.1.zip
-        URL_HASH    SHA512=3d641921c82c15b6257791229ed20db391675089927959869a5d96b17e7d0c3ad9063faf21151766eafe8ff7b85a98b37b9608f4c4f1d3f6f2b8e5565725db03
-    )
-    FetchContent_GetProperties(cldr_common)
-    if (NOT cldr_common_POPULATED)
-        FetchContent_Populate(cldr_common)
-    endif()
-
-    install(FILES ${cldr_common_SOURCE_DIR}/common/supplemental/windowsZones.xml
+    install(FILES ${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/cldr-common-38.1/common/supplemental/windowsZones.xml
         DESTINATION tzdata
         COMPONENT tzdata
     )
@@ -55,10 +46,7 @@ FetchContent_Declare(date_src
 FetchContent_GetProperties(date_src)
 if (NOT date_src_POPULATED)
     FetchContent_Populate(date_src)
-    set(DATE_INCLUDE_DIR
-        $<BUILD_INTERFACE:${date_src_SOURCE_DIR}/include>
-        $<INSTALL_INTERFACE:include>
-    )
+    set(DATE_INCLUDE_DIR "${date_src_SOURCE_DIR}/include" CACHE STRING "" FORCE)
     add_library(date INTERFACE)
     add_library(date::date ALIAS date)
     target_sources(date INTERFACE ${DATE_INCLUDE_DIR}/date/date.h)

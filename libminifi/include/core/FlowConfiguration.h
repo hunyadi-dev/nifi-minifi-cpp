@@ -40,6 +40,7 @@
 #include "io/StreamFactory.h"
 #include "core/state/nodes/FlowInformation.h"
 #include "utils/file/FileSystem.h"
+#include "utils/ChecksumCalculator.h"
 #include "utils/OptionalUtils.h"
 
 namespace org {
@@ -92,6 +93,7 @@ class FlowConfiguration : public CoreComponent {
         logger_->log_error("Couldn't find config file \"%s\".", *path);
         config_path_ = path;
       }
+      checksum_calculator_.setFileLocation(*config_path_);
     }
 
     // it is okay if this has already been called
@@ -101,8 +103,8 @@ class FlowConfiguration : public CoreComponent {
   ~FlowConfiguration() override;
 
   // Create Processor (Node/Input/Output Port) based on the name
-  std::shared_ptr<core::Processor> createProcessor(std::string name, utils::Identifier &uuid);
-  std::shared_ptr<core::Processor> createProcessor(const std::string &name, const std::string &fullname, utils::Identifier &uuid);
+  std::shared_ptr<core::Processor> createProcessor(const std::string &name, const utils::Identifier &uuid);
+  std::shared_ptr<core::Processor> createProcessor(const std::string &name, const std::string &fullname, const utils::Identifier &uuid);
   // Create Root Processor Group
 
   std::unique_ptr<core::ProcessGroup> createRootProcessGroup(const std::string &name, const utils::Identifier &uuid, int version);
@@ -110,10 +112,10 @@ class FlowConfiguration : public CoreComponent {
   std::unique_ptr<core::ProcessGroup> createRemoteProcessGroup(const std::string &name, const utils::Identifier &uuid);
 
   std::shared_ptr<core::controller::ControllerServiceNode> createControllerService(const std::string &class_name, const std::string &full_class_name, const std::string &name,
-      const utils::Identifier& uuid);
+      const utils::Identifier &uuid);
 
   // Create Connection
-  std::shared_ptr<minifi::Connection> createConnection(std::string name, const utils::Identifier& uuid) const;
+  std::shared_ptr<minifi::Connection> createConnection(const std::string &name, const utils::Identifier &uuid) const;
   // Create Provenance Report Task
   std::shared_ptr<core::Processor> createProvenanceReportTask(void);
 
@@ -162,6 +164,8 @@ class FlowConfiguration : public CoreComponent {
     }
   }
 
+  utils::ChecksumCalculator& getChecksumCalculator() { return checksum_calculator_; }
+
  protected:
   void registerResource(const std::string &resource_function) {
     core::ClassLoader::getDefaultClassLoader().registerResource("", resource_function);
@@ -185,8 +189,8 @@ class FlowConfiguration : public CoreComponent {
   std::shared_ptr<io::StreamFactory> stream_factory_;
   std::shared_ptr<Configure> configuration_;
   std::shared_ptr<state::response::FlowVersion> flow_version_;
-
   std::shared_ptr<utils::file::FileSystem> filesystem_;
+  utils::ChecksumCalculator checksum_calculator_;
 
  private:
   std::shared_ptr<logging::Logger> logger_;

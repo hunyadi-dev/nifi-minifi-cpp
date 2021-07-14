@@ -17,14 +17,12 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef LIBMINIFI_INCLUDE_PROCESSORS_FOCUSARCHIVEENTRY_H_
-#define LIBMINIFI_INCLUDE_PROCESSORS_FOCUSARCHIVEENTRY_H_
+#pragma once
 
-#include <list>
 #include <memory>
 #include <string>
 
-#include <archive.h>
+#include "archive.h"
 
 #include "ArchiveMetadata.h"
 #include "FlowFileRecord.h"
@@ -48,7 +46,7 @@ class FocusArchiveEntry : public core::Processor {
   /*!
    * Create a new processor
    */
-  explicit FocusArchiveEntry(std::string name, utils::Identifier uuid = utils::Identifier())
+  explicit FocusArchiveEntry(const std::string& name, const utils::Identifier& uuid = {})
   : core::Processor(name, uuid),
     logger_(logging::LoggerFactory<FocusArchiveEntry>::getLogger()) {
   }
@@ -98,5 +96,3 @@ REGISTER_RESOURCE(FocusArchiveEntry, "Allows manipulation of entries within an a
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif  // LIBMINIFI_INCLUDE_PROCESSORS_FOCUSARCHIVEENTRY_H_

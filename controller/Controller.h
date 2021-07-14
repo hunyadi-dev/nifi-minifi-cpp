@@ -36,7 +36,7 @@ bool sendSingleCommand(std::unique_ptr<minifi::io::Socket> socket, uint8_t op, c
   minifi::io::BufferStream stream;
   stream.write(&op, 1);
   stream.write(value);
-  return static_cast<size_t>(socket->write(const_cast<uint8_t*>(stream.getBuffer()), gsl::narrow<int>(stream.size()))) == stream.size();
+  return socket->write(stream.getBuffer(), stream.size()) == stream.size();
 }
 
 /**
@@ -77,7 +77,7 @@ int updateFlow(std::unique_ptr<minifi::io::Socket> socket, std::ostream &out, st
   stream.write(&op, 1);
   stream.write("flow");
   stream.write(file);
-  if (socket->write(const_cast<uint8_t*>(stream.getBuffer()), gsl::narrow<int>(stream.size())) < 0) {
+  if (minifi::io::isError(socket->write(stream.getBuffer(), stream.size()))) {
     return -1;
   }
   // read the response
@@ -107,7 +107,7 @@ int getFullConnections(std::unique_ptr<minifi::io::Socket> socket, std::ostream 
   minifi::io::BufferStream stream;
   stream.write(&op, 1);
   stream.write("getfull");
-  if (socket->write(const_cast<uint8_t*>(stream.getBuffer()), gsl::narrow<int>(stream.size())) < 0) {
+  if (minifi::io::isError(socket->write(stream.getBuffer(), stream.size()))) {
     return -1;
   }
   // read the response
@@ -133,14 +133,13 @@ int getJstacks(std::unique_ptr<minifi::io::Socket> socket, std::ostream &out) {
   minifi::io::BufferStream stream;
   stream.write(&op, 1);
   stream.write("jstack");
-  if (socket->write(const_cast<uint8_t*>(stream.getBuffer()), gsl::narrow<int>(stream.size())) < 0) {
+  if (minifi::io::isError(socket->write(stream.getBuffer(), stream.size()))) {
     return -1;
   }
   // read the response
   uint8_t resp = 0;
   socket->read(&resp, 1);
   if (resp == minifi::c2::Operation::DESCRIBE) {
-
     uint64_t size = 0;
     socket->read(size);
 
@@ -154,7 +153,6 @@ int getJstacks(std::unique_ptr<minifi::io::Socket> socket, std::ostream &out) {
         socket->read(line);
         out << name << " -- " << line << std::endl;
       }
-
     }
   }
   return 0;
@@ -173,7 +171,7 @@ int getConnectionSize(std::unique_ptr<minifi::io::Socket> socket, std::ostream &
   stream.write(&op, 1);
   stream.write("queue");
   stream.write(connection);
-  if (socket->write(const_cast<uint8_t*>(stream.getBuffer()), gsl::narrow<int>(stream.size())) < 0) {
+  if (minifi::io::isError(socket->write(stream.getBuffer(), stream.size()))) {
     return -1;
   }
   // read the response
@@ -193,7 +191,7 @@ int listComponents(std::unique_ptr<minifi::io::Socket> socket, std::ostream &out
   uint8_t op = minifi::c2::Operation::DESCRIBE;
   stream.write(&op, 1);
   stream.write("components");
-  if (socket->write(const_cast<uint8_t*>(stream.getBuffer()), gsl::narrow<int>(stream.size())) < 0) {
+  if (minifi::io::isError(socket->write(stream.getBuffer(), stream.size()))) {
     return -1;
   }
   uint16_t responses = 0;
@@ -217,7 +215,7 @@ int listConnections(std::unique_ptr<minifi::io::Socket> socket, std::ostream &ou
   uint8_t op = minifi::c2::Operation::DESCRIBE;
   stream.write(&op, 1);
   stream.write("connections");
-  if (socket->write(const_cast<uint8_t*>(stream.getBuffer()), gsl::narrow<int>(stream.size())) < 0) {
+  if (minifi::io::isError(socket->write(stream.getBuffer(), stream.size()))) {
     return -1;
   }
   uint16_t responses = 0;
@@ -235,7 +233,6 @@ int listConnections(std::unique_ptr<minifi::io::Socket> socket, std::ostream &ou
 }
 
 std::shared_ptr<core::controller::ControllerService> getControllerService(const std::shared_ptr<minifi::Configure> &configuration, const std::string &service_name) {
-
   std::string prov_repo_class = "provenancerepository";
   std::string flow_repo_class = "flowfilerepository";
   std::string nifi_configuration_class_name = "yamlconfiguration";
@@ -281,7 +278,6 @@ std::shared_ptr<core::controller::ControllerService> getControllerService(const 
 }
 
 void printManifest(const std::shared_ptr<minifi::Configure> &configuration) {
-
   std::string prov_repo_class = "volatileprovenancerepository";
   std::string flow_repo_class = "volatileflowfilerepository";
   std::string nifi_configuration_class_name = "yamlconfiguration";
@@ -315,12 +311,12 @@ void printManifest(const std::shared_ptr<minifi::Configure> &configuration) {
     minifi::setDefaultDirectory(content_repo_path);
   }
 
-  configuration->set("c2.agent.heartbeat.period", "25");
+  configuration->set("nifi.c2.agent.heartbeat.period", "25");
   configuration->set("nifi.c2.root.classes", "AgentInformation");
   configuration->set("nifi.c2.enable", "true");
-  configuration->set("nifi.c2.agent.class","test");
+  configuration->set("nifi.c2.agent.class", "test");
   configuration->set("c2.agent.listen", "true");
-  configuration->set("c2.agent.heartbeat.reporter.classes", "AgentPrinter");
+  configuration->set("nifi.c2.agent.heartbeat.reporter.classes", "AgentPrinter");
 
   configuration->get(minifi::Configure::nifi_configuration_class_name, nifi_configuration_class_name);
 

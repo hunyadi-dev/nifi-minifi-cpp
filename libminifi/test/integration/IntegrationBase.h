@@ -15,11 +15,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef LIBMINIFI_TEST_INTEGRATION_INTEGRATIONBASE_H_
-#define LIBMINIFI_TEST_INTEGRATION_INTEGRATIONBASE_H_
+#pragma once
 
 #define DEFAULT_WAITTIME_MSECS 3000
 
+#include <memory>
+#include <utility>
+#include <string>
 #include "core/logging/Logger.h"
 #include "core/ProcessGroup.h"
 #include "core/yaml/YamlConfiguration.h"
@@ -35,7 +37,7 @@
 
 class IntegrationBase {
  public:
-  IntegrationBase(uint64_t waitTime = DEFAULT_WAITTIME_MSECS);
+  explicit IntegrationBase(uint64_t waitTime = DEFAULT_WAITTIME_MSECS);
 
   virtual ~IntegrationBase() = default;
 
@@ -49,7 +51,6 @@ class IntegrationBase {
   virtual void testSetup() = 0;
 
   virtual void shutdownBeforeFlowController() {
-
   }
 
   const std::shared_ptr<minifi::Configure>& getConfiguration() const {
@@ -65,20 +66,16 @@ class IntegrationBase {
   virtual void runAssertions() = 0;
 
  protected:
-
   virtual void configureC2() {
   }
 
   virtual void queryRootProcessGroup(std::shared_ptr<core::ProcessGroup> /*pg*/) {
-
   }
 
   virtual void configureFullHeartbeat() {
-
   }
 
   virtual void updateProperties(std::shared_ptr<minifi::FlowController> /*fc*/) {
-
   }
 
   void configureSecurity();
@@ -141,7 +138,10 @@ void IntegrationBase::run(const utils::optional<std::string>& test_file_location
   auto controller_service_provider = flow_config->getControllerServiceProvider();
   char state_dir_name_template[] = "/var/tmp/integrationstate.XXXXXX";
   state_dir = utils::file::FileUtils::create_temp_directory(state_dir_name_template);
-  core::ProcessContext::getOrCreateDefaultStateManagerProvider(controller_service_provider.get(), configuration, state_dir.c_str());
+  if (!configuration->get(minifi::Configure::nifi_state_management_provider_local_path)) {
+    configuration->set(minifi::Configure::nifi_state_management_provider_local_path, state_dir);
+  }
+  core::ProcessContext::getOrCreateDefaultStateManagerProvider(controller_service_provider.get(), configuration);
 
   std::shared_ptr<core::ProcessGroup> pg(flow_config->getRoot());
   queryRootProcessGroup(pg);
@@ -214,5 +214,3 @@ cmd_args parse_cmdline_args_with_url(int argc, char ** argv) {
   }
   return args;
 }
-
-#endif /* LIBMINIFI_TEST_INTEGRATION_INTEGRATIONBASE_H_ */

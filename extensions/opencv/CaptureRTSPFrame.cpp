@@ -14,6 +14,7 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
+#include <set>
 
 #include "CaptureRTSPFrame.h"
 
@@ -30,32 +31,31 @@ static core::Property rtspURI;
 static core::Property captureFrameRate;
 static core::Property imageEncoding;
 
-core::Property CaptureRTSPFrame::RTSPUsername(  // NOLINT
+core::Property CaptureRTSPFrame::RTSPUsername(
     "RTSP Username",
     "The username for connecting to the RTSP stream", "");
-core::Property CaptureRTSPFrame::RTSPPassword(  // NOLINT
+core::Property CaptureRTSPFrame::RTSPPassword(
     "RTSP Password",
     "Password used to connect to the RTSP stream", "");
-core::Property CaptureRTSPFrame::RTSPHostname(  // NOLINT
+core::Property CaptureRTSPFrame::RTSPHostname(
     "RTSP Hostname",
     "Hostname of the RTSP stream we are trying to connect to", "");
-core::Property CaptureRTSPFrame::RTSPURI(  // NOLINT
+core::Property CaptureRTSPFrame::RTSPURI(
     "RTSP URI",
     "URI that should be appended to the RTSP stream hostname", "");
-core::Property CaptureRTSPFrame::RTSPPort(  // NOLINT
+core::Property CaptureRTSPFrame::RTSPPort(
     "RTSP Port",
     "Port that should be connected to to receive RTSP Frames",
     "");
-core::Property CaptureRTSPFrame::ImageEncoding( // NOLINT
+core::Property CaptureRTSPFrame::ImageEncoding(
     "Image Encoding",
     "The encoding that should be applied the the frame images captured from the RTSP stream",
-    ".jpg"
-    );
+    ".jpg");
 
-core::Relationship CaptureRTSPFrame::Success(  // NOLINT
+core::Relationship CaptureRTSPFrame::Success(
     "success",
     "Successful capture of RTSP frame");
-core::Relationship CaptureRTSPFrame::Failure(  // NOLINT
+core::Relationship CaptureRTSPFrame::Failure(
     "failure",
     "Failures to capture RTSP frame");
 
@@ -76,7 +76,6 @@ void CaptureRTSPFrame::initialize() {
 }
 
 void CaptureRTSPFrame::onSchedule(core::ProcessContext *context, core::ProcessSessionFactory* /*sessionFactory*/) {
-
   std::string value;
 
   if (context->getProperty(RTSPUsername.getName(), value)) {
@@ -117,12 +116,10 @@ void CaptureRTSPFrame::onSchedule(core::ProcessContext *context, core::ProcessSe
   }
 
   rtsp_url_ = rtspURI;
-
 }
 
 void CaptureRTSPFrame::onTrigger(const std::shared_ptr<core::ProcessContext> &context,
                                  const std::shared_ptr<core::ProcessSession> &session) {
-
   std::unique_lock<std::mutex> lock(mutex_, std::try_to_lock);
   if (!lock.owns_lock()) {
     logger_->log_info("Cannot process due to an unfinished onTrigger");
@@ -172,7 +169,6 @@ void CaptureRTSPFrame::onTrigger(const std::shared_ptr<core::ProcessContext> &co
     logger_->log_error("Unable to read from capture handle on RTSP stream");
     session->transfer(flow_file, Failure);
   }
-
 }
 
 void CaptureRTSPFrame::notifyStop() {

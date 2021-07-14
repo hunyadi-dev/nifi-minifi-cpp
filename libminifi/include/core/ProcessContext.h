@@ -40,6 +40,8 @@
 #include "core/FlowFile.h"
 #include "core/CoreComponentState.h"
 #include "utils/file/FileUtils.h"
+#include "utils/OptionalUtils.h"
+#include "utils/PropertyErrors.h"
 #include "VariableRegistry.h"
 
 namespace org {
@@ -97,6 +99,18 @@ class ProcessContext : public controller::ControllerServiceLookup, public core::
     return processor_node_;
   }
 
+  template<typename T = std::string>
+  typename std::enable_if<std::is_default_constructible<T>::value, utils::optional<T>>::type
+  getProperty(const Property& property) {
+    T value;
+    try {
+      if (!getProperty(property.getName(), value)) return utils::nullopt;
+    } catch (const utils::internal::ValueException&) {
+      return utils::nullopt;
+    }
+    return value;
+  }
+
   template<typename T>
   bool getProperty(const std::string &name, T &value) const {
     return getPropertyImp<typename std::common_type<T>::type>(name, value);
@@ -122,7 +136,7 @@ class ProcessContext : public controller::ControllerServiceLookup, public core::
     return processor_node_->setDynamicProperty(name, value);
   }
   // Sets the property value using the Property object
-  bool setProperty(Property prop, std::string value) {
+  bool setProperty(const Property& prop, std::string value) {
     return processor_node_->setProperty(prop, value);
   }
   // Whether the relationship is supported
@@ -227,8 +241,7 @@ class ProcessContext : public controller::ControllerServiceLookup, public core::
 
   static std::shared_ptr<core::CoreComponentStateManagerProvider> getOrCreateDefaultStateManagerProvider(
       controller::ControllerServiceProvider* controller_service_provider,
-      const std::shared_ptr<minifi::Configure>& configuration,
-      const char* base_path = "") {
+      const std::shared_ptr<minifi::Configure>& configuration) {
     static std::mutex mutex;
     std::lock_guard<std::mutex> lock(mutex);
 
@@ -242,6 +255,7 @@ class ProcessContext : public controller::ControllerServiceLookup, public core::
     std::string always_persist, auto_persistence_interval;
     configuration->get(Configure::nifi_state_management_provider_local_always_persist, always_persist);
     configuration->get(Configure::nifi_state_management_provider_local_auto_persistence_interval, auto_persistence_interval);
+    utils::optional<std::string> path = configuration->get(Configure::nifi_state_management_provider_local_path);
 
     /* Function to help creating a provider */
     auto create_provider = [&](
@@ -283,8 +297,7 @@ class ProcessContext : public controller::ControllerServiceLookup, public core::
     if (preferredType.empty() || preferredType == "RocksDbPersistableKeyValueStoreService") {
       auto provider = create_provider("RocksDbPersistableKeyValueStoreService",
                                       "org.apache.nifi.minifi.controllers.RocksDbPersistableKeyValueStoreService",
-                                      {{"Directory", utils::file::FileUtils::concat_path(base_path,
-                                                                                         "corecomponentstate")}});
+                                      {{"Directory", path.value_or("corecomponentstate")}});
       if (provider != nullptr) {
         return provider;
       }
@@ -294,7 +307,7 @@ class ProcessContext : public controller::ControllerServiceLookup, public core::
     if (preferredType.empty() || preferredType == "UnorderedMapPersistableKeyValueStoreService") {
       auto provider = create_provider("UnorderedMapPersistableKeyValueStoreService",
                                  "org.apache.nifi.minifi.controllers.UnorderedMapPersistableKeyValueStoreService",
-                                 {{"File", utils::file::FileUtils::concat_path(base_path, "corecomponentstate.txt")}});
+                                 {{"File", path.value_or("corecomponentstate.txt")}});
       if (provider != nullptr) {
         return provider;
       }

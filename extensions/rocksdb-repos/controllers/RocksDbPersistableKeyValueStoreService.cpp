@@ -15,11 +15,13 @@
  * limitations under the License.
  */
 
-#include "RocksDbPersistableKeyValueStoreService.h"
+#include <fstream>
+#include <set>
 
+#include "RocksDbPersistableKeyValueStoreService.h"
+#include "../encryption/RocksDbEncryptionProvider.h"
 #include "utils/StringUtils.h"
 
-#include <fstream>
 
 namespace org {
 namespace apache {
@@ -31,7 +33,7 @@ core::Property RocksDbPersistableKeyValueStoreService::Directory(
     core::PropertyBuilder::createProperty("Directory")->withDescription("Path to a directory for the database")
         ->isRequired(true)->build());
 
-RocksDbPersistableKeyValueStoreService::RocksDbPersistableKeyValueStoreService(const std::string& name, utils::Identifier uuid /*= utils::Identifier()*/)
+RocksDbPersistableKeyValueStoreService::RocksDbPersistableKeyValueStoreService(const std::string& name, const utils::Identifier& uuid /*= utils::Identifier()*/)
     : PersistableKeyValueStoreService(name, uuid)
     , AbstractAutoPersistingKeyValueStoreService(name, uuid)
     , logger_(logging::LoggerFactory<RocksDbPersistableKeyValueStoreService>::getLogger()) {
@@ -58,18 +60,26 @@ void RocksDbPersistableKeyValueStoreService::onEnable() {
   }
 
   db_.reset();
-  rocksdb::Options options;
-  options.create_if_missing = true;
-  options.use_direct_io_for_flush_and_compaction = true;
-  options.use_direct_reads = true;
+
+  const auto encrypted_env = createEncryptingEnv(utils::crypto::EncryptionManager{configuration_->getHome()}, core::repository::DbEncryptionOptions{directory_, ENCRYPTION_KEY_NAME});
+  logger_->log_info("Using %s RocksDbPersistableKeyValueStoreService", encrypted_env ? "encrypted" : "plaintext");
+
+  auto set_db_opts = [encrypted_env] (internal::Writable<rocksdb::DBOptions>& db_opts) {
+    db_opts.set(&rocksdb::DBOptions::create_if_missing, true);
+    db_opts.set(&rocksdb::DBOptions::use_direct_io_for_flush_and_compaction, true);
+    db_opts.set(&rocksdb::DBOptions::use_direct_reads, true);
+    if (encrypted_env) {
+      db_opts.set(&rocksdb::DBOptions::env, encrypted_env.get(), core::repository::EncryptionEq{});
+    } else {
+      db_opts.set(&rocksdb::DBOptions::env, rocksdb::Env::Default());
+    }
+  };
   // Use the same buffer settings as the FlowFileRepository
-  options.write_buffer_size = 8 << 20;
-  options.max_write_buffer_number = 20;
-  options.min_write_buffer_number_to_merge = 1;
-  if (!always_persist_) {
-    options.manual_wal_flush = true;
-  }
-  db_ = utils::make_unique<minifi::internal::RocksDatabase>(options, directory_);
+  auto set_cf_opts = [] (minifi::internal::Writable<rocksdb::ColumnFamilyOptions>& cf_opts) {
+    cf_opts.set(&rocksdb::ColumnFamilyOptions::write_buffer_size, 8ULL << 20U);
+    cf_opts.set<int>(&rocksdb::ColumnFamilyOptions::min_write_buffer_number_to_merge, 1);
+  };
+  db_ = minifi::internal::RocksDatabase::create(set_db_opts, set_cf_opts, directory_);
   if (db_->open()) {
     logger_->log_trace("Successfully opened RocksDB database at %s", directory_.c_str());
   } else {

@@ -40,7 +40,7 @@ DescriptorStream::DescriptorStream(int fd)
       logger_(logging::LoggerFactory<DescriptorStream>::getLogger()) {
 }
 
-void DescriptorStream::seek(uint64_t offset) {
+void DescriptorStream::seek(size_t offset) {
   std::lock_guard<std::recursive_mutex> lock(file_lock_);
 #ifdef WIN32
   _lseeki64(fd_, gsl::narrow<int64_t>(offset), 0x00);
@@ -49,46 +49,39 @@ void DescriptorStream::seek(uint64_t offset) {
 #endif
 }
 
-int DescriptorStream::write(const uint8_t *value, int size) {
-  gsl_Expects(size >= 0);
-  if (size == 0) {
-    return 0;
-  }
-  if (!IsNullOrEmpty(value)) {
-    std::lock_guard<std::recursive_mutex> lock(file_lock_);
+size_t DescriptorStream::write(const uint8_t *value, size_t size) {
+  if (size == 0) return 0;
+  if (IsNullOrEmpty(value)) return STREAM_ERROR;
+  std::lock_guard<std::recursive_mutex> lock(file_lock_);
 #ifdef WIN32
-    if (_write(fd_, value, size) != size) {
+  if (static_cast<size_t>(_write(fd_, value, size)) != size) {
 #else
-    if (::write(fd_, value, size) != size) {
+  if (static_cast<size_t>(::write(fd_, value, size)) != size) {
 #endif
-      return -1;
-    } else {
-      return size;
-    }
+    return STREAM_ERROR;
   } else {
-    return -1;
+    return size;
   }
 }
 
-int DescriptorStream::read(uint8_t *buf, int buflen) {
-  gsl_Expects(buflen >= 0);
+size_t DescriptorStream::read(uint8_t *buf, size_t buflen) {
   if (buflen == 0) {
     return 0;
   }
   if (!IsNullOrEmpty(buf)) {
 #ifdef WIN32
-    auto size_read = _read(fd_, buf, buflen);
+    const auto size_read = _read(fd_, buf, buflen);
 #else
-    auto size_read = ::read(fd_, buf, buflen);
+    const auto size_read = ::read(fd_, buf, buflen);
 #endif
 
     if (size_read < 0) {
-      return -1;
+      return STREAM_ERROR;
     }
-    return  size_read;
+    return gsl::narrow<size_t>(size_read);
 
   } else {
-    return -1;
+    return STREAM_ERROR;
   }
 }
 

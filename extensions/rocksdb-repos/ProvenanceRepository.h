@@ -14,8 +14,13 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef LIBMINIFI_INCLUDE_PROVENANCE_PROVENANCEREPOSITORY_H_
-#define LIBMINIFI_INCLUDE_PROVENANCE_PROVENANCEREPOSITORY_H_
+#pragma once
+
+#include <vector>
+#include <string>
+#include <memory>
+#include <algorithm>
+#include <utility>
 
 #include "rocksdb/db.h"
 #include "rocksdb/options.h"
@@ -37,9 +42,8 @@ namespace provenance {
 
 class ProvenanceRepository : public core::Repository, public std::enable_shared_from_this<ProvenanceRepository> {
  public:
-  ProvenanceRepository(std::string name, utils::Identifier /*uuid*/)
-      : ProvenanceRepository(name){
-
+  ProvenanceRepository(const std::string& name, const utils::Identifier& /*uuid*/)
+      : ProvenanceRepository(name) {
   }
   // Constructor
   /*!
@@ -81,7 +85,8 @@ class ProvenanceRepository : public core::Repository, public std::enable_shared_
     logger_->log_debug("MiNiFi Provenance Max Partition Bytes %d", max_partition_bytes_);
     if (config->get(Configure::nifi_provenance_repository_max_storage_time, value)) {
       core::TimeUnit unit;
-      if (core::Property::StringToTime(value, max_partition_millis_, unit) && core::Property::ConvertTimeUnitToMS(max_partition_millis_, unit, max_partition_millis_)) {
+      if (core::Property::StringToTime(value, max_partition_millis_, unit)) {
+        core::Property::ConvertTimeUnitToMS(max_partition_millis_, unit, max_partition_millis_);
       }
     }
     logger_->log_debug("MiNiFi Provenance Max Storage Time: [%d] ms", max_partition_millis_);
@@ -98,7 +103,7 @@ class ProvenanceRepository : public core::Repository, public std::enable_shared_
 
     options.compaction_style = rocksdb::CompactionStyle::kCompactionStyleFIFO;
     options.compaction_options_fifo = rocksdb::CompactionOptionsFIFO(max_partition_bytes_, false);
-    if(max_partition_millis_ > 0) {
+    if (max_partition_millis_ > 0) {
       options.ttl = max_partition_millis_ / 1000;
     }
 
@@ -127,7 +132,7 @@ class ProvenanceRepository : public core::Repository, public std::enable_shared_
 
   virtual bool MultiPut(const std::vector<std::pair<std::string, std::unique_ptr<minifi::io::BufferStream>>>& data) {
     rocksdb::WriteBatch batch;
-    for (const auto &item: data) {
+    for (const auto &item : data) {
       rocksdb::Slice value((const char *) item.second->getBuffer(), item.second->size());
       if (!batch.Put(item.first, value).ok()) {
         return false;
@@ -157,7 +162,7 @@ class ProvenanceRepository : public core::Repository, public std::enable_shared_
       std::string key = it->key().ToString();
       if (store.size() >= max_size)
         break;
-      if (eventRead->DeSerialize((uint8_t *) it->value().data(), (int) it->value().size())) {
+      if (eventRead->DeSerialize(reinterpret_cast<const uint8_t *>(it->value().data()), it->value().size())) {
         store.push_back(std::dynamic_pointer_cast<core::CoreComponent>(eventRead));
       }
     }
@@ -169,12 +174,11 @@ class ProvenanceRepository : public core::Repository, public std::enable_shared_
     size_t requested_batch = max_size;
     max_size = 0;
     for (it->SeekToFirst(); it->Valid(); it->Next()) {
-
       if (max_size >= requested_batch)
         break;
       std::shared_ptr<core::SerializableComponent> eventRead = lambda();
       std::string key = it->key().ToString();
-      if (eventRead->DeSerialize((uint8_t *) it->value().data(), (int) it->value().size())) {
+      if (eventRead->DeSerialize(reinterpret_cast<const uint8_t *>(it->value().data()), it->value().size())) {
         max_size++;
         records.push_back(eventRead);
       }
@@ -190,7 +194,7 @@ class ProvenanceRepository : public core::Repository, public std::enable_shared_
       std::string key = it->key().ToString();
       if (records.size() >= (uint64_t)maxSize)
         break;
-      if (eventRead->DeSerialize((uint8_t *) it->value().data(), (int) it->value().size())) {
+      if (eventRead->DeSerialize(reinterpret_cast<const uint8_t *>(it->value().data()), it->value().size())) {
         records.push_back(eventRead);
       }
     }
@@ -203,7 +207,7 @@ class ProvenanceRepository : public core::Repository, public std::enable_shared_
       std::shared_ptr<ProvenanceEventRecord> eventRead = std::make_shared<ProvenanceEventRecord>();
       std::string key = it->key().ToString();
 
-      if (store.at(max_size)->DeSerialize((uint8_t *) it->value().data(), (int) it->value().size())) {
+      if (store.at(max_size)->DeSerialize(reinterpret_cast<const uint8_t *>(it->value().data()), it->value().size())) {
         max_size++;
       }
       if (store.size() >= max_size)
@@ -241,5 +245,3 @@ class ProvenanceRepository : public core::Repository, public std::enable_shared_
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-#endif /* LIBMINIFI_INCLUDE_PROVENANCE_PROVENANCEREPOSITORY_H_ */
-

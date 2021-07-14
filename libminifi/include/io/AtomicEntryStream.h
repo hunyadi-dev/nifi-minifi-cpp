@@ -64,7 +64,7 @@ class AtomicEntryStream : public BaseStream {
    * Skip to the specified offset.
    * @param offset offset to which we will skip
    */
-  void seek(uint64_t offset) override;
+  void seek(size_t offset) override;
 
   size_t size() const override {
     return length_;
@@ -75,14 +75,14 @@ class AtomicEntryStream : public BaseStream {
    * @param buf buffer in which we extract data
    * @param buflen
    */
-  int read(uint8_t *buf, int buflen) override;
+  size_t read(uint8_t *buf, size_t buflen) override;
 
   /**
    * writes value to stream
    * @param value value to write
    * @param size size of value
    */
-  int write(const uint8_t *value, int size) override;
+  size_t write(const uint8_t *value, size_t size) override;
 
  private:
   size_t length_;
@@ -103,40 +103,35 @@ AtomicEntryStream<T>::~AtomicEntryStream() {
 }
 
 template<typename T>
-void AtomicEntryStream<T>::seek(uint64_t offset) {
+void AtomicEntryStream<T>::seek(size_t offset) {
   std::lock_guard<std::recursive_mutex> lock(entry_lock_);
   offset_ = gsl::narrow<size_t>(offset);
 }
 
 // data stream overrides
 template<typename T>
-int AtomicEntryStream<T>::write(const uint8_t *value, int size) {
-  gsl_Expects(size >= 0);
-  if (size == 0) {
-    return 0;
-  }
-  if (nullptr != value && !invalid_stream_) {
-    std::lock_guard<std::recursive_mutex> lock(entry_lock_);
-    if (entry_->insert(key_, const_cast<uint8_t*>(value), size)) {
-      offset_ += size;
-      if (offset_ > length_) {
-        length_ = offset_;
-      }
-      return size;
+size_t AtomicEntryStream<T>::write(const uint8_t *value, size_t size) {
+  if (size == 0) return 0;
+  if (!value || invalid_stream_) return STREAM_ERROR;
+  std::lock_guard<std::recursive_mutex> lock(entry_lock_);
+  if (entry_->insert(key_, const_cast<uint8_t*>(value), size)) {
+    offset_ += size;
+    if (offset_ > length_) {
+      length_ = offset_;
     }
+    return size;
   }
-  return -1;
+  return STREAM_ERROR;
 }
 
 template<typename T>
-int AtomicEntryStream<T>::read(uint8_t *buf, int buflen) {
-  gsl_Expects(buflen >= 0);
+size_t AtomicEntryStream<T>::read(uint8_t *buf, size_t buflen) {
   if (buflen == 0) {
     return 0;
   }
   if (nullptr != buf && !invalid_stream_) {
     std::lock_guard<std::recursive_mutex> lock(entry_lock_);
-    int len = buflen;
+    auto len = buflen;
     core::repository::RepoValue<T> *value;
     if (entry_->getValue(key_, &value)) {
       if (offset_ + len > value->getBufferSize()) {
@@ -152,7 +147,7 @@ int AtomicEntryStream<T>::read(uint8_t *buf, int buflen) {
       return len;
     }
   }
-  return -1;
+  return STREAM_ERROR;
 }
 
 }  // namespace io

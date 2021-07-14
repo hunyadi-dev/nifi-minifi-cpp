@@ -98,7 +98,8 @@ class DataHandlerCallback : public OutputStreamCallback {
   ~DataHandlerCallback() override = default;
 
   int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
-    return stream->write(message_, gsl::narrow<int>(size_));
+    const auto write_ret = stream->write(message_, size_);
+    return io::isError(write_ret) ? -1 : gsl::narrow<int64_t>(write_ret);
   }
 
  private:
@@ -125,7 +126,7 @@ class GetTCPMetrics : public state::response::ResponseNode {
       : state::response::ResponseNode("GetTCPMetrics") {
   }
 
-  GetTCPMetrics(const std::string& name, utils::Identifier &uuid)
+  GetTCPMetrics(const std::string& name, const utils::Identifier& uuid)
       : state::response::ResponseNode(name, uuid) {
   }
   ~GetTCPMetrics() override = default;
@@ -172,7 +173,7 @@ class GetTCP : public core::Processor, public state::response::MetricsNodeSource
   /*!
    * Create a new processor
    */
-  explicit GetTCP(const std::string& name, utils::Identifier uuid = utils::Identifier())
+  explicit GetTCP(const std::string& name, const utils::Identifier& uuid = {})
       : Processor(name, uuid),
         running_(false),
         stay_connected_(true),

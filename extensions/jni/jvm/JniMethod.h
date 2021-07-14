@@ -15,15 +15,18 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef EXTENSIONS_JNI_JVM_JNIMETHOD_H_
-#define EXTENSIONS_JNI_JVM_JNIMETHOD_H_
+#pragma once
 
+#include <jni.h>
+
+#include <memory>
 #include <string>
+#include <utility>
 #include <vector>
 #include <sstream>
 #include <iterator>
 #include <algorithm>
-#include <jni.h>
+
 
 namespace org {
 namespace apache {
@@ -36,7 +39,6 @@ namespace jni {
  * to contain the method signatures in internal objects.
  */
 class JavaMethodSignature {
-
  public:
   JavaMethodSignature(const JavaMethodSignature &other) = delete;
   JavaMethodSignature(JavaMethodSignature &&other) = default;
@@ -73,7 +75,6 @@ class JavaMethodSignature {
   JavaMethodSignature &operator=(JavaMethodSignature &&other) = default;
 
  private:
-
   std::string name_;
   std::string params_;
   void *ptr_;
@@ -101,7 +102,7 @@ class JavaSignatures {
     if (method_ptr_ == nullptr || size_ != methods_.size()) {
       method_ptr_ = std::unique_ptr<JNINativeMethod[]>(new JNINativeMethod[methods_.size()]);
       size_ = methods_.size();
-      for(std::size_t i=0; i < methods_.size(); i++) {
+      for (std::size_t i = 0; i < methods_.size(); i++) {
         method_ptr_[i].fnPtr = const_cast<void*>(methods_[i].getPointer());
         method_ptr_[i].name = const_cast<char*>(methods_[i].getName());
         method_ptr_[i].signature = const_cast<char*>(methods_[i].getParameters());
@@ -113,6 +114,7 @@ class JavaSignatures {
   size_t getSize() const {
     return size_;
   }
+
  private:
   mutable std::mutex mutex_;
   mutable std::unique_ptr<JNINativeMethod[]> method_ptr_;
@@ -125,5 +127,3 @@ class JavaSignatures {
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif /* EXTENSIONS_JNI_JVM_JNIMETHOD_H_ */

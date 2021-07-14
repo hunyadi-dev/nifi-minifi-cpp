@@ -84,9 +84,9 @@ class InputCRCStream : public virtual CRCStreamBase<StreamType>, public InputStr
  public:
   using InputStream::read;
 
-  int read(uint8_t *buf, int buflen) override {
-    int ret = child_stream_->read(buf, buflen);
-    if (ret > 0) {
+  size_t read(uint8_t *buf, size_t buflen) override {
+    const auto ret = child_stream_->read(buf, buflen);
+    if (ret > 0 && !io::isError(ret)) {
       crc_ = crc32(crc_, buf, ret);
     }
     return ret;
@@ -104,9 +104,9 @@ class OutputCRCStream : public virtual CRCStreamBase<StreamType>, public OutputS
  public:
   using OutputStream::write;
 
-  int write(const uint8_t *value, int size) override {
-    int ret = child_stream_->write(value, size);
-    if (ret > 0) {
+  size_t write(const uint8_t *value, size_t size) override {
+    const auto ret = child_stream_->write(value, size);
+    if (ret > 0 && !io::isError(ret)) {
       crc_ = crc32(crc_, value, ret);
     }
     return ret;

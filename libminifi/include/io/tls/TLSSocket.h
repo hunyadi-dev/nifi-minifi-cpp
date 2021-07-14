@@ -136,14 +136,14 @@ class TLSSocket : public Socket {
   using Socket::read;
   using Socket::write;
 
-  int read(uint8_t *buf, int buflen, bool retrieve_all_bytes) override;
+  size_t read(uint8_t *buf, size_t buflen, bool retrieve_all_bytes) override;
 
   /**
    * Reads data and places it into buf
    * @param buf buffer in which we extract data
    * @param buflen
    */
-  int read(uint8_t *buf, int buflen) override;
+  size_t read(uint8_t *buf, size_t buflen) override;
 
   /**
    * Write value to the stream using uint8_t ptr
@@ -151,12 +151,12 @@ class TLSSocket : public Socket {
    * @param buflen buffer to write
    *
    */
-  int write(const uint8_t *value, int size) override;
+  size_t write(const uint8_t *value, size_t size) override;
 
   void close() override;
 
  protected:
-  int writeData(const uint8_t *value, unsigned int size, int fd);
+  size_t writeData(const uint8_t *value, size_t size, int fd);
 
   SSL *get_ssl(int fd) {
     if (UNLIKELY(listeners_ > 0)) {

@@ -17,20 +17,21 @@
  * See the License for the specific language governing permissions and
  * limitations under the License.
  */
-#ifndef __CONVERT_ACKNOWLEDGEMENT_H__
-#define __CONVERT_ACKNOWLEDGEMENT_H__
+#pragma once
 
-#include "MQTTControllerService.h"
+#include <vector>
+#include <string>
+#include <memory>
+
 #include "FlowFileRecord.h"
-#include "core/Processor.h"
 #include "core/ProcessSession.h"
 #include "core/Core.h"
 #include "core/Resource.h"
-#include "core/Property.h"
 #include "core/logging/LoggerConfiguration.h"
-#include "MQTTClient.h"
-#include "c2/protocols/RESTProtocol.h"
 #include "ConvertBase.h"
+#include "utils/gsl.h"
+
+
 namespace org {
 namespace apache {
 namespace nifi {
@@ -47,12 +48,12 @@ class ConvertJSONAck : public ConvertBase {
   /*!
    * Create a new processor
    */
-  explicit ConvertJSONAck(std::string name, utils::Identifier uuid = utils::Identifier())
+  explicit ConvertJSONAck(const std::string& name, const utils::Identifier& uuid = {})
       : ConvertBase(name, uuid),
         logger_(logging::LoggerFactory<ConvertJSONAck>::getLogger()) {
   }
   // Destructor
-  virtual ~ConvertJSONAck() = default;
+  ~ConvertJSONAck() override = default;
   // Processor Name
   static constexpr char const* ProcessorName = "ConvertJSONAck";
 
@@ -68,18 +69,16 @@ class ConvertJSONAck : public ConvertBase {
   void onTrigger(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSession> &session) override;
 
  protected:
-
   class ReadCallback : public InputStreamCallback {
    public:
     ReadCallback() = default;
-    ~ReadCallback() = default;
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) {
-      int64_t ret = 0;
+    ~ReadCallback() override = default;
+    int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
       if (nullptr == stream)
         return 0;
       buffer_.resize(stream->size());
-      ret = stream->read(reinterpret_cast<uint8_t*>(buffer_.data()), stream->size());
-      return ret;
+      const auto ret = stream->read(reinterpret_cast<uint8_t*>(buffer_.data()), stream->size());
+      return !io::isError(ret) ? gsl::narrow<int64_t>(ret) : -1;
     }
     std::vector<char> buffer_;
   };
@@ -89,6 +88,7 @@ class ConvertJSONAck : public ConvertBase {
    * @param json json representation defined by the restful protocol
    */
   std::string parseTopicName(const std::string &json);
+
  private:
   std::shared_ptr<logging::Logger> logger_;
 };
@@ -98,5 +98,3 @@ class ConvertJSONAck : public ConvertBase {
 } /* namespace nifi */
 } /* namespace apache */
 } /* namespace org */
-
-#endif

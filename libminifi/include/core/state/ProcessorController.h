@@ -1,22 +1,7 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef LIBMINIFI_INCLUDE_CORE_STATE_PROCESSORCONTROLLER_H_
-#define LIBMINIFI_INCLUDE_CORE_STATE_PROCESSORCONTROLLER_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
 
 #include <string>
 #include <memory>
@@ -24,11 +9,7 @@
 #include "SchedulingAgent.h"
 #include "UpdateController.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace state {
+namespace org::apache::nifi::minifi::state {
 
 /**
  * Purpose, Justification, & Design: ProcessController is the state control mechanism for processors.
@@ -38,20 +19,20 @@ namespace state {
  */
 class ProcessorController : public StateController {
  public:
-  ProcessorController(const std::shared_ptr<core::Processor> &processor, const std::shared_ptr<SchedulingAgent> &scheduler);
+  ProcessorController(core::Processor& processor, SchedulingAgent& scheduler);
 
-  virtual ~ProcessorController();
+  ~ProcessorController() override;
 
-  std::string getComponentName() const override {
+  [[nodiscard]] std::string getComponentName() const override {
     return processor_->getName();
   }
 
-  utils::Identifier getComponentUUID() const override {
+  [[nodiscard]] utils::Identifier getComponentUUID() const override {
     return processor_->getUUID();
   }
 
-  std::shared_ptr<core::Processor> getProcessor() {
-    return processor_;
+  core::Processor& getProcessor() {
+    return *processor_;
   }
   /**
    * Start the client
@@ -62,22 +43,15 @@ class ProcessorController : public StateController {
    */
   int16_t stop() override;
 
-  bool isRunning() override;
+  bool isRunning() const override;
 
   int16_t pause() override;
 
   int16_t resume() override;
 
  protected:
-  std::shared_ptr<core::Processor> processor_;
-  std::shared_ptr<SchedulingAgent> scheduler_;
+  gsl::not_null<core::Processor*> processor_;
+  gsl::not_null<SchedulingAgent*> scheduler_;
 };
 
-}  // namespace state
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // LIBMINIFI_INCLUDE_CORE_STATE_PROCESSORCONTROLLER_H_
-
+}  // namespace org::apache::nifi::minifi::state

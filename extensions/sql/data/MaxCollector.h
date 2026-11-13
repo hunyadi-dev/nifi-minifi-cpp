@@ -1,20 +1,6 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #pragma once
 
@@ -25,12 +11,9 @@
 #include <sstream>
 
 #include "SQLRowSubscriber.h"
+#include "SQLColumnIdentifier.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace sql {
+namespace org::apache::nifi::minifi::sql {
 
 class MaxCollector: public SQLRowSubscriber {
   void beginProcessBatch() override {}
@@ -45,7 +28,7 @@ class MaxCollector: public SQLRowSubscriber {
     for (const auto& expected : state_) {
       if (std::find(names.begin(), names.end(), expected.first) == names.end()) {
         throw minifi::Exception(PROCESSOR_EXCEPTION,
-          "Column '" + expected.first + "' is not found in the columns of '" + query_ + "' result.");
+          "Column '" + expected.first.str() + "' is not found in the columns of '" + query_ + "' result.");
       }
     }
   }
@@ -62,11 +45,11 @@ class MaxCollector: public SQLRowSubscriber {
     updateMaxValue(name, value);
   }
 
-  void processColumn(const std::string& name, long long value) override {
+  void processColumn(const std::string& name, long long value) override {  // NOLINT(runtime/int)
     updateMaxValue(name, value);
   }
 
-  void processColumn(const std::string& name, unsigned long long value) override {
+  void processColumn(const std::string& name, unsigned long long value) override {  // NOLINT(runtime/int)
     updateMaxValue(name, value);
   }
 
@@ -75,7 +58,7 @@ class MaxCollector: public SQLRowSubscriber {
   template <typename T>
   class MaxValue {
    public:
-    void updateMaxValue(const std::string& column, const T& value) {
+    void updateMaxValue(const SQLColumnIdentifier& column, const T& value) {
       const auto it = column_maxima.find(column);
       if (it == column_maxima.end()) {
         column_maxima.emplace(column, value);
@@ -87,7 +70,7 @@ class MaxCollector: public SQLRowSubscriber {
     }
 
    protected:
-    void updateStateImpl(std::unordered_map<std::string, std::string>& state) const {
+    void updateStateImpl(std::unordered_map<SQLColumnIdentifier, std::string>& state) const {
       for (auto& curr_column_max : state) {
         const auto it = column_maxima.find(curr_column_max.first);
         if (it != column_maxima.end()) {
@@ -99,25 +82,26 @@ class MaxCollector: public SQLRowSubscriber {
     }
 
    private:
-    std::unordered_map<std::string, T> column_maxima;
+    std::unordered_map<SQLColumnIdentifier, T> column_maxima;
   };
 
   template <typename ...Ts>
   struct MaxValues : public MaxValue<Ts>... {
-    void updateState(std::unordered_map<std::string, std::string>& state) const {
+    void updateState(std::unordered_map<SQLColumnIdentifier, std::string>& state) const {
       (void)(std::initializer_list<int>{(MaxValue<Ts>::updateStateImpl(state), 0)...});
     }
   };
 
  public:
-  MaxCollector(std::string query, std::unordered_map<std::string, std::string>& state)
+  MaxCollector(std::string query, std::unordered_map<SQLColumnIdentifier, std::string>& state)
     :query_(std::move(query)), state_(state) {
   }
 
   template <typename T>
   void updateMaxValue(const std::string& column_name, const T& value) {
-    if (state_.count(column_name)) {
-      max_values_.MaxValue<T>::updateMaxValue(column_name, value);
+    SQLColumnIdentifier column_id(column_name);
+    if (state_.count(column_id)) {
+      max_values_.MaxValue<T>::updateMaxValue(column_id, value);
     }
   }
 
@@ -127,12 +111,8 @@ class MaxCollector: public SQLRowSubscriber {
 
  private:
   const std::string query_;
-  std::unordered_map<std::string, std::string>& state_;
-  MaxValues<std::string, double, int, long long, unsigned long long> max_values_;
+  std::unordered_map<SQLColumnIdentifier, std::string>& state_;
+  MaxValues<std::string, double, int, long long, unsigned long long> max_values_;  // NOLINT(runtime/int)
 };
-  
-}  // namespace sql
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+
+}  // namespace org::apache::nifi::minifi::sql

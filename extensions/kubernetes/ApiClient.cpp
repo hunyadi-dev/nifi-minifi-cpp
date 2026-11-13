@@ -1,0 +1,40 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#include "ApiClient.h"
+
+extern "C" {
+#include "kubernetes/config/incluster_config.h"
+#include "kubernetes/config/kube_config.h"
+#include "kubernetes/include/apiClient.h"
+}
+
+#include "utils/StringUtils.h"
+
+namespace {
+
+gsl::not_null<apiClient_t*> createApiClient(char **base_path, sslConfig_t** ssl_config, list_t** api_keys) {
+  int rc = load_incluster_config(base_path, ssl_config, api_keys);
+  if (rc != 0) {
+    throw std::runtime_error(org::apache::nifi::minifi::utils::string::join_pack("load_incluster_config() failed with error code ", std::to_string(rc)));
+  }
+  const auto api_client = apiClient_create_with_base_path(*base_path, *ssl_config, *api_keys);
+  if (!api_client) {
+    throw std::runtime_error("apiClient_create_with_base_path() failed");
+  }
+  return gsl::make_not_null(api_client);
+}
+
+}  // namespace
+
+namespace org::apache::nifi::minifi::kubernetes {
+
+ApiClient::ApiClient() : api_client_(createApiClient(&base_path_, &ssl_config_, &api_keys_)) {}
+
+ApiClient::~ApiClient() noexcept {
+  apiClient_free(api_client_);
+  free_client_config(base_path_, ssl_config_, api_keys_);
+  apiClient_unsetupGlobalEnv();
+}
+
+}  // namespace org::apache::nifi::minifi::kubernetes

@@ -1,26 +1,11 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifdef OPENSSL_SUPPORT
-
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #include <openssl/x509v3.h>
 
-#include "utils/gsl.h"
+#include "minifi-cpp/utils/gsl.h"
 #include "utils/tls/ExtendedKeyUsage.h"
-#include "TestUtils.h"
+#include "unit/Catch.h"
 
 namespace utils = org::apache::nifi::minifi::utils;
 
@@ -44,12 +29,12 @@ std::vector<unsigned char> createDerEncodedExtendedKeyUsage(const std::vector<ui
   der_encoded_key_usage[1] = gsl::narrow<unsigned char>(oids_size);
 
   for (size_t i = 0; i < last_bytes_of_oids.size(); ++i) {
-    der_encoded_key_usage[2 + OID_ENCODED_LENGTH * i] = OID_TAG;
-    der_encoded_key_usage[3 + OID_ENCODED_LENGTH * i] = OID_LENGTH;
+    der_encoded_key_usage[2 + (OID_ENCODED_LENGTH * i)] = OID_TAG;
+    der_encoded_key_usage[3 + (OID_ENCODED_LENGTH * i)] = OID_LENGTH;
     for (size_t j = 0; j < OID_PREFIX.size(); ++j) {
-      der_encoded_key_usage[4 + j + OID_ENCODED_LENGTH * i] = OID_PREFIX[j];
+      der_encoded_key_usage[4 + j + (OID_ENCODED_LENGTH * i)] = OID_PREFIX[j];
     }
-    der_encoded_key_usage[4 + OID_PREFIX.size() + OID_ENCODED_LENGTH * i] = last_bytes_of_oids[i];
+    der_encoded_key_usage[4 + OID_PREFIX.size() + (OID_ENCODED_LENGTH * i)] = last_bytes_of_oids[i];
   }
   return der_encoded_key_usage;
 }
@@ -63,11 +48,11 @@ utils::tls::EXTENDED_KEY_USAGE_unique_ptr createExtendedKeyUsage(const std::vect
 }
 
 void testIsSubsetOf(
-    const utils::tls::ExtendedKeyUsage key_usage_empty,
-    const utils::tls::ExtendedKeyUsage key_usage_clientauth,
-    const utils::tls::ExtendedKeyUsage key_usage_clientauth_serverauth,
-    const utils::tls::ExtendedKeyUsage key_usage_clientauth_serverauth_codesigning,
-    const utils::tls::ExtendedKeyUsage key_usage_clientauth_serverauth_timestamping) {
+    const utils::tls::ExtendedKeyUsage& key_usage_empty,
+    const utils::tls::ExtendedKeyUsage& key_usage_clientauth,
+    const utils::tls::ExtendedKeyUsage& key_usage_clientauth_serverauth,
+    const utils::tls::ExtendedKeyUsage& key_usage_clientauth_serverauth_codesigning,
+    const utils::tls::ExtendedKeyUsage& key_usage_clientauth_serverauth_timestamping) {
   REQUIRE(key_usage_empty.isSubsetOf(key_usage_empty));
   REQUIRE(key_usage_empty.isSubsetOf(key_usage_clientauth));
   REQUIRE(key_usage_empty.isSubsetOf(key_usage_clientauth_serverauth));
@@ -191,5 +176,3 @@ TEST_CASE("ExtendedKeyUsage ignores ASN.1 flags higher than 15", "[constructor]"
   REQUIRE(createExtendedKeyUsage({128}) == nullptr);
   REQUIRE(createExtendedKeyUsage({1, 2, 200}) == nullptr);
 }
-
-#endif  // OPENSSL_SUPPORT

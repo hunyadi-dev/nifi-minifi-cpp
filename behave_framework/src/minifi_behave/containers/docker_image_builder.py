@@ -1,0 +1,88 @@
+#
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#
+
+import logging
+import os
+import tempfile
+
+from docker.models.images import Image
+
+import docker
+
+logger = logging.getLogger(__name__)
+
+
+class DockerImageBuilder:
+    def __init__(
+        self,
+        image_tag: str,
+        dockerfile_content: str | None = None,
+        files_on_context: dict[str, bytes] | None = None,
+        build_context_path: str | None = None,
+    ):
+        if not dockerfile_content and not build_context_path:
+            raise ValueError("Either 'dockerfile_content' or 'build_context_path' must be provided.")
+        if dockerfile_content and build_context_path:
+            raise ValueError("Provide either 'dockerfile_content' or 'build_context_path', not both.")
+
+        self.image_tag: str = image_tag
+        self.dockerfile_content: str | None = dockerfile_content
+        self.files_on_context: dict[str, str] | None = files_on_context
+        self.build_context_path: str | None = build_context_path
+        self.client = docker.from_env()
+        self.image: Image | None = None
+        self._temp_dir: tempfile.TemporaryDirectory | None = None
+
+    def build(self) -> Image:
+        context_path = self.build_context_path
+        if self.dockerfile_content:
+            self._temp_dir = tempfile.TemporaryDirectory()
+            context_path = self._temp_dir.name
+            dockerfile_path = os.path.join(context_path, "Dockerfile")
+            with open(dockerfile_path, "w") as f:
+                f.write(self.dockerfile_content)
+
+            if self.files_on_context:
+                for filename, content in self.files_on_context.items():
+                    file_path = os.path.join(context_path, filename)
+                    with open(file_path, "wb") as f:
+                        f.write(content)
+
+        logger.info(f"Building Docker image '{self.image_tag}' from context '{context_path}'...")
+        try:
+            self.image, build_logs = self.client.images.build(
+                path=context_path, tag=self.image_tag, rm=True, forcerm=True
+            )
+            for log_line in build_logs:
+                logger.debug(log_line.get("stream", "").strip())
+            logger.info(f"Successfully built image '{self.image_tag}' (ID: {self.image.short_id})")
+            return self.image
+        except docker.errors.BuildError as e:
+            logger.error(f"Failed to build image '{self.image_tag}'. Build logs:")
+            for log_line in e.build_log:
+                logger.error(log_line.get("stream", "").strip())
+            raise
+        finally:
+            if self._temp_dir:
+                self._temp_dir.cleanup()
+
+    def remove_image(self):
+        if not self.image:
+            logger.warning(f"No image object to remove for tag '{self.image_tag}'. Trying to find by tag.")
+            try:
+                self.image = self.client.images.get(self.image_tag)
+            except docker.errors.ImageNotFound:
+                logger.info(f"Image '{self.image_tag}' not found, cleanup not needed.")
+                return
+
+        logger.info(f"Removing dynamically built image '{self.image_tag}'...")
+        try:
+            self.client.images.remove(image=self.image.id, force=True)
+            logger.info("Image removed successfully.")
+        except docker.errors.ImageNotFound:
+            logger.info("Image was already removed.")
+        except docker.errors.APIError as e:
+            logger.error(f"Error removing image: {e}")

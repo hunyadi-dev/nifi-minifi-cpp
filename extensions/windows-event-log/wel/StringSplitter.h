@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#pragma once
+
+#include <cctype>
+#include <concepts>
+#include <functional>
+#include <ranges>
+#include <string_view>
+#include <vector>
+
+namespace org::apache::nifi::minifi::wel {
+
+template<std::invocable<std::string_view, std::string_view> Func>
+void splitCommaSeparatedKeyValuePairs(std::string_view input, Func output_callback) {
+  static constexpr auto count_whitespace = [](auto begin, auto end) {
+    size_t counter = 0;
+    for (auto it = begin; it != end && std::isspace(static_cast<unsigned char>(*it)); ++it) { ++counter; }
+    return counter;
+  };
+  for (const auto key_value_str : input | std::views::split(',')) {
+    const auto key_value_vec = key_value_str
+        | std::views::split('=')
+        | std::views::transform([](std::span<const char> term) {
+          size_t num_trim_left = count_whitespace(term.begin(), term.end());
+          if (num_trim_left < term.size()) {
+            size_t num_trim_right = count_whitespace(term.rbegin(), term.rend());
+            return std::string_view{term.data() + num_trim_left, term.size() - (num_trim_left + num_trim_right)};
+          } else {
+            return std::string_view{};
+          }
+        })
+        | std::ranges::to<std::vector>();
+    if (key_value_vec.size() == 2) {
+      std::invoke(output_callback, key_value_vec[0], key_value_vec[1]);
+    } else if (key_value_vec.size() == 1) {
+      std::invoke(output_callback, key_value_vec[0], "");
+    }
+  }
+}
+
+}  // namespace org::apache::nifi::minifi::wel

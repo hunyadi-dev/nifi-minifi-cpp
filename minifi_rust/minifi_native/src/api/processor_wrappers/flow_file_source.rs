@@ -1,0 +1,152 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+use crate::api::processor_wrappers::utils::flow_file_content::Content;
+use crate::api::raw_processor::{MultiThreadedTrigger, SingleThreadedTrigger};
+use crate::{FlowFileAttribute, impl_with_attributes};
+use crate::{
+    GetControllerService, GetProperty, Logger, MinifiError, MultiThreaded, OnTriggerResult,
+    ProcessContext, ProcessError, ProcessSession, Processor, Relationship, Schedule,
+    SingleThreaded,
+};
+
+pub struct GeneratedFlowFile<'a> {
+    target_relationship_name: &'static str,
+    new_content: Option<Content<'a>>,
+    attributes_to_add: Vec<FlowFileAttribute>,
+}
+
+impl<'a> GeneratedFlowFile<'a> {
+    pub fn new(target_relationship: &'a Relationship, new_content: Option<Content<'a>>) -> Self {
+        Self {
+            target_relationship_name: target_relationship.name,
+            new_content,
+            attributes_to_add: Vec::new(),
+        }
+    }
+
+    pub fn target_relationship_name(&self) -> &str {
+        self.target_relationship_name
+    }
+}
+
+impl_with_attributes!(GeneratedFlowFile<'a>);
+
+pub trait FlowFileSource {
+    fn generate<'a, Context: GetProperty + GetControllerService, LoggerImpl: Logger>(
+        &self,
+        context: &'a mut Context,
+        logger: &LoggerImpl,
+    ) -> Result<Vec<GeneratedFlowFile<'a>>, ProcessError>;
+}
+
+pub trait MutFlowFileSource {
+    fn generate<'a, Context: GetProperty + GetControllerService, LoggerImpl: Logger>(
+        &mut self,
+        context: &'a mut Context,
+        logger: &LoggerImpl,
+    ) -> Result<Vec<GeneratedFlowFile<'a>>, ProcessError>;
+}
+
+fn handle_generated_flow_files<PC, PS>(
+    session: &mut PS,
+    generated_flow_files: Vec<GeneratedFlowFile>,
+) -> Result<OnTriggerResult, ProcessError>
+where
+    PC: ProcessContext,
+    PS: ProcessSession<FlowFile = PC::FlowFile>,
+{
+    if generated_flow_files.is_empty() {
+        return Ok(OnTriggerResult::Yield);
+    }
+
+    for new_flow_file_data in generated_flow_files {
+        let mut ff = session.create()?;
+        match new_flow_file_data.new_content {
+            None => {}
+            Some(Content::Buffer(buffer)) => session.write(&ff, &buffer)?,
+            Some(Content::Stream(stream)) => session.write_from_stream(&ff, stream)?,
+        }
+        for (k, v) in &new_flow_file_data.attributes_to_add {
+            session.set_attribute(&mut ff, k, v)?;
+        }
+        session.transfer(ff, new_flow_file_data.target_relationship_name.as_ref())?;
+    }
+    Ok(OnTriggerResult::Ok)
+}
+
+pub struct FlowFileSourceProcessorType {}
+
+impl<Implementation, L> MultiThreadedTrigger
+    for Processor<Implementation, FlowFileSourceProcessorType, MultiThreaded, L>
+where
+    Implementation: Schedule + FlowFileSource,
+    L: Logger,
+{
+    fn trigger<PC, PS>(
+        &self,
+        context: &mut PC,
+        session: &mut PS,
+    ) -> Result<OnTriggerResult, ProcessError>
+    where
+        PC: ProcessContext,
+        PS: ProcessSession<FlowFile = PC::FlowFile>,
+    {
+        if let Some(ref scheduled_impl) = self.scheduled_impl {
+            let files = scheduled_impl.generate(context, &self.logger)?;
+            handle_generated_flow_files::<PC, PS>(session, files)
+        } else {
+            Err(MinifiError::UnscheduledProcessor.into())
+        }
+    }
+}
+
+impl<Implementation, L> SingleThreadedTrigger
+    for Processor<Implementation, FlowFileSourceProcessorType, SingleThreaded, L>
+where
+    Implementation: Schedule + MutFlowFileSource,
+    L: Logger,
+{
+    fn trigger<PC, PS>(
+        &mut self,
+        context: &mut PC,
+        session: &mut PS,
+    ) -> Result<OnTriggerResult, ProcessError>
+    where
+        PC: ProcessContext,
+        PS: ProcessSession<FlowFile = PC::FlowFile>,
+    {
+        if let Some(ref mut scheduled_impl) = self.scheduled_impl {
+            let files = scheduled_impl.generate(context, &self.logger)?;
+            handle_generated_flow_files::<PC, PS>(session, files)
+        } else {
+            Err(MinifiError::UnscheduledProcessor.into())
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::Relationship;
+    use minifi_native::GeneratedFlowFile;
+
+    const TEST_RELATIONSHIP: Relationship = Relationship {
+        name: "test",
+        description: "test desc",
+    };
+    #[test]
+    fn test_with_attributes() {
+        let mut gen_ff = GeneratedFlowFile::new(&TEST_RELATIONSHIP, None);
+        assert!(gen_ff.attributes_to_add.is_empty());
+
+        gen_ff = gen_ff.with_attribute("foo", "bar");
+        assert_eq!(1, gen_ff.attributes_to_add.len());
+
+        gen_ff = gen_ff.with_attributes([("A", "apple"), ("B", "banana")]);
+        assert_eq!(3, gen_ff.attributes_to_add.len());
+        let (key_1, value_1) = gen_ff.attributes_to_add.get(1).unwrap();
+        assert_eq!(key_1, "A");
+        assert_eq!(value_1, "apple");
+    }
+}

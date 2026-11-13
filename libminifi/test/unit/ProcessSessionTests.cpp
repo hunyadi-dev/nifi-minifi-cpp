@@ -1,56 +1,46 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
+#include <array>
 #include <memory>
 #include <string>
 
 #include "core/ProcessSession.h"
-#include "core/Resource.h"
-#include "../TestBase.h"
-#include "ContentRepositoryDependentTests.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
+#include "unit/ContentRepositoryDependentTests.h"
+#include "core/Processor.h"
+#include "unit/TestUtils.h"
+#include "core/repository/FileSystemRepository.h"
+#include "minifi-api.h"
+#include "utils/minifi-api-utils.h"
 
 namespace {
 
-class DummyProcessor : public core::Processor {
-  using core::Processor::Processor;
-};
-
-REGISTER_RESOURCE(DummyProcessor, "A processor that does nothing.");
-
 class Fixture {
  public:
-  core::ProcessSession &processSession() { return *process_session_; }
+  explicit Fixture(TestController::PlanConfig config = {}): plan_config_(std::move(config)) {}
+
+  [[nodiscard]] minifi::core::ProcessSession& processSession() const { return *process_session_; }
 
  private:
   TestController test_controller_;
-  std::shared_ptr<TestPlan> test_plan_ = test_controller_.createPlan();
-  std::shared_ptr<core::Processor> dummy_processor_ = test_plan_->addProcessor("DummyProcessor", "dummyProcessor");
-  std::shared_ptr<core::ProcessContext> context_ = [this] { test_plan_->runNextProcessor(); return test_plan_->getCurrentContext(); }();
-  std::unique_ptr<core::ProcessSession> process_session_ = std::make_unique<core::ProcessSession>(context_);
+  TestController::PlanConfig plan_config_;
+  std::shared_ptr<TestPlan> test_plan_ = test_controller_.createPlan(plan_config_);
+  [[maybe_unused]] minifi::core::Processor* dummy_processor_ = test_plan_->addProcessor("DummyProcessor", "dummyProcessor");
+  std::shared_ptr<minifi::core::ProcessContext> context_ = [this] { test_plan_->runNextProcessor(); return test_plan_->getCurrentContext(); }();
+  std::unique_ptr<minifi::core::ProcessSession> process_session_ = std::make_unique<core::ProcessSessionImpl>(context_);
 };
 
-const core::Relationship Success{"success", "everything is fine"};
-const core::Relationship Failure{"failure", "something has gone awry"};
+const minifi::core::Relationship Success{"success", "everything is fine"};
+const minifi::core::Relationship Failure{"failure", "something has gone awry"};
 
 }  // namespace
 
 TEST_CASE("ProcessSession::existsFlowFileInRelationship works", "[existsFlowFileInRelationship]") {
   Fixture fixture;
-  core::ProcessSession &process_session = fixture.processSession();
+  minifi::core::ProcessSession &process_session = fixture.processSession();
 
   REQUIRE_FALSE(process_session.existsFlowFileInRelationship(Failure));
   REQUIRE_FALSE(process_session.existsFlowFileInRelationship(Success));
@@ -70,7 +60,7 @@ TEST_CASE("ProcessSession::existsFlowFileInRelationship works", "[existsFlowFile
 
 TEST_CASE("ProcessSession::rollback penalizes affected flowfiles", "[rollback]") {
   Fixture fixture;
-  core::ProcessSession &process_session = fixture.processSession();
+  minifi::core::ProcessSession &process_session = fixture.processSession();
 
   const auto flow_file_1 = process_session.create();
   const auto flow_file_2 = process_session.create();
@@ -97,8 +87,69 @@ TEST_CASE("ProcessSession::rollback penalizes affected flowfiles", "[rollback]")
 }
 
 TEST_CASE("ProcessSession::read reads the flowfile from offset to size", "[readoffsetsize]") {
-  ContentRepositoryDependentTests::testReadOnSmallerClonedFlowFiles(std::make_shared<core::repository::VolatileContentRepository>());
-  ContentRepositoryDependentTests::testReadOnSmallerClonedFlowFiles(std::make_shared<core::repository::FileSystemRepository>());
-  ContentRepositoryDependentTests::testAppendSize(std::make_shared<core::repository::VolatileContentRepository>());
-  ContentRepositoryDependentTests::testAppendSize(std::make_shared<core::repository::FileSystemRepository>());
+  ContentRepositoryDependentTests::testReadOnSmallerClonedFlowFiles(std::make_shared<minifi::core::repository::VolatileContentRepository>());
+  ContentRepositoryDependentTests::testReadOnSmallerClonedFlowFiles(std::make_shared<minifi::core::repository::FileSystemRepository>());
+}
+
+TEST_CASE("ProcessSession::append should append to the flowfile and set its size correctly" "[appendsetsize]") {
+  SECTION("Unmanaged") {
+    SECTION("VolatileContentRepository") {
+      ContentRepositoryDependentTests::testAppendToUnmanagedFlowFile(std::make_shared<minifi::core::repository::VolatileContentRepository>());
+    }
+    SECTION("FileSystemRepository") {
+      ContentRepositoryDependentTests::testAppendToUnmanagedFlowFile(std::make_shared<minifi::core::repository::FileSystemRepository>());
+    }
+  }
+
+  SECTION("Managed") {
+    SECTION("VolatileContentRepository") {
+      ContentRepositoryDependentTests::testAppendToManagedFlowFile(std::make_shared<minifi::core::repository::VolatileContentRepository>());
+    }
+    SECTION("FileSystemRepository") {
+      ContentRepositoryDependentTests::testAppendToManagedFlowFile(std::make_shared<minifi::core::repository::FileSystemRepository>());
+    }
+  }
+}
+
+TEST_CASE("ProcessSession::read can read zero length flowfiles without crash", "[zerolengthread]") {
+  ContentRepositoryDependentTests::testReadFromZeroLengthFlowFile(std::make_shared<core::repository::VolatileContentRepository>());
+  ContentRepositoryDependentTests::testReadFromZeroLengthFlowFile(std::make_shared<core::repository::FileSystemRepository>());
+}
+
+TEST_CASE("Test ProcessSession::write's possible outcomes") {
+  ContentRepositoryDependentTests::testOkWrite(std::make_shared<core::repository::VolatileContentRepository>());
+  ContentRepositoryDependentTests::testErrWrite(std::make_shared<core::repository::VolatileContentRepository>());
+  ContentRepositoryDependentTests::testCancelWrite(std::make_shared<core::repository::VolatileContentRepository>());
+
+  ContentRepositoryDependentTests::testOkWrite(std::make_shared<core::repository::FileSystemRepository>());
+  ContentRepositoryDependentTests::testErrWrite(std::make_shared<core::repository::FileSystemRepository>());
+  ContentRepositoryDependentTests::testCancelWrite(std::make_shared<core::repository::FileSystemRepository>());
+}
+
+TEST_CASE("Stable C API does not leak the flow file handle", "[minifi-api][flowfilehandle]") {
+  Fixture fixture;
+  auto& process_session = fixture.processSession();
+  auto* c_session = minifi::utils::toC(&process_session);
+
+  auto created = process_session.create();
+  process_session.transfer(created, Success);
+  process_session.commit();
+
+  // Track the underlying FlowFile object; drop every strong reference we hold locally.
+  std::weak_ptr<minifi::core::FlowFile> weak_flow_file = created;
+  created.reset();
+
+  // Pull the flow file out through the stable C API. This does `new std::shared_ptr<FlowFile>`
+  // behind the returned handle, so the handle owns one strong reference to the FlowFile.
+  auto* handle = minifi_process_session_get(c_session);
+  REQUIRE(handle != nullptr);
+
+  // Hand the (MINIFI_OWNED) handle back to minifi and drop the flow file for good.
+  REQUIRE(minifi_process_session_remove(c_session, handle) == MINIFI_STATUS_SUCCESS);
+  process_session.commit();
+
+  // After remove+commit no legitimate owner remains. If the C API failed to free the heap
+  // std::shared_ptr<FlowFile> behind the handle, that leaked strong reference keeps the
+  // FlowFile alive and this assertion fails.
+  REQUIRE(weak_flow_file.expired());
 }

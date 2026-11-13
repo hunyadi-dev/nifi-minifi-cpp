@@ -1,24 +1,8 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include <sys/stat.h>
-#undef NDEBUG
-#include <cassert>
 #include <cstring>
 #include <utility>
 #include <chrono>
@@ -29,7 +13,6 @@
 #include <type_traits>
 #include <vector>
 #include <iostream>
-#include <sstream>
 #include <algorithm>
 #include <functional>
 #include <iterator>
@@ -38,61 +21,64 @@
 #include <unistd.h>
 #endif
 
-#include "TestBase.h"
-#include "utils/StringUtils.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
 #include "utils/file/FileUtils.h"
 #include "core/Core.h"
-#include "core/logging/Logger.h"
+#include "minifi-cpp/core/logging/Logger.h"
 #include "core/ProcessGroup.h"
-#include "core/yaml/YamlConfiguration.h"
 #include "FlowController.h"
 #include "properties/Configure.h"
 #include "unit/ProvenanceTestHelper.h"
-#include "io/StreamFactory.h"
 #include "processors/ListSFTP.h"
 #include "processors/GenerateFlowFile.h"
 #include "processors/LogAttribute.h"
-#include "processors/UpdateAttribute.h"
 #include "tools/SFTPTestServer.h"
-#include "utils/TestUtils.h"
+#include "unit/TestUtils.h"
+
+using namespace std::literals::chrono_literals;
 
 class ListSFTPTestsFixture {
  public:
   explicit ListSFTPTestsFixture(const std::shared_ptr<minifi::Configure>& configuration = nullptr) {
+    LogTestController::getInstance().reset();
     LogTestController::getInstance().setTrace<TestPlan>();
     LogTestController::getInstance().setDebug<minifi::FlowController>();
     LogTestController::getInstance().setDebug<minifi::SchedulingAgent>();
     LogTestController::getInstance().setDebug<minifi::core::ProcessGroup>();
     LogTestController::getInstance().setDebug<minifi::core::Processor>();
     LogTestController::getInstance().setTrace<minifi::core::ProcessSession>();
-    LogTestController::getInstance().setDebug<processors::GenerateFlowFile>();
+    LogTestController::getInstance().setDebug<minifi::processors::GenerateFlowFile>();
     LogTestController::getInstance().setTrace<minifi::utils::SFTPClient>();
-    LogTestController::getInstance().setTrace<processors::ListSFTP>();
-    LogTestController::getInstance().setDebug<processors::LogAttribute>();
+    LogTestController::getInstance().setTrace<minifi::processors::ListSFTP>();
+    LogTestController::getInstance().setDebug<minifi::processors::LogAttribute>();
     LogTestController::getInstance().setDebug<SFTPTestServer>();
 
-    REQUIRE_FALSE(src_dir.empty());
+    REQUIRE_FALSE(working_directory.empty());
 
     // Start SFTP server
-    sftp_server = std::unique_ptr<SFTPTestServer>(new SFTPTestServer(src_dir));
+    sftp_server = std::make_unique<SFTPTestServer>(working_directory);
     REQUIRE(true == sftp_server->start());
 
     // Build MiNiFi processing graph
     createPlan(nullptr, configuration);
   }
 
-  virtual ~ListSFTPTestsFixture() {
-    LogTestController::getInstance().reset();
-  }
+  ListSFTPTestsFixture(ListSFTPTestsFixture&&) = delete;
+  ListSFTPTestsFixture(const ListSFTPTestsFixture&) = delete;
+  ListSFTPTestsFixture& operator=(ListSFTPTestsFixture&&) = delete;
+  ListSFTPTestsFixture& operator=(const ListSFTPTestsFixture&) = delete;
 
-  void createPlan(utils::Identifier* list_sftp_uuid = nullptr, const std::shared_ptr<minifi::Configure>& configuration = nullptr) {
-    const std::string state_dir = plan == nullptr ? testController.createTempDirectory() : plan->getStateDir();
+  virtual ~ListSFTPTestsFixture() = default;
 
-    log_attribute.reset();
-    list_sftp.reset();
+  void createPlan(const utils::Identifier* list_sftp_uuid = nullptr, const std::shared_ptr<minifi::Configure>& configuration = nullptr) {
+    const auto state_dir = plan == nullptr ? testController.createTempDirectory() : plan->getStateDir();
+
+    log_attribute = nullptr;
+    list_sftp = nullptr;
     plan.reset();
 
-    plan = testController.createPlan(configuration, state_dir.c_str());
+    plan = testController.createPlan(configuration, state_dir);
     if (list_sftp_uuid == nullptr) {
       list_sftp = plan->addProcessor(
           "ListSFTP",
@@ -110,7 +96,7 @@ class ListSFTPTestsFixture {
                                        true);
 
     // Configure ListSFTP processor
-    plan->setProperty(list_sftp, "Listing Strategy", processors::ListSFTP::LISTING_STRATEGY_TRACKING_TIMESTAMPS);
+    plan->setProperty(list_sftp, "Listing Strategy", minifi::processors::ListSFTP::LISTING_STRATEGY_TRACKING_TIMESTAMPS);
     plan->setProperty(list_sftp, "Hostname", "localhost");
     plan->setProperty(list_sftp, "Port", std::to_string(sftp_server->getPort()));
     plan->setProperty(list_sftp, "Username", "nifiuser");
@@ -122,7 +108,7 @@ class ListSFTPTestsFixture {
     plan->setProperty(list_sftp, "Connection Timeout", "30 sec");
     plan->setProperty(list_sftp, "Data Timeout", "30 sec");
     plan->setProperty(list_sftp, "Send Keep Alive On Timeout", "true");
-    plan->setProperty(list_sftp, "Target System Timestamp Precision", processors::ListSFTP::TARGET_SYSTEM_TIMESTAMP_PRECISION_AUTO_DETECT);
+    plan->setProperty(list_sftp, "Target System Timestamp Precision", minifi::processors::ListSFTP::TARGET_SYSTEM_TIMESTAMP_PRECISION_AUTO_DETECT);
     plan->setProperty(list_sftp, "Minimum File Age", "0 sec");
     plan->setProperty(list_sftp, "Minimum File Size", "0 B");
     plan->setProperty(list_sftp, "Target System Timestamp Precision", "Seconds");
@@ -133,45 +119,35 @@ class ListSFTPTestsFixture {
   }
 
   // Create source file
-  void createFile(const std::string& relative_path, const std::string& content, uint64_t modification_timestamp = 0U) {
+  void createFile(const std::filesystem::path& relative_path, const std::string& content, const std::optional<std::chrono::file_clock::time_point>& modification_time) const {
     std::fstream file;
-    std::stringstream ss;
-    ss << src_dir << "/vfs/" << relative_path;
-    auto full_path = ss.str();
-    std::deque<std::string> parent_dirs;
-    std::string parent_dir = full_path;
-    while ((parent_dir = utils::file::FileUtils::get_parent_path(parent_dir)) != "") {
-      parent_dirs.push_front(parent_dir);
-    }
-    for (const auto& dir : parent_dirs) {
-      utils::file::FileUtils::create_dir(dir);
-    }
-    file.open(ss.str(), std::ios::out);
+    const auto full_path = working_directory / "vfs" / relative_path;
+    std::filesystem::create_directories(full_path.parent_path());
+    file.open(full_path, std::ios::out);
     file << content;
     file.close();
-    if (modification_timestamp != 0U) {
-      REQUIRE(true == utils::file::FileUtils::set_last_write_time(full_path, modification_timestamp));
+    if (modification_time.has_value()) {
+      REQUIRE(utils::file::set_last_write_time(full_path, modification_time.value()));
     }
   }
 
-  void createFileWithModificationTimeDiff(const std::string& relative_path, const std::string& content, int64_t modification_timediff = -300 /*5 minutes ago*/) {
-    time_t now = time(nullptr);
-    return createFile(relative_path, content, now + modification_timediff);
+  void createFileWithModificationTimeDiff(const std::filesystem::path& relative_path, const std::string& content, std::chrono::seconds modification_timediff = -5min) const {
+    createFile(relative_path, content, std::chrono::file_clock::now() + modification_timediff);
   }
 
  protected:
   TestController testController;
-  std::string src_dir = testController.createTempDirectory();
+  std::filesystem::path working_directory = testController.createTempDirectory();
   std::shared_ptr<TestPlan> plan;
   std::unique_ptr<SFTPTestServer> sftp_server;
-  std::shared_ptr<core::Processor> list_sftp;
-  std::shared_ptr<core::Processor> log_attribute;
+  core::Processor* list_sftp = nullptr;
+  core::Processor* log_attribute = nullptr;
 };
 
 class PersistentListSFTPTestsFixture : public ListSFTPTestsFixture {
  public:
   PersistentListSFTPTestsFixture() :
-    ListSFTPTestsFixture(std::make_shared<minifi::Configure>()) {
+    ListSFTPTestsFixture(std::make_shared<minifi::ConfigureImpl>()) {
   }
 };
 
@@ -186,12 +162,12 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP list one file", "[ListSFTP][bas
 
 TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP public key authentication", "[ListSFTP][basic]") {
   plan->setProperty(list_sftp, "Remote File", "nifi_test/tstFile.ext");
-  plan->setProperty(list_sftp, "Private Key Path", utils::file::FileUtils::concat_path(get_sftp_test_dir(), "resources/id_rsa"));
+  plan->setProperty(list_sftp, "Private Key Path", (get_sftp_test_dir() / "resources" / "id_rsa").string());
   plan->setProperty(list_sftp, "Private Key Passphrase", "privatekeypassword");
 
   createFileWithModificationTimeDiff("nifi_test/tstFile.ext", "Test content 1");
 
-  testController.runSession(plan, true);
+  TestController::runSession(plan, true);
 
   REQUIRE(LogTestController::getInstance().contains("Successfully authenticated with publickey"));
 
@@ -216,28 +192,27 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP list non-readable dir", "[ListS
     return;
   }
   createFileWithModificationTimeDiff("nifi_test/tstFile.ext", "Test content 1");
-  REQUIRE(0 == chmod((src_dir + "/vfs/nifi_test").c_str(), 0000));
+  std::filesystem::permissions(working_directory / "vfs" / "nifi_test", static_cast<std::filesystem::perms>(0000));
 
   testController.runSession(plan, true);
 
   REQUIRE(false == LogTestController::getInstance().contains("from ListSFTP to relationship success"));
   REQUIRE(LogTestController::getInstance().contains("Failed to open remote directory \"nifi_test\", error: LIBSSH2_FX_PERMISSION_DENIED"));
   REQUIRE(LogTestController::getInstance().contains("There are no files to list. Yielding."));
+  std::filesystem::permissions(working_directory / "vfs" / "nifi_test", static_cast<std::filesystem::perms>(0755));
 }
-#endif
 
 TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP list one file writes attributes", "[ListSFTP][basic]") {
   createFileWithModificationTimeDiff("nifi_test/tstFile.ext", "Test content 1");
 
   testController.runSession(plan, true);
 
-  auto file = src_dir + "/vfs/nifi_test/tstFile.ext";
-  auto mtime = utils::file::FileUtils::last_write_time(file);
-  std::string mtime_str;
-  REQUIRE(true == utils::timeutils::getDateTimeStr(mtime, mtime_str));
-  uint64_t uid, gid;
+  auto file = working_directory / "vfs" / "nifi_test" / "tstFile.ext";
+  auto mtime_str = utils::timeutils::getDateTimeStr(std::chrono::time_point_cast<std::chrono::seconds>(utils::file::to_sys(utils::file::last_write_time(file).value())));
+  uint64_t uid = 0;
+  uint64_t gid = 0;
   REQUIRE(true == utils::file::FileUtils::get_uid_gid(file, uid, gid));
-  uint32_t permissions;
+  uint32_t permissions = 0;
   REQUIRE(true == utils::file::FileUtils::get_permissions(file, permissions));
   std::stringstream permissions_ss;
   permissions_ss << std::setfill('0') << std::setw(4) << std::oct << permissions;
@@ -253,6 +228,7 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP list one file writes attributes
   REQUIRE(LogTestController::getInstance().contains("key:filename value:tstFile.ext"));
   REQUIRE(LogTestController::getInstance().contains("key:path value:nifi_test"));
 }
+#endif
 
 TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP list two files", "[ListSFTP][basic]") {
   createFileWithModificationTimeDiff("nifi_test/file1.ext", "Test content 1");
@@ -362,9 +338,7 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Path Filter Regex", "[ListSFTP]
 #ifndef WIN32
 TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Follow symlink false file symlink", "[ListSFTP][follow-symlink]") {
   createFileWithModificationTimeDiff("nifi_test/file1.ext", "Test content 1");
-  auto file1 = src_dir + "/vfs/nifi_test/file1.ext";
-  auto file2 = src_dir + "/vfs/nifi_test/file2.ext";
-  REQUIRE(0 == symlink(file1.c_str(), file2.c_str()));
+  std::filesystem::create_symlink(working_directory / "vfs" / "nifi_test" / "file1.ext", working_directory / "vfs" / "nifi_test" / "file2.ext");
 
   testController.runSession(plan, true);
 
@@ -378,9 +352,7 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Follow symlink true file symlin
   plan->setProperty(list_sftp, "Follow symlink", "true");
 
   createFileWithModificationTimeDiff("nifi_test/file1.ext", "Test content 1");
-  auto file1 = src_dir + "/vfs/nifi_test/file1.ext";
-  auto file2 = src_dir + "/vfs/nifi_test/file2.ext";
-  REQUIRE(0 == symlink(file1.c_str(), file2.c_str()));
+  std::filesystem::create_symlink(working_directory / "vfs" / "nifi_test" / "file1.ext", working_directory / "vfs" / "nifi_test" / "file2.ext");
 
   testController.runSession(plan, true);
 
@@ -394,9 +366,7 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Follow symlink false directory 
   plan->setProperty(list_sftp, "Search Recursively", "true");
 
   createFileWithModificationTimeDiff("nifi_test/dir1/file1.ext", "Test content 1");
-  auto dir1 = src_dir + "/vfs/nifi_test/dir1";
-  auto dir2 = src_dir + "/vfs/nifi_test/dir2";
-  REQUIRE(0 == symlink(dir1.c_str(), dir2.c_str()));
+  std::filesystem::create_directory_symlink(working_directory / "vfs" / "nifi_test" / "dir1", working_directory / "vfs" / "nifi_test" / "dir2");
 
   testController.runSession(plan, true);
 
@@ -411,9 +381,7 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Follow symlink true directory s
   plan->setProperty(list_sftp, "Follow symlink", "true");
 
   createFileWithModificationTimeDiff("nifi_test/dir1/file1.ext", "Test content 1");
-  auto dir1 = src_dir + "/vfs/nifi_test/dir1";
-  auto dir2 = src_dir + "/vfs/nifi_test/dir2";
-  REQUIRE(0 == symlink(dir1.c_str(), dir2.c_str()));
+  std::filesystem::create_directory_symlink(working_directory / "vfs" / "nifi_test" / "dir1", working_directory / "vfs" / "nifi_test" / "dir2");
 
   testController.runSession(plan, true);
 
@@ -434,7 +402,7 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Timestamps one file", 
   REQUIRE(LogTestController::getInstance().contains("key:filename value:tstFile.ext"));
 
   plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
   testController.runSession(plan, true);
 
@@ -453,9 +421,9 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Timestamps one file on
   REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
 
   plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
-  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -240 /* 4 minutes ago */);
+  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -4min);
 
   testController.runSession(plan, true);
 
@@ -474,9 +442,9 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Timestamps one file on
   REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
 
   plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
-  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -360 /* 6 minutes ago */);
+  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -6min);
 
   testController.runSession(plan, true);
 
@@ -490,16 +458,14 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Timestamps one file an
 
   createFileWithModificationTimeDiff("nifi_test/file1.ext", "Test content 1");
 
-  auto file = src_dir + "/vfs/nifi_test/file1.ext";
-  auto mtime = utils::file::FileUtils::last_write_time(file);
-
+  auto mtime = utils::file::last_write_time(working_directory / "vfs" / "nifi_test" / "file1.ext").value();
   testController.runSession(plan, true);
 
   REQUIRE(LogTestController::getInstance().contains("from ListSFTP to relationship success"));
   REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
 
   plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
   /* We must sleep to avoid triggering the listing lag. */
   std::this_thread::sleep_for(std::chrono::milliseconds(1500));
@@ -518,8 +484,17 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Timestamps one file ti
 
   createFileWithModificationTimeDiff("nifi_test/file1.ext", "Test content 1");
 
-  auto file = src_dir + "/vfs/nifi_test/file1.ext";
-  auto mtime = utils::file::FileUtils::last_write_time(file);
+  auto file = working_directory / "vfs" / "nifi_test" / "file1.ext";
+  auto mtime = utils::file::last_write_time(file).value();
+  testController.runSession(plan, true);
+
+  REQUIRE(LogTestController::getInstance().contains("from ListSFTP to relationship success"));
+  REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
+
+  plan->reset();
+  LogTestController::getInstance().clear();
+
+  REQUIRE(utils::file::set_last_write_time(file, mtime + 1s));
 
   testController.runSession(plan, true);
 
@@ -527,17 +502,7 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Timestamps one file ti
   REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
 
   plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
-
-  REQUIRE(true == utils::file::FileUtils::set_last_write_time(file, mtime + 1));
-
-  testController.runSession(plan, true);
-
-  REQUIRE(LogTestController::getInstance().contains("from ListSFTP to relationship success"));
-  REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
-
-  plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
   /* We must sleep to avoid triggering the listing lag. */
   std::this_thread::sleep_for(std::chrono::milliseconds(1500));
@@ -556,7 +521,7 @@ TEST_CASE_METHOD(PersistentListSFTPTestsFixture, "ListSFTP Tracking Timestamps r
   testController.runSession(plan, true);
 
   std::unordered_map<std::string, std::string> state;
-  REQUIRE(plan->getStateManagerProvider()->getCoreComponentStateManager(*list_sftp)->get(state));
+  REQUIRE(plan->getProcessContextForProcessor(list_sftp)->createStateManager()->get(state));
   REQUIRE("localhost" == state.at("hostname"));
   REQUIRE("nifiuser" == state.at("username"));
   REQUIRE("nifi_test" == state.at("remote_path"));
@@ -570,15 +535,15 @@ TEST_CASE_METHOD(PersistentListSFTPTestsFixture, "ListSFTP Tracking Timestamps r
 
   utils::Identifier list_sftp_uuid = list_sftp->getUUID();
   REQUIRE(list_sftp_uuid);
-  createPlan(&list_sftp_uuid, std::make_shared<minifi::Configure>());
+  createPlan(&list_sftp_uuid, std::make_shared<minifi::ConfigureImpl>());
   plan->setProperty(list_sftp, "Listing Strategy", "Tracking Timestamps");
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
-  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -240 /* 4 minutes ago */);
+  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -4min);
 
   testController.runSession(plan, true);
 
-  REQUIRE(plan->getStateManagerProvider()->getCoreComponentStateManager(*list_sftp)->get(state));
+  REQUIRE(plan->getProcessContextForProcessor(list_sftp)->createStateManager()->get(state));
   REQUIRE("localhost" == state.at("hostname"));
   REQUIRE("nifiuser" == state.at("username"));
   REQUIRE("nifi_test" == state.at("remote_path"));
@@ -604,7 +569,7 @@ TEST_CASE_METHOD(PersistentListSFTPTestsFixture, "ListSFTP Tracking Timestamps r
   REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
 
   std::unordered_map<std::string, std::string> state;
-  REQUIRE(plan->getStateManagerProvider()->getCoreComponentStateManager(*list_sftp)->get(state));
+  REQUIRE(plan->getProcessContextForProcessor(list_sftp)->createStateManager()->get(state));
   REQUIRE("localhost" == state.at("hostname"));
   REQUIRE("nifiuser" == state.at("username"));
   REQUIRE("nifi_test" == state.at("remote_path"));
@@ -612,16 +577,16 @@ TEST_CASE_METHOD(PersistentListSFTPTestsFixture, "ListSFTP Tracking Timestamps r
 
   utils::Identifier list_sftp_uuid = list_sftp->getUUID();
   REQUIRE(list_sftp_uuid);
-  createPlan(&list_sftp_uuid, std::make_shared<minifi::Configure>());
+  createPlan(&list_sftp_uuid, std::make_shared<minifi::ConfigureImpl>());
   plan->setProperty(list_sftp, "Listing Strategy", "Tracking Timestamps");
   plan->setProperty(list_sftp, "Remote Path", "/nifi_test");
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
-  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -240 /* 4 minutes ago */);
+  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -4min);
 
   testController.runSession(plan, true);
 
-  REQUIRE(plan->getStateManagerProvider()->getCoreComponentStateManager(*list_sftp)->get(state));
+  REQUIRE(plan->getProcessContextForProcessor(list_sftp)->createStateManager()->get(state));
   REQUIRE("localhost" == state.at("hostname"));
   REQUIRE("nifiuser" == state.at("username"));
   REQUIRE("/nifi_test" == state.at("remote_path"));
@@ -648,10 +613,10 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Timestamps changed con
   REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
 
   plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
   plan->setProperty(list_sftp, "Remote Path", "/nifi_test");
 
-  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -240 /* 4 minutes ago */);
+  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -4min);
 
   testController.runSession(plan, true);
 
@@ -676,7 +641,7 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Entities one file", "[
   REQUIRE(LogTestController::getInstance().contains("key:filename value:tstFile.ext"));
 
   plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
   testController.runSession(plan, true);
 
@@ -695,9 +660,9 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Entities one file one 
   REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
 
   plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
-  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -240 /* 4 minutes ago */);
+  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -4min);
 
   testController.runSession(plan, true);
 
@@ -716,9 +681,9 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Entities one file one 
   REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
 
   plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
-  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -360 /* 6 minutes ago */);
+  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -6min);
 
   testController.runSession(plan, true);
 
@@ -739,9 +704,9 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Entities one file one 
   REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
 
   plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
-  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -6 * 3600 /* 6 hours ago */);
+  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -6h);
 
   testController.runSession(plan, true);
 
@@ -755,16 +720,14 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Entities one file anot
 
   createFileWithModificationTimeDiff("nifi_test/file1.ext", "Test content 1");
 
-  auto file = src_dir + "/vfs/nifi_test/file1.ext";
-  auto mtime = utils::file::FileUtils::last_write_time(file);
-
+  auto mtime = utils::file::last_write_time(working_directory / "vfs" / "nifi_test" / "file1.ext").value();
   testController.runSession(plan, true);
 
   REQUIRE(LogTestController::getInstance().contains("from ListSFTP to relationship success"));
   REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
 
   plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
   createFile("nifi_test/file2.ext", "Test content 2", mtime);
 
@@ -781,8 +744,8 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Entities one file time
 
   createFileWithModificationTimeDiff("nifi_test/file1.ext", "Test content 1");
 
-  auto file = src_dir + "/vfs/nifi_test/file1.ext";
-  auto mtime = utils::file::FileUtils::last_write_time(file);
+  auto file = working_directory / "vfs" / "nifi_test" / "file1.ext";
+  auto mtime = utils::file::last_write_time(file).value();
 
   testController.runSession(plan, true);
 
@@ -790,9 +753,9 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Entities one file time
   REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
 
   plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
-  REQUIRE(true == utils::file::FileUtils::set_last_write_time(file, mtime + 1));
+  REQUIRE(utils::file::set_last_write_time(file, mtime + 1s));
 
   testController.runSession(plan, true);
 
@@ -801,7 +764,7 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Entities one file time
   REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
 
   plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
   testController.runSession(plan, true);
 
@@ -814,8 +777,7 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Entities one file size
 
   createFileWithModificationTimeDiff("nifi_test/file1.ext", "Test content 1");
 
-  auto file = src_dir + "/vfs/nifi_test/file1.ext";
-  auto mtime = utils::file::FileUtils::last_write_time(file);
+  auto mtime = utils::file::last_write_time(working_directory / "vfs" / "nifi_test" / "file1.ext").value();
 
   testController.runSession(plan, true);
 
@@ -823,7 +785,7 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Entities one file size
   REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
 
   plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
   createFile("nifi_test/file1.ext", "Longer test content 1", mtime);
 
@@ -834,7 +796,7 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Entities one file size
   REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
 
   plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
   testController.runSession(plan, true);
 
@@ -854,12 +816,12 @@ TEST_CASE_METHOD(PersistentListSFTPTestsFixture, "ListSFTP Tracking Entities res
 
   utils::Identifier list_sftp_uuid = list_sftp->getUUID();
   REQUIRE(list_sftp_uuid);
-  createPlan(&list_sftp_uuid, std::make_shared<minifi::Configure>());
+  createPlan(&list_sftp_uuid, std::make_shared<minifi::ConfigureImpl>());
   plan->setProperty(list_sftp, "Listing Strategy", "Tracking Entities");
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
   std::unordered_map<std::string, std::string> state;
-  REQUIRE(plan->getStateManagerProvider()->getCoreComponentStateManager(*list_sftp)->get(state));
+  REQUIRE(plan->getProcessContextForProcessor(list_sftp)->createStateManager()->get(state));
   REQUIRE("localhost" == state.at("hostname"));
   REQUIRE("nifiuser" == state.at("username"));
   REQUIRE("nifi_test" == state.at("remote_path"));
@@ -868,11 +830,11 @@ TEST_CASE_METHOD(PersistentListSFTPTestsFixture, "ListSFTP Tracking Entities res
   REQUIRE("14" == state.at("entity.0.size"));
   REQUIRE(!state.at("entity.0.timestamp").empty());
 
-  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -240 /* 4 minutes ago */);
+  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -4min);
 
   testController.runSession(plan, true);
 
-  REQUIRE(plan->getStateManagerProvider()->getCoreComponentStateManager(*list_sftp)->get(state));
+  REQUIRE(plan->getProcessContextForProcessor(list_sftp)->createStateManager()->get(state));
   REQUIRE("localhost" == state.at("hostname"));
   REQUIRE("nifiuser" == state.at("username"));
   REQUIRE("nifi_test" == state.at("remote_path"));
@@ -906,7 +868,7 @@ TEST_CASE_METHOD(PersistentListSFTPTestsFixture, "ListSFTP Tracking Entities res
   REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
 
   std::unordered_map<std::string, std::string> state;
-  REQUIRE(plan->getStateManagerProvider()->getCoreComponentStateManager(*list_sftp)->get(state));
+  REQUIRE(plan->getProcessContextForProcessor(list_sftp)->createStateManager()->get(state));
   REQUIRE("localhost" == state.at("hostname"));
   REQUIRE("nifiuser" == state.at("username"));
   REQUIRE("nifi_test" == state.at("remote_path"));
@@ -914,16 +876,16 @@ TEST_CASE_METHOD(PersistentListSFTPTestsFixture, "ListSFTP Tracking Entities res
 
   utils::Identifier list_sftp_uuid = list_sftp->getUUID();
   REQUIRE(list_sftp_uuid);
-  createPlan(&list_sftp_uuid, std::make_shared<minifi::Configure>());
+  createPlan(&list_sftp_uuid, std::make_shared<minifi::ConfigureImpl>());
   plan->setProperty(list_sftp, "Listing Strategy", "Tracking Entities");
   plan->setProperty(list_sftp, "Remote Path", "/nifi_test");
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
 
-  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -240 /* 4 minutes ago */);
+  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -4min);
 
   testController.runSession(plan, true);
 
-  REQUIRE(plan->getStateManagerProvider()->getCoreComponentStateManager(*list_sftp)->get(state));
+  REQUIRE(plan->getProcessContextForProcessor(list_sftp)->createStateManager()->get(state));
   REQUIRE("localhost" == state.at("hostname"));
   REQUIRE("nifiuser" == state.at("username"));
   REQUIRE("/nifi_test" == state.at("remote_path"));
@@ -950,10 +912,10 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Entities changed confi
   REQUIRE(LogTestController::getInstance().contains("key:filename value:file1.ext"));
 
   plan->reset();
-  LogTestController::getInstance().resetStream(LogTestController::getInstance().log_output);
+  LogTestController::getInstance().clear();
   plan->setProperty(list_sftp, "Remote Path", "/nifi_test");
 
-  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -240 /* 4 minutes ago */);
+  createFileWithModificationTimeDiff("nifi_test/file2.ext", "Test content 2", -4min);
 
   testController.runSession(plan, true);
 
@@ -969,10 +931,10 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Entities changed confi
 
 TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Entities Initial Listing Target Tracking Time Window entity outside window", "[ListSFTP][tracking-entities]") {
   plan->setProperty(list_sftp, "Listing Strategy", "Tracking Entities");
-  plan->setProperty(list_sftp, "Entity Tracking Initial Listing Target", processors::ListSFTP::ENTITY_TRACKING_INITIAL_LISTING_TARGET_TRACKING_TIME_WINDOW);
+  plan->setProperty(list_sftp, "Entity Tracking Initial Listing Target", minifi::processors::ListSFTP::ENTITY_TRACKING_INITIAL_LISTING_TARGET_TRACKING_TIME_WINDOW);
   plan->setProperty(list_sftp, "Entity Tracking Time Window", "10 minutes");
 
-  createFileWithModificationTimeDiff("nifi_test/file1.ext", "Test content 1", -20*60 /* 20 minutes ago */);
+  createFileWithModificationTimeDiff("nifi_test/file1.ext", "Test content 1", -20min);
 
   testController.runSession(plan, true);
 
@@ -982,7 +944,7 @@ TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Entities Initial Listi
 
 TEST_CASE_METHOD(ListSFTPTestsFixture, "ListSFTP Tracking Entities Initial Listing Target Tracking Time Window entity inside window", "[ListSFTP][tracking-entities]") {
   plan->setProperty(list_sftp, "Listing Strategy", "Tracking Entities");
-  plan->setProperty(list_sftp, "Entity Tracking Initial Listing Target", processors::ListSFTP::ENTITY_TRACKING_INITIAL_LISTING_TARGET_TRACKING_TIME_WINDOW);
+  plan->setProperty(list_sftp, "Entity Tracking Initial Listing Target", minifi::processors::ListSFTP::ENTITY_TRACKING_INITIAL_LISTING_TARGET_TRACKING_TIME_WINDOW);
   plan->setProperty(list_sftp, "Entity Tracking Time Window", "10 minutes");
 
   createFileWithModificationTimeDiff("nifi_test/file1.ext", "Test content 1");

@@ -1,0 +1,74 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include <memory>
+#include <optional>
+#include <regex>
+#include <string>
+#include <utility>
+
+#include "SmbConnectionControllerService.h"
+#include "core/ProcessorImpl.h"
+#include "core/ProcessSession.h"
+#include "minifi-cpp/core/Property.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "minifi-cpp/core/OutputAttributeDefinition.h"
+#include "core/logging/LoggerFactory.h"
+#include "utils/Enum.h"
+#include "utils/ListingStateManager.h"
+#include "utils/file/ListedFile.h"
+#include "utils/file/FileUtils.h"
+
+namespace org::apache::nifi::minifi::extensions::smb {
+
+class FetchSmb final : public core::ProcessorImpl {
+ public:
+  using ProcessorImpl::ProcessorImpl;
+
+  EXTENSIONAPI static constexpr const char* Description = "Fetches files from a SMB Share. Designed to be used in tandem with ListSmb.";
+
+  EXTENSIONAPI static constexpr auto ConnectionControllerService = core::PropertyDefinitionBuilder<>::createProperty("SMB Connection Controller Service")
+      .withDescription("Specifies the SMB connection controller service to use for connecting to the SMB server. "
+                       "If the SMB share is auto-mounted to a drive letter, its recommended to use FetchFile instead.")
+      .isRequired(true)
+      .withAllowedTypes<SmbConnectionControllerService>()
+      .build();
+  EXTENSIONAPI static constexpr auto RemoteFile = core::PropertyDefinitionBuilder<>::createProperty("Input Directory")
+      .withDescription("The full path of the file to be retrieved from the remote server. If left empty, the path and filename attributes of the incoming flow file will be used.")
+      .isRequired(false)
+      .supportsExpressionLanguage(true)
+      .build();
+  EXTENSIONAPI static constexpr auto Properties = std::to_array<core::PropertyReference>({
+      ConnectionControllerService,
+      RemoteFile
+  });
+
+  EXTENSIONAPI static constexpr auto Success = core::RelationshipDefinition{"success", "A flowfile will be routed here for each successfully fetched file."};
+  EXTENSIONAPI static constexpr auto Failure = core::RelationshipDefinition{"failure", "A flowfile will be routed here when failed to fetch its content."};
+  EXTENSIONAPI static constexpr auto Relationships = std::array{Success, Failure};
+
+  EXTENSIONAPI static constexpr auto ErrorCode = core::OutputAttributeDefinition<>{"error.code", { Failure }, "The error code returned by SMB when the fetch of a file fails."};
+  EXTENSIONAPI static constexpr auto ErrorMessage = core::OutputAttributeDefinition<>{"error.message", { Failure }, "The error message returned by SMB when the fetch of a file fails."};
+
+  EXTENSIONAPI static constexpr auto OutputAttributes = std::array<core::OutputAttributeReference, 2>{ FetchSmb::ErrorCode, ErrorMessage };
+
+  EXTENSIONAPI static constexpr bool SupportsDynamicProperties = false;
+  EXTENSIONAPI static constexpr bool SupportsDynamicRelationships = false;
+  EXTENSIONAPI static constexpr core::annotation::Input InputRequirement = core::annotation::Input::INPUT_REQUIRED;
+  EXTENSIONAPI static constexpr bool IsSingleThreaded = false;
+
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_PROCESSORS
+
+  void initialize() override;
+  void onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& session_factory) override;
+  void onTrigger(core::ProcessContext& context, core::ProcessSession& session) override;
+
+ private:
+  std::shared_ptr<SmbConnectionControllerService> smb_connection_controller_service_;
+  size_t buffer_size_{};
+};
+
+}  // namespace org::apache::nifi::minifi::extensions::smb

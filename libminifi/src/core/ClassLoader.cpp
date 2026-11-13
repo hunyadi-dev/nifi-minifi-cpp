@@ -1,46 +1,70 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include "core/ClassLoader.h"
 
 #include <memory>
+#include <ranges>
 #include <string>
 
-#include "core/logging/LoggerConfiguration.h"
-#include "range/v3/action/sort.hpp"
-#include "range/v3/action/unique.hpp"
+#include "core/ObjectFactory.h"
+#include "core/Processor.h"
+#include "core/controller/ControllerService.h"
+#include "core/logging/LoggerFactory.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace core {
+namespace org::apache::nifi::minifi::core {
 
-ClassLoader::ClassLoader(const std::string& name)
-  : logger_(logging::LoggerFactory<ClassLoader>::getLogger()), name_(name) {}
+class ClassLoaderImpl : public ClassLoader {
+ public:
+  explicit ClassLoaderImpl(std::string name = "/");
+
+  ClassLoaderImpl(const ClassLoaderImpl&) = delete;
+  ClassLoaderImpl(ClassLoaderImpl&&) = delete;
+  ClassLoaderImpl& operator=(const ClassLoaderImpl&) = delete;
+  ClassLoaderImpl& operator=(ClassLoaderImpl&&) = delete;
+
+  [[nodiscard]] ClassLoader& getClassLoader(const std::string& child_name) override;
+
+  void registerClass(const std::string &clazz, std::unique_ptr<ObjectFactory> factory) override;
+
+  void registerClass(const std::string &clazz, std::unique_ptr<ProcessorFactory> factory) override;
+
+  void registerClass(const std::string &clazz, std::unique_ptr<controller::ControllerServiceFactory> factory) override;
+
+  void unregisterClass(const std::string& clazz) override;
+
+  [[nodiscard]] std::optional<std::string> getModuleForClass(std::string_view class_name) const override;
+
+  [[nodiscard]] std::unique_ptr<CoreComponent> instantiate(const std::string &class_name, const std::string &name, std::function<bool(CoreComponent*)> filter) override;
+
+  [[nodiscard]] std::unique_ptr<CoreComponent> instantiate(const std::string &class_name, const utils::Identifier &uuid, std::function<bool(CoreComponent*)> filter) override;
+
+  [[nodiscard]] std::unique_ptr<CoreComponent> instantiate(const std::string &class_name, const std::string &name, const utils::Identifier &uuid, std::function<bool(CoreComponent*)> filter) override;
+
+  [[nodiscard]] gsl::owner<CoreComponent*> instantiateRaw(const std::string &class_name, const std::string &name, std::function<bool(CoreComponent*)> filter) override;
+
+  ~ClassLoaderImpl() override = default;
+
+ private:
+  std::map<std::string, std::unique_ptr<ObjectFactory>, std::less<>> loaded_factories_;
+  std::map<std::string, ClassLoaderImpl> class_loaders_;
+  mutable std::mutex internal_mutex_;
+  std::shared_ptr<logging::Logger> logger_;
+  std::string name_;
+};
+
+ClassLoaderImpl::ClassLoaderImpl(std::string name)
+  : logger_(logging::LoggerFactory<ClassLoader>::getLogger()), name_(std::move(name)) {}
 
 ClassLoader &ClassLoader::getDefaultClassLoader() {
-  static ClassLoader ret;
+  static ClassLoaderImpl ret;
   // populate ret
   return ret;
 }
 
-ClassLoader& ClassLoader::getClassLoader(const std::string& child_name) {
-  std::lock_guard<std::mutex> lock(internal_mutex_);
+ClassLoader& ClassLoaderImpl::getClassLoader(const std::string& child_name) {
+  std::scoped_lock lock(internal_mutex_);
   auto it = class_loaders_.find(child_name);
   if (it != class_loaders_.end()) {
     return it->second;
@@ -51,29 +75,197 @@ ClassLoader& ClassLoader::getClassLoader(const std::string& child_name) {
     }
     return name_ + "/" + child_name;
   }();
-  ClassLoader& child = class_loaders_[child_name];
+  ClassLoaderImpl& child = class_loaders_[child_name];
   child.name_ = std::move(full_name);
   return child;
 }
 
-std::vector<std::string> ClassLoader::getClasses(const std::string& group) const {
-  std::lock_guard<std::mutex> lock(internal_mutex_);
-  std::vector<std::string> class_names;
-  for (const auto& child_loader : class_loaders_) {
-    for (auto&& clazz : child_loader.second.getClasses(group)) {
-      class_names.push_back(std::move(clazz));
+void ClassLoaderImpl::registerClass(const std::string &clazz, std::unique_ptr<ObjectFactory> factory) {
+    std::scoped_lock lock(internal_mutex_);
+    if (loaded_factories_.contains(clazz)) {
+      logger_->log_error("Class '{}' is already registered at '{}'", clazz, name_);
+      return;
     }
+    logger_->log_trace("Registering class '{}' at '{}'", clazz, name_);
+    loaded_factories_.insert(std::make_pair(clazz, std::move(factory)));
   }
-  for (const auto& factory : loaded_factories_) {
-    if (factory.second->getGroupName() == group) {
-      class_names.push_back(factory.second->getClassName());
-    }
+
+namespace {
+class ProcessorFactoryWrapper : public ObjectFactoryImpl {
+ public:
+  explicit ProcessorFactoryWrapper(std::unique_ptr<ProcessorFactory> factory)
+    : ObjectFactoryImpl(factory->getGroupName()),
+      factory_(std::move(factory)) {}
+
+  [[nodiscard]] std::unique_ptr<CoreComponent> create(const std::string &name) override {
+    return std::unique_ptr<CoreComponent>{createRaw(name)};
   }
-  return std::move(class_names) | ranges::actions::sort | ranges::actions::unique;
+
+  [[nodiscard]] std::unique_ptr<CoreComponent> create(const std::string &name, const utils::Identifier &uuid) override {
+    return std::unique_ptr<CoreComponent>{createRaw(name, uuid)};
+  }
+
+  [[nodiscard]] gsl::owner<CoreComponent*> createRaw(const std::string &name) override {
+    return createRaw(name, utils::IdGenerator::getIdGenerator()->generate());
+  }
+
+  [[nodiscard]] gsl::owner<CoreComponent*> createRaw(const std::string &name, const utils::Identifier &uuid) override {
+    auto logger = logging::LoggerFactoryBase::getAliasedLogger(getClassName(), uuid);
+    return gsl::owner<CoreComponent*>{new Processor(
+        utils::string::partAfterLastOccurrenceOf(factory_->getClassName(), ':'), name, uuid, factory_->create({.uuid = uuid, .name = name, .logger = std::move(logger)}))};
+  }
+
+  [[nodiscard]] std::string getModuleName() const override {
+    return factory_->getGroupName();
+  }
+
+  [[nodiscard]] std::string getClassName() override {
+    return factory_->getClassName();
+  }
+
+ private:
+  std::unique_ptr<ProcessorFactory> factory_;
+};
+
+class ControllerServiceFactoryWrapper : public ObjectFactoryImpl {
+ public:
+  explicit ControllerServiceFactoryWrapper(std::unique_ptr<controller::ControllerServiceFactory> factory)
+    : ObjectFactoryImpl(factory->getModuleName()),
+      factory_(std::move(factory)) {}
+
+  [[nodiscard]] std::unique_ptr<CoreComponent> create(const std::string &name) override {
+    return std::unique_ptr<CoreComponent>{createRaw(name)};
+  }
+
+  [[nodiscard]] std::unique_ptr<CoreComponent> create(const std::string &name, const utils::Identifier &uuid) override {
+    return std::unique_ptr<CoreComponent>{createRaw(name, uuid)};
+  }
+
+  [[nodiscard]] gsl::owner<CoreComponent*> createRaw(const std::string &name) override {
+    return createRaw(name, utils::IdGenerator::getIdGenerator()->generate());
+  }
+
+  [[nodiscard]] gsl::owner<CoreComponent*> createRaw(const std::string &name, const utils::Identifier &uuid) override {
+    auto logger = logging::LoggerFactoryBase::getAliasedLogger(getClassName(), uuid);
+    return gsl::owner<CoreComponent*>{new controller::ControllerService(name, uuid, factory_->create({.uuid = uuid, .name = name, .logger = std::move(logger)}))};
+  }
+
+  [[nodiscard]] std::string getModuleName() const override {
+    return factory_->getModuleName();
+  }
+
+  [[nodiscard]] std::string getClassName() override {
+    return factory_->getClassName();
+  }
+
+ private:
+  std::unique_ptr<controller::ControllerServiceFactory> factory_;
+};
+
+}  // namespace
+
+void ClassLoaderImpl::registerClass(const std::string &clazz, std::unique_ptr<ProcessorFactory> factory) {
+  registerClass(clazz, std::make_unique<ProcessorFactoryWrapper>(std::move(factory)));
 }
 
-} /* namespace core */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+void ClassLoaderImpl::registerClass(const std::string &clazz, std::unique_ptr<controller::ControllerServiceFactory> factory) {
+  registerClass(clazz, std::make_unique<ControllerServiceFactoryWrapper>(std::move(factory)));
+}
+
+void ClassLoaderImpl::unregisterClass(const std::string& clazz) {
+  std::scoped_lock lock(internal_mutex_);
+  if (loaded_factories_.erase(clazz) == 0) {
+    logger_->log_error("Could not unregister non-registered class '{}' at '{}'", clazz, name_);
+  } else {
+    logger_->log_trace("Unregistered class '{}' at '{}'", clazz, name_);
+  }
+}
+
+std::optional<std::string> ClassLoaderImpl::getModuleForClass(const std::string_view class_name) const {
+  std::scoped_lock lock(internal_mutex_);
+  for (const auto &val : class_loaders_ | std::views::values) {
+    if (std::optional<std::string> group = val.getModuleForClass(class_name)) {
+      return group;
+    }
+  }
+  auto factory = loaded_factories_.find(class_name);
+  if (factory != loaded_factories_.end()) {
+    return factory->second->getModuleName();
+  }
+  return {};
+}
+
+std::unique_ptr<CoreComponent> ClassLoaderImpl::instantiate(const std::string &class_name, const std::string &name, std::function<bool(CoreComponent*)> filter) {
+  std::scoped_lock lock(internal_mutex_);
+  // allow subsequent classes to override functionality
+  for (auto &val : class_loaders_ | std::views::values) {
+    if (auto result = val.instantiate(class_name, name, filter)) {
+      return result;
+    }
+  }
+  auto factory_entry = loaded_factories_.find(class_name);
+  if (factory_entry != loaded_factories_.end()) {
+    auto obj = factory_entry->second->create(name);
+    if (filter(obj.get())) {
+      return obj;
+    }
+  }
+  return nullptr;
+}
+
+std::unique_ptr<CoreComponent> ClassLoaderImpl::instantiate(const std::string &class_name, const utils::Identifier &uuid, std::function<bool(CoreComponent*)> filter) {
+  std::scoped_lock lock(internal_mutex_);
+  // allow subsequent classes to override functionality
+  for (auto &val : class_loaders_ | std::views::values) {
+    if (auto result = val.instantiate(class_name, uuid, filter)) {
+      return result;
+    }
+  }
+  auto factory_entry = loaded_factories_.find(class_name);
+  if (factory_entry != loaded_factories_.end()) {
+    auto obj = factory_entry->second->create(class_name, uuid);
+    if (filter(obj.get())) {
+      return obj;
+    }
+  }
+  return nullptr;
+}
+
+std::unique_ptr<CoreComponent> ClassLoaderImpl::instantiate(const std::string &class_name, const std::string &name, const utils::Identifier &uuid, std::function<bool(CoreComponent*)> filter) {
+  std::scoped_lock lock(internal_mutex_);
+  // allow subsequent classes to override functionality
+  for (auto &val : class_loaders_ | std::views::values) {
+    if (auto result = val.instantiate(class_name, name, uuid, filter)) {
+      return result;
+    }
+  }
+  auto factory_entry = loaded_factories_.find(class_name);
+  if (factory_entry != loaded_factories_.end()) {
+    auto obj = factory_entry->second->create(name, uuid);
+    if (filter(obj.get())) {
+      return obj;
+    }
+  }
+  return nullptr;
+}
+
+gsl::owner<CoreComponent*> ClassLoaderImpl::instantiateRaw(const std::string &class_name, const std::string &name, std::function<bool(CoreComponent*)> filter) {
+  std::scoped_lock lock(internal_mutex_);
+  // allow subsequent classes to override functionality
+  for (auto &val : class_loaders_ | std::views::values) {
+    if (gsl::owner<CoreComponent*> result = val.instantiateRaw(class_name, name, filter)) {
+      return result;
+    }
+  }
+  auto factory_entry = loaded_factories_.find(class_name);
+  if (factory_entry != loaded_factories_.end()) {
+    auto obj = factory_entry->second->createRaw(name);
+    if (filter(obj)) {
+      return obj;
+    }
+    delete obj;  // NOLINT(cppcoreguidelines-owning-memory)
+  }
+  return nullptr;
+}
+
+}  // namespace org::apache::nifi::minifi::core

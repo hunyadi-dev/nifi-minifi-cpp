@@ -1,59 +1,44 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef LIBMINIFI_INCLUDE_C2_HEARTBEATREPORTER_H_
-#define LIBMINIFI_INCLUDE_C2_HEARTBEATREPORTER_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
 
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "C2Protocol.h"
 #include "C2Payload.h"
 #include "core/controller/ControllerServiceProvider.h"
 #include "properties/Configure.h"
 #include "core/Connectable.h"
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace c2 {
+
+namespace org::apache::nifi::minifi::c2 {
 
 /**
- * Defines a heart beat reporting interface. Note that this differs from
+ * Defines a heartbeat reporting interface. Note that this differs from
  * C2Protocol as heartbeats can be any interface which provides only one way communication.
  */
-class HeartbeatReporter : public core::Connectable {
+class HeartbeatReporter : public core::ConnectableImpl {
  public:
-  HeartbeatReporter(const std::string& name, const utils::Identifier& uuid)
-      : core::Connectable(name, uuid),
+  HeartbeatReporter(std::string_view name, const utils::Identifier& uuid)
+      : core::ConnectableImpl(name, uuid),
         controller_(nullptr),
         update_sink_(nullptr),
         configuration_(nullptr) {
   }
 
-  virtual void initialize(core::controller::ControllerServiceProvider* controller, const std::shared_ptr<state::StateMonitor> &updateSink,
+  virtual void initialize(core::controller::ControllerServiceProvider* controller, state::StateMonitor* updateSink,
                           const std::shared_ptr<Configure> &configure) {
     controller_ = controller;
     update_sink_ = updateSink;
     configuration_ = configure;
   }
-  virtual ~HeartbeatReporter() = default;
+
+  ~HeartbeatReporter() override = default;
+
   /**
-   * Send a C2 payloadd to the provided URI. The direction indicates to the protocol whether or not this a transmit or receive operation.
+   * Send a C2 payload to the provided URI. The direction indicates to the protocol whether or not this a transmit or receive operation.
    * Depending on the protocol this may mean different things.
    *
    * @param url url.
@@ -67,39 +52,25 @@ class HeartbeatReporter : public core::Connectable {
   /**
    * Determines if we are connected and operating
    */
-  virtual bool isRunning() {
+  bool isRunning() const override {
     return true;
   }
 
-  /**
-   * Block until work is available on any input connection, or the given duration elapses
-   * @param timeoutMs timeout in milliseconds
-   */
-  void waitForWork(uint64_t timeoutMs);
-
-  virtual void yield() {
+  void yield() override {
   }
 
   /**
    * Determines if work is available by this connectable
    * @return boolean if work is available.
    */
-  virtual bool isWorkAvailable() {
+  bool isWorkAvailable() override {
     return true;
   }
 
  protected:
   core::controller::ControllerServiceProvider* controller_;
-
-  std::shared_ptr<state::StateMonitor> update_sink_;
-
+  state::StateMonitor* update_sink_;
   std::shared_ptr<Configure> configuration_;
 };
 
-}  // namespace c2
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // LIBMINIFI_INCLUDE_C2_HEARTBEATREPORTER_H_
+}  // namespace org::apache::nifi::minifi::c2

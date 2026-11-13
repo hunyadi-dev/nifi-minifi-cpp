@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+
+cmake_minimum_required(VERSION 3.26)
+cmake_policy(SET CMP0135 NEW) # policy to set the timestamps of extracted contents to the time of extraction
+
+include_directories(../libminifi/include)
+
+if(WIN32)
+    add_definitions(-DWIN32_LEAN_AND_MEAN)
+    include_directories(../libminifi/opsys/win)
+else()
+    include_directories(../libminifi/opsys/posix)
+endif()
+
+
+include(CppVersion)
+set_cpp_version()
+
+set(MINIFIEXE_SOURCES MiNiFiMain.cpp MainHelper.cpp MiNiFiWindowsService.cpp AgentDocs.cpp TableFormatter.cpp Fips.cpp)
+if(WIN32)
+    set_source_files_properties("${CMAKE_BINARY_DIR}/libminifi/src/core/logging/WindowsMessageTextFile.rc" PROPERTIES GENERATED TRUE)
+    list(APPEND MINIFIEXE_SOURCES "${CMAKE_BINARY_DIR}/libminifi/src/core/logging/WindowsMessageTextFile.rc")
+
+    set(EXECUTABLE_FILE_NAME "minifi.exe")
+    set(EXECUTABLE_FILE_DESCRIPTION "${PRODUCT_NAME} agent")
+    configure_file(${CMAKE_SOURCE_DIR}/versioninfo.rc.in ${CMAKE_CURRENT_BINARY_DIR}/versioninfo.rc @ONLY)
+    list(APPEND MINIFIEXE_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/versioninfo.rc")
+endif()
+add_minifi_executable(minifiexe ${MINIFIEXE_SOURCES})
+
+if (NOT USE_SHARED_LIBS)
+    if (LIBC_STATIC)
+        set_target_properties(minifiexe PROPERTIES LINK_SEARCH_START_STATIC 1)
+    endif(LIBC_STATIC)
+endif(NOT USE_SHARED_LIBS)
+target_link_libraries(minifiexe Threads::Threads)
+
+target_link_libraries(minifiexe yaml-cpp::yaml-cpp)
+if(CUSTOM_MALLOC_LIB)
+    message(VERBOSE "Using custom malloc lib ${CUSTOM_MALLOC_LIB} for minifiexe")
+    target_link_libraries(minifiexe ${CUSTOM_MALLOC_LIB})
+endif()
+
+get_property(extensions GLOBAL PROPERTY EXTENSION-OPTIONS)
+include(GetArgparse)
+target_link_libraries(minifiexe spdlog libsodium::libsodium gsl-lite::gsl-lite argparse::argparse core-minifi)
+
+set_target_properties(minifiexe PROPERTIES RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+set_target_properties(minifiexe PROPERTIES OUTPUT_NAME minifi)
+if (WIN32)
+    target_compile_definitions(minifiexe PUBLIC SERVICE_NAME="Apache NiFi MINiFi")
+endif()
+
+if (WIN32)
+    add_custom_command(TARGET minifiexe POST_BUILD COMMAND ${CMAKE_COMMAND} -E copy $<TARGET_FILE:minifiexe> ${CMAKE_BINARY_DIR}/minifi_main/)
+endif()
+
+if (NOT WIN32)
+    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" AND NOT APPLE)
+        target_link_options(minifiexe PRIVATE "-Wl,--disable-new-dtags")
+    endif()
+
+    if (MINIFI_PACKAGING_TYPE STREQUAL "RPM")
+        set_target_properties(minifiexe PROPERTIES
+                INSTALL_RPATH "/usr/${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}")
+
+    else()
+        if (APPLE)
+            set_target_properties(minifiexe PROPERTIES INSTALL_RPATH "@loader_path")
+        else()
+            set_target_properties(minifiexe PROPERTIES INSTALL_RPATH "$ORIGIN")
+        endif()
+    endif()
+
+    install(TARGETS minifiexe RUNTIME DESTINATION ${CMAKE_INSTALL_BINDIR} COMPONENT bin)
+endif()

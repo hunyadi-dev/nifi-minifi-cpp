@@ -1,28 +1,11 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include "SociConnectors.h"
+#include "core/logging/LoggerFactory.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace sql {
+namespace org::apache::nifi::minifi::sql {
 
 void SociRow::setIterator(const soci::rowset<soci::row>::iterator& iter) {
   current_ = iter;
@@ -86,12 +69,12 @@ int SociRow::getInteger(std::size_t index) const {
   return current_->get<int>(index);
 }
 
-long long SociRow::getLongLong(std::size_t index) const {
-  return current_->get<long long>(index);
+long long SociRow::getLongLong(std::size_t index) const {  // NOLINT(google-runtime-int,runtime/int)
+  return current_->get<long long>(index);  // NOLINT(google-runtime-int,runtime/int)
 }
 
-unsigned long long SociRow::getUnsignedLongLong(std::size_t index) const {
-  return current_->get<unsigned long long>(index);
+unsigned long long SociRow::getUnsignedLongLong(std::size_t index) const {  // NOLINT(google-runtime-int,runtime/int)
+  return current_->get<unsigned long long>(index);  // NOLINT(google-runtime-int,runtime/int)
 }
 
 std::tm SociRow::getDate(std::size_t index) const {
@@ -114,13 +97,29 @@ void SociRowset::next() {
   current_row_.next();
 }
 
+SociStatement::SociStatement(soci::session &session, const std::string &query)
+    : Statement(query), session_(session), logger_(core::logging::LoggerFactory<SociStatement>::getLogger()) {}
+
 std::unique_ptr<Rowset> SociStatement::execute(const std::vector<std::string>& args) {
-  auto stmt = session_.prepare << query_;
-  for (auto& arg : args) {
-    // binds arguments to the prepared statement
-    stmt.operator,(soci::use(arg));
+  try {
+    auto stmt = session_.prepare << query_;
+    for (auto& arg : args) {
+      // binds arguments to the prepared statement
+      stmt.operator,(soci::use(arg));
+    }
+    return std::make_unique<SociRowset>(stmt);
+  } catch (const soci::soci_error& ex) {
+    logger_->log_error("Error while evaluating query, type: {}, what: {}", typeid(ex).name(), ex.what());
+    if (ex.get_error_category() == soci::soci_error::error_category::connection_error
+        || ex.get_error_category() == soci::soci_error::error_category::system_error) {
+      throw sql::ConnectionError(ex.get_error_message());
+    } else {
+      throw sql::StatementError(ex.get_error_message());
+    }
+  } catch (const std::exception& ex) {
+    logger_->log_error("Error while evaluating query, type: {}, what: {}", typeid(ex).name(), ex.what());
+    throw sql::StatementError(ex.what());
   }
-  return std::make_unique<SociRowset>(stmt);
 }
 
 void SociSession::begin() {
@@ -174,8 +173,4 @@ soci::connection_parameters ODBCConnection::getSessionParameters() const {
   return parameters;
 }
 
-} /* namespace sql */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+}  // namespace org::apache::nifi::minifi::sql

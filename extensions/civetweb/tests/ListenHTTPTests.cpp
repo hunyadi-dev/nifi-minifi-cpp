@@ -1,20 +1,6 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include <fstream>
 #include <map>
@@ -22,16 +8,31 @@
 #include <set>
 #include <iostream>
 
-#include "TestBase.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
 
 #include "utils/file/FileUtils.h"
 #include "processors/GetFile.h"
 #include "processors/UpdateAttribute.h"
 #include "processors/LogAttribute.h"
 #include "processors/ListenHTTP.h"
-#include "client/HTTPClient.h"
+#include "http/HTTPClient.h"
 #include "controllers/SSLContextService.h"
 #include "properties/Configure.h"
+#include "FlowController.h"
+#include "SchedulingAgent.h"
+#include "core/ProcessGroup.h"
+#include "unit/SingleProcessorTestController.h"
+#include "unit/TestUtils.h"
+
+namespace org::apache::nifi::minifi::test {
+
+struct ListenHTTPTestAccessor {
+  METHOD_ACCESSOR(pendingRequestCount)
+};
+
+using namespace std::literals::chrono_literals;
+using HttpRequestMethod = org::apache::nifi::minifi::http::HttpRequestMethod;
 
 class ListenHTTPTestsFixture {
  public:
@@ -50,20 +51,19 @@ class ListenHTTPTestsFixture {
     LogTestController::getInstance().setDebug<minifi::core::ProcessGroup>();
     LogTestController::getInstance().setDebug<minifi::core::Processor>();
     LogTestController::getInstance().setTrace<minifi::core::ProcessSession>();
-    LogTestController::getInstance().setTrace<processors::ListenHTTP>();
-    LogTestController::getInstance().setTrace<processors::ListenHTTP::Handler>();
-    LogTestController::getInstance().setDebug<processors::LogAttribute>();
-    LogTestController::getInstance().setDebug<utils::HTTPClient>();
-    LogTestController::getInstance().setDebug<minifi::controllers::SSLContextService>();
+    LogTestController::getInstance().setTrace<minifi::processors::ListenHTTP>();
+    LogTestController::getInstance().setTrace<minifi::processors::ListenHTTP::Handler>();
+    LogTestController::getInstance().setDebug<minifi::processors::LogAttribute>();
+    LogTestController::getInstance().setDebug<minifi::http::HTTPClient>();
+    LogTestController::getInstance().setDebug<minifi::controllers::SSLContextServiceInterface>();
 
     // Create temporary directories
     tmp_dir = testController.createTempDirectory();
     REQUIRE(!tmp_dir.empty());
 
     // Define test input file
-    std::string test_input_file = utils::file::FileUtils::concat_path(tmp_dir, "test");
     {
-      std::ofstream os(test_input_file);
+      std::ofstream os(tmp_dir / "test");
       os << "Hello response body";
     }
 
@@ -89,142 +89,166 @@ class ListenHTTPTestsFixture {
         true);
 
     // Configure GetFile processor
-    plan->setProperty(get_file, "Input Directory", tmp_dir);
+    plan->setProperty(get_file, minifi::processors::GetFile::Directory, tmp_dir.string());
 
     // Configure UpdateAttribute processor
-    plan->setProperty(update_attribute, "http.type", "response_body", true);
+    plan->setDynamicProperty(update_attribute, "http.type", "response_body");
 
     // Configure ListenHTTP processor
-    plan->setProperty(listen_http, "Listening Port", "0");
+    plan->setProperty(listen_http, minifi::processors::ListenHTTP::Port, "0");
+    listen_http->setMaxConcurrentTasks(10);
 
-    plan->setProperty(log_attribute, "FlowFiles To Log", "0");
+    plan->setProperty(log_attribute, minifi::processors::LogAttribute::FlowFilesToLog, "0");
   }
+
+  ListenHTTPTestsFixture(ListenHTTPTestsFixture&&) = delete;
+  ListenHTTPTestsFixture(const ListenHTTPTestsFixture&) = delete;
+  ListenHTTPTestsFixture& operator=(ListenHTTPTestsFixture&&) = delete;
+  ListenHTTPTestsFixture& operator=(const ListenHTTPTestsFixture&) = delete;
 
   virtual ~ListenHTTPTestsFixture() {
     LogTestController::getInstance().reset();
   }
 
   void create_ssl_context_service(const char* ca, const char* client_cert) {
-    auto config = std::make_shared<minifi::Configure>();
+    auto config = std::make_shared<minifi::ConfigureImpl>();
+    auto executable_dir = minifi::utils::file::FileUtils::get_executable_dir();
     if (ca != nullptr) {
-      config->set(minifi::Configure::nifi_security_client_ca_certificate, utils::file::FileUtils::get_executable_dir() + "/resources/" + ca);
+      config->set(minifi::Configure::nifi_security_client_ca_certificate, (executable_dir / "resources" / ca).string());
     }
     if (client_cert != nullptr) {
-      config->set(minifi::Configure::nifi_security_client_certificate, utils::file::FileUtils::get_executable_dir() + "/resources/" + client_cert);
-      config->set(minifi::Configure::nifi_security_client_private_key, utils::file::FileUtils::get_executable_dir() + "/resources/" + client_cert);
+      config->set(minifi::Configure::nifi_security_client_certificate, (executable_dir / "resources" / client_cert).string());
+      config->set(minifi::Configure::nifi_security_client_private_key, (executable_dir / "resources" / client_cert).string());
       config->set(minifi::Configure::nifi_security_client_pass_phrase, "Password12");
     }
-    ssl_context_service = std::make_shared<minifi::controllers::SSLContextService>("SSLContextService", config);
-    ssl_context_service->onEnable();
+    ssl_context_service = minifi::controllers::SSLContextService::createAndEnable("SSLContextService", config);
   }
 
   void run_server() {
-    plan->setProperty(listen_http, "Batch Size", std::to_string(batch_size_));
-    plan->setProperty(listen_http, "Buffer Size", std::to_string(buffer_size_));
+    plan->setProperty(listen_http, minifi::processors::ListenHTTP::BatchSize, std::to_string(batch_size_));
+    plan->setProperty(listen_http, minifi::processors::ListenHTTP::BufferSize, std::to_string(buffer_size_));
 
     plan->runNextProcessor();  // GetFile
     plan->runNextProcessor();  // UpdateAttribute
     plan->runNextProcessor();  // ListenHTTP
 
-    auto raw_ptr = dynamic_cast<org::apache::nifi::minifi::processors::ListenHTTP*>(listen_http.get());
-    std::string protocol = std::string("http") + (raw_ptr->isSecure() ? "s" : "");
-    std::string portstr = raw_ptr->getPort();
+    std::string protocol = std::string("http") + (listen_http.get().isSecure() ? "s" : "");
+    std::string portstr = listen_http.get().getPort();
     REQUIRE(LogTestController::getInstance().contains("Listening on port " + portstr));
 
     url = protocol + "://localhost:" + portstr + "/contentListener/" + endpoint;
   }
 
-  void initialize_client() {
-    if (client != nullptr) {
-      return;
-    }
-
-    client = std::unique_ptr<utils::HTTPClient>(new utils::HTTPClient());
-    client->initialize(method, url, ssl_context_service);
-    client->setVerbose();
-    for (const auto &header : headers) {
-      client->appendHeader(header.first, header.second);
-    }
-    if (method == "POST") {
-      client->setPostFields(payload);
-    }
-  }
-
-  void check_content_type() {
+  void check_content_type(minifi::http::HTTPClient& client) {
     if (endpoint == "test") {
-      std::string content_type;
-      if (!update_attribute->getDynamicProperty("mime.type", content_type)) {
-        content_type = "application/octet-stream";
-      }
-      REQUIRE(content_type == utils::StringUtils::trim(client->getParsedHeaders().at("Content-type")));
-      REQUIRE("19" == utils::StringUtils::trim(client->getParsedHeaders().at("Content-length")));
+      const auto content_type = update_attribute->getDynamicProperty("mime.type").value_or("application/octet-stream");
+      REQUIRE(content_type == minifi::utils::string::trim(client.getResponseHeaderMap().at("Content-type")));
+      REQUIRE("19" == minifi::utils::string::trim(client.getResponseHeaderMap().at("Content-length")));
     } else {
-      REQUIRE("0" == utils::StringUtils::trim(client->getParsedHeaders().at("Content-length")));
+      REQUIRE("0" == minifi::utils::string::trim(client.getResponseHeaderMap().at("Content-length")));
     }
   }
 
-  void check_response_body() {
-    if (method != "GET" && method != "POST") {
+  void check_response_body(minifi::http::HTTPClient& client) {
+    if (client.getMethod() != HttpRequestMethod::Get && client.getMethod() != HttpRequestMethod::Post) {
       return;
     }
 
-    const auto &body_chars = client->getResponseBody();
+    const auto &body_chars = client.getResponseBody();
     std::string response_body(body_chars.data(), body_chars.size());
     if (endpoint == "test") {
       REQUIRE("Hello response body" == response_body);
     } else {
-      REQUIRE("" == response_body);
+      REQUIRE(response_body.empty());
     }
   }
 
-  void check_response(const bool success, const HttpResponseExpectations& expect) {
+  void check_response(const bool success, const HttpResponseExpectations& expect, minifi::http::HTTPClient& client) {
     if (!expect.should_succeed) {
       REQUIRE(!success);
-      REQUIRE(expect.response_code == client->getResponseCode());
+      REQUIRE(expect.response_code == client.getResponseCode());
       return;
     }
 
     REQUIRE(success);
-    REQUIRE(expect.response_code == client->getResponseCode());
+    REQUIRE(expect.response_code == client.getResponseCode());
     if (expect.response_code != 200) {
       return;
     }
 
-    check_content_type();
-    check_response_body();
+    check_content_type(client);
+    check_response_body(client);
   }
 
-  void test_connect(const std::vector<HttpResponseExpectations>& response_expectaitons = {HttpResponseExpectations{}}, std::size_t expected_commited_requests = 1) {
-    initialize_client();
+  void test_connect(
+      const std::vector<HttpResponseExpectations>& response_expectations = {HttpResponseExpectations{}},
+      std::size_t expected_committed_requests = 1,
+      std::unique_ptr<minifi::http::HTTPClient> client_to_use = {}) {
+    if (client_to_use) {
+      REQUIRE(response_expectations.size() == 1);
+    }
+    TypedProcessorWrapper<minifi::processors::ListenHTTP> proc = &plan->getCurrentContext()->getProcessor();
+    REQUIRE(proc);
 
-    for (const auto& expect : response_expectaitons) {
-      check_response(client->submit(), expect);
+    std::vector<std::thread> client_threads;
+
+    for (auto& expect : response_expectations) {
+      size_t prev_req_count = ListenHTTPTestAccessor::call_pendingRequestCount(proc.get());
+      auto thread_done_flag = std::make_shared<std::atomic_bool>(false);
+      client_threads.emplace_back([&, thread_done_flag] {
+        auto client = client_to_use ? std::move(client_to_use) : initialize_client();
+        std::cout << "Submitting request" << std::endl;
+        check_response(client->submit(), expect, *client);
+        thread_done_flag->store(true);
+      });
+      while (!thread_done_flag->load() && ListenHTTPTestAccessor::call_pendingRequestCount(proc.get()) != prev_req_count + 1) {
+        std::this_thread::sleep_for(1ms);
+      }
     }
 
     plan->runCurrentProcessor();  // ListenHTTP
     plan->runNextProcessor();  // LogAttribute
-    if (expected_commited_requests > 0 && (method == "GET" || method == "POST")) {
+    // shutdown processors so pending requests are correctly discarded
+    plan.reset();
+
+    for (auto& thread : client_threads) {
+      thread.join();
+    }
+
+    if (expected_committed_requests > 0 && (method == HttpRequestMethod::Get || method == HttpRequestMethod::Post)) {
       REQUIRE(LogTestController::getInstance().contains("Size:" + std::to_string(payload.size()) + " Offset:0"));
     }
-    REQUIRE(LogTestController::getInstance().contains("Logged " + std::to_string(expected_commited_requests) + " flow files"));
+    REQUIRE(LogTestController::getInstance().contains("Logged " + std::to_string(expected_committed_requests) + " flow files"));
+  }
+
+  std::unique_ptr<minifi::http::HTTPClient> initialize_client() {
+    auto client = std::make_unique<minifi::http::HTTPClient>();
+    client->initialize(method, url, ssl_context_service);
+    client->setVerbose(false);
+    for (const auto &header : headers) {
+      client->setRequestHeader(header.first, header.second);
+    }
+    if (method == HttpRequestMethod::Post) {
+      client->setPostFields(payload);
+    }
+    return client;
   }
 
  protected:
-  std::string tmp_dir;
+  std::filesystem::path tmp_dir;
   TestController testController;
   std::shared_ptr<TestPlan> plan;
-  std::shared_ptr<core::Processor> get_file;
-  std::shared_ptr<core::Processor> update_attribute;
-  std::shared_ptr<core::Processor> listen_http;
-  std::shared_ptr<core::Processor> log_attribute;
+  core::Processor* get_file = nullptr;
+  core::Processor* update_attribute = nullptr;
+  TypedProcessorWrapper<org::apache::nifi::minifi::processors::ListenHTTP> listen_http = nullptr;
+  core::Processor* log_attribute = nullptr;
 
-  std::shared_ptr<minifi::controllers::SSLContextService> ssl_context_service;
-  std::string method = "GET";
+  std::shared_ptr<minifi::controllers::SSLContextServiceInterface> ssl_context_service;
+  HttpRequestMethod method = HttpRequestMethod::Get;
   std::map<std::string, std::string> headers;
   std::string payload;
   std::string endpoint = "test";
   std::string url;
-  std::unique_ptr<utils::HTTPClient> client;
   std::size_t batch_size_ = 0;
   std::size_t buffer_size_ = 0;
 };
@@ -232,7 +256,7 @@ class ListenHTTPTestsFixture {
 TEST_CASE("ListenHTTP creation", "[basic]") {
   TestController testController;
   std::shared_ptr<core::Processor>
-      processor = std::make_shared<org::apache::nifi::minifi::processors::ListenHTTP>("processorname");
+      processor = minifi::test::utils::make_processor<org::apache::nifi::minifi::processors::ListenHTTP>("processorname");
   REQUIRE(processor->getName() == "processorname");
 }
 
@@ -244,7 +268,7 @@ TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP GET", "[basic]") {
 TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP POST", "[basic]") {
   run_server();
 
-  method = "POST";
+  method = HttpRequestMethod::Post;
   payload = "Test payload";
 
   test_connect();
@@ -253,7 +277,7 @@ TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP POST", "[basic]") {
 TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP PUT", "[basic]") {
   run_server();
 
-  method = "PUT";
+  method = HttpRequestMethod::Put;
 
   test_connect({HttpResponseExpectations{true, 405}}, 0);
 }
@@ -261,7 +285,7 @@ TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP PUT", "[basic]") {
 TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP DELETE", "[basic]") {
   run_server();
 
-  method = "DELETE";
+  method = HttpRequestMethod::Delete;
 
   test_connect({HttpResponseExpectations{true, 405}}, 0);
 }
@@ -269,7 +293,7 @@ TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP DELETE", "[basic]") {
 TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP HEAD", "[basic]") {
   run_server();
 
-  method = "HEAD";
+  method = HttpRequestMethod::Head;
 
   test_connect({HttpResponseExpectations{}}, 0);
 }
@@ -279,51 +303,51 @@ TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP no body", "[basic]") {
 
 
   SECTION("GET") {
-    method = "GET";
+    method = HttpRequestMethod::Get;
   }
   SECTION("POST") {
-    method = "POST";
+    method = HttpRequestMethod::Post;
     payload = "Test payload";
   }
   SECTION("HEAD") {
-    method = "HEAD";
+    method = HttpRequestMethod::Head;
   }
 
   run_server();
-  const std::size_t expected_commited_requests = (method == "POST" || method == "GET") ? 1 : 0;
-  test_connect({HttpResponseExpectations{}}, expected_commited_requests);
+  const std::size_t expected_committed_requests = (method == HttpRequestMethod::Post || method == HttpRequestMethod::Get) ? 1 : 0;
+  test_connect({HttpResponseExpectations{}}, expected_committed_requests);
 }
 
 TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP body with different mime type", "[basic][mime]") {
-  plan->setProperty(update_attribute, "mime.type", "text/plain", true);
+  plan->setDynamicProperty(update_attribute, "mime.type", "text/plain");
 
   SECTION("GET") {
-    method = "GET";
+    method = HttpRequestMethod::Get;
   }
   SECTION("POST") {
-    method = "POST";
+    method = HttpRequestMethod::Post;
     payload = "Test payload";
   }
   SECTION("HEAD") {
-    method = "HEAD";
+    method = HttpRequestMethod::Head;
   }
 
   run_server();
-  const std::size_t expected_commited_requests = (method == "POST" || method == "GET") ? 1 : 0;
-  test_connect({HttpResponseExpectations{}}, expected_commited_requests);
+  const std::size_t expected_committed_requests = (method == HttpRequestMethod::Post || method == HttpRequestMethod::Get) ? 1 : 0;
+  test_connect({HttpResponseExpectations{}}, expected_committed_requests);
 }
 
 TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP all headers", "[basic][headers]") {
-  plan->setProperty(listen_http, "HTTP Headers to receive as Attributes (Regex)", ".*");
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::HeadersAsAttributesRegex, ".*");
 
   headers = {{"foo", "1"},
              {"bar", "2"}};
 
   SECTION("GET") {
-    method = "GET";
+    method = HttpRequestMethod::Get;
   }
   SECTION("POST") {
-    method = "POST";
+    method = HttpRequestMethod::Post;
     payload = "Test payload";
   }
 
@@ -335,16 +359,16 @@ TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP all headers", "[basic][headers]")
 }
 
 TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP filtered headers", "[headers]") {
-  plan->setProperty(listen_http, "HTTP Headers to receive as Attributes (Regex)", "f.*");
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::HeadersAsAttributesRegex, "f.*");
 
   headers = {{"foo", "1"},
              {"bar", "2"}};
 
   SECTION("GET") {
-    method = "GET";
+    method = HttpRequestMethod::Get;
   }
   SECTION("POST") {
-    method = "POST";
+    method = HttpRequestMethod::Post;
     payload = "Test payload";
   }
 
@@ -352,7 +376,7 @@ TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP filtered headers", "[headers]") {
   test_connect();
 
   REQUIRE(LogTestController::getInstance().contains("key:foo value:1"));
-  REQUIRE(false == LogTestController::getInstance().contains("key:bar value:2", std::chrono::seconds(0) /*timeout*/));
+  REQUIRE(false == LogTestController::getInstance().contains("key:bar value:2", 0s));
 }
 
 TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP Batch tests", "[batch]") {
@@ -360,10 +384,10 @@ TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP Batch tests", "[batch]") {
   std::vector<HttpResponseExpectations> requests;
   auto create_requests = [&](std::size_t successful, std::size_t failed) {
     for (std::size_t i = 0; i < successful; ++i) {
-      requests.push_back(HttpResponseExpectations{true, 200});
+      requests.emplace_back(true, 200);
     }
     for (std::size_t i = 0; i < failed; ++i) {
-      requests.push_back(HttpResponseExpectations{true, 503});
+      requests.emplace_back(true, 503);
     }
   };
 
@@ -373,24 +397,24 @@ TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP Batch tests", "[batch]") {
     expected_processed_request_count = 5;
 
     SECTION("GET") {
-      method = "GET";
+      method = HttpRequestMethod::Get;
     }
     SECTION("POST") {
-      method = "POST";
+      method = HttpRequestMethod::Post;
       payload = "Test payload";
     }
   }
 
   SECTION("Batch size smaller than request count") {
     batch_size_ = 4;
-    create_requests(5, 0);
+    create_requests(4, 1);
     expected_processed_request_count = 4;
 
     SECTION("GET") {
-      method = "GET";
+      method = HttpRequestMethod::Get;
     }
     SECTION("POST") {
-      method = "POST";
+      method = HttpRequestMethod::Post;
       payload = "Test payload";
     }
   }
@@ -402,10 +426,10 @@ TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP Batch tests", "[batch]") {
     expected_processed_request_count = 3;
 
     SECTION("GET") {
-      method = "GET";
+      method = HttpRequestMethod::Get;
     }
     SECTION("POST") {
-      method = "POST";
+      method = HttpRequestMethod::Post;
       payload = "Test payload";
     }
   }
@@ -414,116 +438,119 @@ TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTP Batch tests", "[batch]") {
   test_connect(requests, expected_processed_request_count);
 }
 
-#ifdef OPENSSL_SUPPORT
 TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTPS without CA", "[basic][https]") {
-  plan->setProperty(listen_http, "SSL Certificate", utils::file::FileUtils::concat_path(utils::file::FileUtils::get_executable_dir(), "resources/server.pem"));
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLCertificate, (minifi::utils::file::FileUtils::get_executable_dir() / "resources" / "server.pem").string());
 
   create_ssl_context_service("goodCA.crt", nullptr);
 
   SECTION("GET") {
-    method = "GET";
+    method = HttpRequestMethod::Get;
   }
   SECTION("POST") {
-    method = "POST";
+    method = HttpRequestMethod::Post;
     payload = "Test payload";
   }
   SECTION("HEAD") {
-    method = "HEAD";
+    method = HttpRequestMethod::Head;
   }
 
   run_server();
-  const std::size_t expected_commited_requests = (method == "POST" || method == "GET") ? 1 : 0;
-  test_connect({HttpResponseExpectations{}}, expected_commited_requests);
+  const std::size_t expected_committed_requests = (method == HttpRequestMethod::Post || method == HttpRequestMethod::Get) ? 1 : 0;
+  test_connect({HttpResponseExpectations{}}, expected_committed_requests);
 }
 
 TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTPS without client cert", "[basic][https]") {
-  plan->setProperty(listen_http, "SSL Certificate", utils::file::FileUtils::concat_path(utils::file::FileUtils::get_executable_dir(), "resources/server.pem"));
-  plan->setProperty(listen_http, "SSL Certificate Authority", utils::file::FileUtils::concat_path(utils::file::FileUtils::get_executable_dir(), "resources/goodCA.crt"));
+  auto executable_dir = minifi::utils::file::FileUtils::get_executable_dir();
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLCertificate, (executable_dir / "resources" / "server.pem").string());
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLCertificateAuthority, (executable_dir / "resources" / "goodCA.crt").string());
 
   create_ssl_context_service("goodCA.crt", nullptr);
 
   SECTION("GET") {
-    method = "GET";
+    method = HttpRequestMethod::Get;
   }
   SECTION("POST") {
-    method = "POST";
+    method = HttpRequestMethod::Post;
     payload = "Test payload";
   }
   SECTION("HEAD") {
-    method = "HEAD";
+    method = HttpRequestMethod::Head;
   }
 
   run_server();
-  const std::size_t expected_commited_requests = (method == "POST" || method == "GET") ? 1 : 0;
-  test_connect({HttpResponseExpectations{}}, expected_commited_requests);
+  const std::size_t expected_committed_requests = (method == HttpRequestMethod::Post || method == HttpRequestMethod::Get) ? 1 : 0;
+  test_connect({HttpResponseExpectations{}}, expected_committed_requests);
 }
 
 TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTPS with client cert from good CA", "[https]") {
-  plan->setProperty(listen_http, "SSL Certificate", utils::file::FileUtils::concat_path(utils::file::FileUtils::get_executable_dir(), "resources/server.pem"));
-  plan->setProperty(listen_http, "SSL Certificate Authority", utils::file::FileUtils::concat_path(utils::file::FileUtils::get_executable_dir(), "resources/goodCA.crt"));
-  plan->setProperty(listen_http, "SSL Verify Peer", "yes");
+  auto executable_dir = minifi::utils::file::FileUtils::get_executable_dir();
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLCertificate, (executable_dir / "resources" / "server.pem").string());
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLCertificateAuthority, (executable_dir / "resources" / "goodCA.crt").string());
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLVerifyPeer, "yes");
 
   create_ssl_context_service("goodCA.crt", "goodCA_goodClient.pem");
 
   SECTION("GET") {
-    method = "GET";
+    method = HttpRequestMethod::Get;
   }
   SECTION("POST") {
-    method = "POST";
+    method = HttpRequestMethod::Post;
     payload = "Test payload";
   }
   SECTION("HEAD") {
-    method = "HEAD";
+    method = HttpRequestMethod::Head;
   }
 
   run_server();
-  const std::size_t expected_commited_requests = (method == "POST" || method == "GET") ? 1 : 0;
-  test_connect({HttpResponseExpectations{}}, expected_commited_requests);
+  const std::size_t expected_committed_requests = (method == HttpRequestMethod::Post || method == HttpRequestMethod::Get) ? 1 : 0;
+  test_connect({HttpResponseExpectations{}}, expected_committed_requests);
 }
 
 TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTPS with PKCS12 client cert from good CA", "[https]") {
-  plan->setProperty(listen_http, "SSL Certificate", utils::file::FileUtils::concat_path(utils::file::FileUtils::get_executable_dir(), "resources/server.pem"));
-  plan->setProperty(listen_http, "SSL Certificate Authority", utils::file::FileUtils::concat_path(utils::file::FileUtils::get_executable_dir(), "resources/goodCA.crt"));
-  plan->setProperty(listen_http, "SSL Verify Peer", "yes");
+  auto executable_dir = minifi::utils::file::FileUtils::get_executable_dir();
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLCertificate, (executable_dir / "resources" / "server.pem").string());
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLCertificateAuthority, (executable_dir / "resources" / "goodCA.crt").string());
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLVerifyPeer, "yes");
 
   create_ssl_context_service("goodCA.crt", "goodCA_goodClient.p12");
 
   SECTION("GET") {
-    method = "GET";
+    method = HttpRequestMethod::Get;
   }
   SECTION("POST") {
-    method = "POST";
+    method = HttpRequestMethod::Post;
     payload = "Test payload";
   }
   SECTION("HEAD") {
-    method = "HEAD";
+    method = HttpRequestMethod::Head;
   }
 
   run_server();
-  const std::size_t expected_commited_requests = (method == "POST" || method == "GET") ? 1 : 0;
-  test_connect({HttpResponseExpectations{}}, expected_commited_requests);
+  const std::size_t expected_committed_requests = (method == HttpRequestMethod::Post || method == HttpRequestMethod::Get) ? 1 : 0;
+  test_connect({HttpResponseExpectations{}}, expected_committed_requests);
 }
 
 TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTPS with client cert from bad CA", "[https]") {
-  plan->setProperty(listen_http, "SSL Certificate", utils::file::FileUtils::concat_path(utils::file::FileUtils::get_executable_dir(), "resources/server.pem"));
-  plan->setProperty(listen_http, "SSL Certificate Authority", utils::file::FileUtils::concat_path(utils::file::FileUtils::get_executable_dir(), "resources/goodCA.crt"));
+  auto executable_dir = minifi::utils::file::FileUtils::get_executable_dir();
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLCertificate, (executable_dir / "resources" / "server.pem").string());
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLCertificateAuthority, (executable_dir / "resources" / "goodCA.crt").string());
 
   bool should_succeed = false;
   int64_t response_code = 0;
-  std::size_t expected_commited_requests = 0;
+  std::size_t expected_committed_requests = 0;
   SECTION("verify peer") {
     should_succeed = false;
-    plan->setProperty(listen_http, "SSL Verify Peer", "yes");
+    plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLVerifyPeer, "yes");
 
     SECTION("GET") {
-      method = "GET";
+      method = HttpRequestMethod::Get;
     }
     SECTION("POST") {
-      method = "POST";
+      method = HttpRequestMethod::Post;
       payload = "Test payload";
     }
     SECTION("HEAD") {
-      method = "HEAD";
+      method = HttpRequestMethod::Head;
     }
   }
   SECTION("do not verify peer") {
@@ -531,123 +558,140 @@ TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTPS with client cert from bad CA", "
     response_code = 200;
 
     SECTION("GET") {
-      method = "GET";
-      expected_commited_requests = 1;
+      method = HttpRequestMethod::Get;
+      expected_committed_requests = 1;
     }
     SECTION("POST") {
-      method = "POST";
+      method = HttpRequestMethod::Post;
       payload = "Test payload";
-      expected_commited_requests = 1;
+      expected_committed_requests = 1;
     }
     SECTION("HEAD") {
-      method = "HEAD";
+      method = HttpRequestMethod::Head;
     }
   }
 
   create_ssl_context_service("goodCA.crt", "badCA_goodClient.pem");
 
   run_server();
-  test_connect({HttpResponseExpectations{should_succeed, response_code}}, expected_commited_requests);
+  test_connect({HttpResponseExpectations{should_succeed, response_code}}, expected_committed_requests);
 }
 
 TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTPS with client cert with matching DN", "[https][DN]") {
-  plan->setProperty(listen_http, "SSL Certificate", utils::file::FileUtils::concat_path(utils::file::FileUtils::get_executable_dir(), "resources/server.pem"));
-  plan->setProperty(listen_http, "SSL Certificate Authority", utils::file::FileUtils::concat_path(utils::file::FileUtils::get_executable_dir(), "resources/goodCA.crt"));
-  plan->setProperty(listen_http, "Authorized DN Pattern", ".*/CN=good\\..*");
-  plan->setProperty(listen_http, "SSL Verify Peer", "yes");
+  auto executable_dir = minifi::utils::file::FileUtils::get_executable_dir();
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLCertificate, (executable_dir / "resources" / "server.pem").string());
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLCertificateAuthority, (executable_dir / "resources" / "goodCA.crt").string());
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::AuthorizedDNPattern, ".*/CN=good\\..*");
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLVerifyPeer, "yes");
 
   create_ssl_context_service("goodCA.crt", "goodCA_goodClient.pem");
 
   SECTION("GET") {
-    method = "GET";
+    method = HttpRequestMethod::Get;
   }
   SECTION("POST") {
-    method = "POST";
+    method = HttpRequestMethod::Post;
     payload = "Test payload";
   }
   SECTION("HEAD") {
-    method = "HEAD";
+    method = HttpRequestMethod::Head;
   }
 
   run_server();
-  const std::size_t expected_commited_requests = (method == "POST" || method == "GET") ? 1 : 0;
-  test_connect({HttpResponseExpectations{}}, expected_commited_requests);
+  const std::size_t expected_committed_requests = (method == HttpRequestMethod::Post || method == HttpRequestMethod::Get) ? 1 : 0;
+  test_connect({HttpResponseExpectations{}}, expected_committed_requests);
 }
 
 TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTPS with client cert with non-matching DN", "[https][DN]") {
-  plan->setProperty(listen_http, "SSL Certificate", utils::file::FileUtils::concat_path(utils::file::FileUtils::get_executable_dir(), "resources/server.pem"));
-  plan->setProperty(listen_http, "SSL Certificate Authority", utils::file::FileUtils::concat_path(utils::file::FileUtils::get_executable_dir(), "resources/goodCA.crt"));
-  plan->setProperty(listen_http, "Authorized DN Pattern", ".*/CN=good\\..*");
+  auto executable_dir = minifi::utils::file::FileUtils::get_executable_dir();
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLCertificate, (executable_dir / "resources" / "server.pem").string());
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLCertificateAuthority, (executable_dir / "resources" / "goodCA.crt").string());
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::AuthorizedDNPattern, ".*/CN=good\\..*");
 
   int64_t response_code = 0;
-  std::size_t expected_commited_requests = 0;
+  std::size_t expected_committed_requests = 0;
   SECTION("verify peer") {
-    plan->setProperty(listen_http, "SSL Verify Peer", "yes");
+    plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLVerifyPeer, "yes");
     response_code = 403;
 
     SECTION("GET") {
-      method = "GET";
+      method = HttpRequestMethod::Get;
     }
     SECTION("POST") {
-      method = "POST";
+      method = HttpRequestMethod::Post;
       payload = "Test payload";
     }
     SECTION("HEAD") {
-      method = "HEAD";
+      method = HttpRequestMethod::Head;
     }
   }
   SECTION("do not verify peer") {
     response_code = 200;
 
     SECTION("GET") {
-      method = "GET";
-      expected_commited_requests = 1;
+      method = HttpRequestMethod::Get;
+      expected_committed_requests = 1;
     }
     SECTION("POST") {
-      method = "POST";
+      method = HttpRequestMethod::Post;
       payload = "Test payload";
-      expected_commited_requests = 1;
+      expected_committed_requests = 1;
     }
     SECTION("HEAD") {
-      method = "HEAD";
+      method = HttpRequestMethod::Head;
     }
   }
 
   create_ssl_context_service("goodCA.crt", "goodCA_badClient.pem");
 
   run_server();
-  test_connect({HttpResponseExpectations{true, response_code}}, expected_commited_requests);
+  test_connect({HttpResponseExpectations{true, response_code}}, expected_committed_requests);
 }
 
-#if CURL_AT_LEAST_VERSION(7, 54, 0)
 TEST_CASE_METHOD(ListenHTTPTestsFixture, "HTTPS minimum SSL version", "[https]") {
-  plan->setProperty(listen_http, "SSL Certificate", utils::file::FileUtils::concat_path(utils::file::FileUtils::get_executable_dir(), "resources/server.pem"));
-  plan->setProperty(listen_http, "SSL Certificate Authority", utils::file::FileUtils::concat_path(utils::file::FileUtils::get_executable_dir(), "resources/goodCA.crt"));
+  auto executable_dir = minifi::utils::file::FileUtils::get_executable_dir();
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLCertificate, (executable_dir / "resources" / "server.pem").string());
+  plan->setProperty(listen_http, minifi::processors::ListenHTTP::SSLCertificateAuthority, (executable_dir / "resources" / "goodCA.crt").string());
 
   SECTION("GET") {
-    method = "GET";
+    method = HttpRequestMethod::Get;
   }
   SECTION("POST") {
-    method = "POST";
+    method = HttpRequestMethod::Post;
     payload = "Test payload";
   }
   SECTION("HEAD") {
-    method = "HEAD";
+    method = HttpRequestMethod::Head;
   }
 
   create_ssl_context_service("goodCA.crt", "goodCA_goodClient.pem");
 
   run_server();
 
-  client = std::unique_ptr<utils::HTTPClient>(new utils::HTTPClient());
-  client->setVerbose();
+  auto client = std::make_unique<minifi::http::HTTPClient>();
+  client->setVerbose(false);
   client->initialize(method, url, ssl_context_service);
-  if (method == "POST") {
+  if (method == HttpRequestMethod::Post) {
     client->setPostFields(payload);
   }
-  REQUIRE(client->setSpecificSSLVersion(utils::SSLVersion::TLSv1_1));
+  REQUIRE(client->setSpecificSSLVersion(minifi::http::SSLVersion::TLSv1_1));
 
-  test_connect({HttpResponseExpectations{false, 0}}, 0);
+  test_connect({HttpResponseExpectations{false, 0}}, 0, std::move(client));
 }
-#endif
-#endif
+
+TEST_CASE("ListenHTTP bored yield", "[listenhttp][bored][yield]") {
+  using processors::ListenHTTP;
+  SingleProcessorTestController controller{minifi::test::utils::make_processor<ListenHTTP>("listenhttp")};
+  auto listen_http = controller.getProcessor();
+  REQUIRE(listen_http->setProperty(ListenHTTP::Port.name, "0"));
+
+  REQUIRE(!listen_http->isYield());
+  const auto output = controller.trigger();
+  REQUIRE(std::all_of(std::begin(output), std::end(output), [](const auto& kv) {
+    const auto& [relationship, flow_files] = kv;
+    return flow_files.empty();
+  }));
+  REQUIRE(listen_http->isYield());
+}
+
+}  // namespace org::apache::nifi::minifi::test

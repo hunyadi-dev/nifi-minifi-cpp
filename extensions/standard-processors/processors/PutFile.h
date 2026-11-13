@@ -1,145 +1,129 @@
-/**
- * @file PutFile.h
- * PutFile class declaration
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_PUTFILE_H_
-#define EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_PUTFILE_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
 
 #include <memory>
 #include <string>
 #include <utility>
 
-#include "FlowFileRecord.h"
-#include "core/Processor.h"
+#include "core/ProcessorImpl.h"
+#include "minifi-cpp/core/ProcessContext.h"
 #include "core/ProcessSession.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "minifi-cpp/core/PropertyValidator.h"
+#include "minifi-cpp/core/RelationshipDefinition.h"
 #include "core/Core.h"
-#include "core/logging/LoggerConfiguration.h"
+#include "core/logging/LoggerFactory.h"
 #include "utils/Id.h"
-#include "utils/Export.h"
+#include "minifi-cpp/utils/Export.h"
+#include "utils/Enum.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace processors {
+namespace org::apache::nifi::minifi::processors {
 
-class PutFile : public core::Processor {
+class PutFile : public core::ProcessorImpl {
  public:
-  static constexpr char const *CONFLICT_RESOLUTION_STRATEGY_REPLACE = "replace";
-  static constexpr char const *CONFLICT_RESOLUTION_STRATEGY_IGNORE = "ignore";
-  static constexpr char const *CONFLICT_RESOLUTION_STRATEGY_FAIL = "fail";
-
-  static constexpr char const *ProcessorName = "PutFile";
-
-  /*!
-   * Create a new processor
-   */
-  PutFile(const std::string& name,  const utils::Identifier& uuid = {}) // NOLINT
-      : core::Processor(std::move(name), uuid),
-        logger_(logging::LoggerFactory<PutFile>::getLogger()) {
-  }
+  using ProcessorImpl::ProcessorImpl;
 
   ~PutFile() override = default;
 
-  // Supported Properties
-  EXTENSIONAPI static core::Property Directory;
-  EXTENSIONAPI static core::Property ConflictResolution;
-  EXTENSIONAPI static core::Property CreateDirs;
-  EXTENSIONAPI static core::Property MaxDestFiles;
-#ifndef WIN32
-  EXTENSIONAPI static core::Property Permissions;
-  EXTENSIONAPI static core::Property DirectoryPermissions;
-#endif
-  // Supported Relationships
-  EXTENSIONAPI static core::Relationship Success;
-  EXTENSIONAPI static core::Relationship Failure;
-
-  /**
-   * Function that's executed when the processor is scheduled.
-   * @param context process context.
-   * @param sessionFactory process session factory that is used when creating
-   * ProcessSession objects.
-   */
-  void onSchedule(core::ProcessContext *context, core::ProcessSessionFactory *sessionFactory) override;
-
-  void onTrigger(core::ProcessContext *context, core::ProcessSession *session) override;
-  void initialize() override;
-
-  class ReadCallback : public InputStreamCallback {
-   public:
-    ReadCallback(std::string tmp_file, std::string dest_file);
-    ~ReadCallback() override;
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) override;
-    bool commit();
-
-   private:
-    std::shared_ptr<logging::Logger> logger_{ logging::LoggerFactory<PutFile::ReadCallback>::getLogger() };
-    bool write_succeeded_ = false;
-    std::string tmp_file_;
-    std::string dest_file_;
+  enum class FileExistsResolutionStrategy {
+    fail,
+    replace,
+    ignore
   };
 
-  /**
-   * Generate a safe (universally-unique) temporary filename on the same partition
-   *
-   * @param filename from which to generate temporary write file path
-   * @return
-   */
-  std::string tmpWritePath(const std::string &filename, const std::string &directory) const;
+  EXTENSIONAPI static constexpr const char* Description = "Writes the contents of a FlowFile to the local file system";
+
+#ifndef WIN32
+  EXTENSIONAPI static constexpr auto Permissions = core::PropertyDefinitionBuilder<>::createProperty("Permissions")
+      .withDescription("Sets the permissions on the output file to the value of this attribute. "
+          "Must be an octal number (e.g. 644 or 0755). Not supported on Windows systems.")
+      .build();
+  EXTENSIONAPI static constexpr auto DirectoryPermissions = core::PropertyDefinitionBuilder<>::createProperty("Directory Permissions")
+      .withDescription("Sets the permissions on the directories being created if 'Create Missing Directories' property is set. "
+          "Must be an octal number (e.g. 644 or 0755). Not supported on Windows systems.")
+      .build();
+#endif
+  EXTENSIONAPI static constexpr auto Directory = core::PropertyDefinitionBuilder<>::createProperty("Directory")
+      .withDescription("The output directory to which to put files")
+      .supportsExpressionLanguage(true)
+      .withDefaultValue(".")
+      .build();
+  EXTENSIONAPI static constexpr auto ConflictResolution = core::PropertyDefinitionBuilder<magic_enum::enum_count<FileExistsResolutionStrategy>()>::createProperty("Conflict Resolution Strategy")
+      .withDescription("Indicates what should happen when a file with the same name already exists in the output directory")
+      .withDefaultValue(magic_enum::enum_name(FileExistsResolutionStrategy::fail))
+      .withAllowedValues(magic_enum::enum_names<FileExistsResolutionStrategy>())
+      .build();
+  EXTENSIONAPI static constexpr auto CreateDirs = core::PropertyDefinitionBuilder<0>::createProperty("Create Missing Directories")
+      .withDescription("If true, then missing destination directories will be created. If false, flowfiles are penalized and sent to failure.")
+      .withDefaultValue("true")
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .isRequired(true)
+      .build();
+  EXTENSIONAPI static constexpr auto MaxDestFiles = core::PropertyDefinitionBuilder<>::createProperty("Maximum File Count")
+      .withDescription("Specifies the maximum number of files that can exist in the output directory")
+      .withValidator(core::StandardPropertyValidators::INTEGER_VALIDATOR)
+      .withDefaultValue("-1")
+      .build();
+  EXTENSIONAPI static constexpr auto Properties =
+#ifndef WIN32
+      std::to_array<core::PropertyReference>({
+          Permissions,
+          DirectoryPermissions,
+#else
+      std::to_array<core::PropertyReference>({
+#endif
+          Directory,
+          ConflictResolution,
+          CreateDirs,
+          MaxDestFiles
+      });
+
+  EXTENSIONAPI static constexpr auto Success = core::RelationshipDefinition{"success", "All files are routed to success"};
+  EXTENSIONAPI static constexpr auto Failure = core::RelationshipDefinition{"failure", "Failed files (conflict, write failure, etc.) are transferred to failure"};
+  EXTENSIONAPI static constexpr auto Relationships = std::array{Success, Failure};
+
+  EXTENSIONAPI static constexpr bool SupportsDynamicProperties = false;
+  EXTENSIONAPI static constexpr bool SupportsDynamicRelationships = false;
+  EXTENSIONAPI static constexpr core::annotation::Input InputRequirement = core::annotation::Input::INPUT_REQUIRED;
+  EXTENSIONAPI static constexpr bool IsSingleThreaded = false;
+
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_PROCESSORS
+
+  void onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& session_factory) override;
+  void onTrigger(core::ProcessContext& context, core::ProcessSession& session) override;
+  void initialize() override;
 
  private:
-  core::annotation::Input getInputRequirement() const override {
-    return core::annotation::Input::INPUT_REQUIRED;
-  }
-
-  std::string conflict_resolution_;
+  FileExistsResolutionStrategy conflict_resolution_strategy_ = FileExistsResolutionStrategy::fail;
   bool try_mkdirs_ = true;
-  int64_t max_dest_files_ = -1;
+  std::optional<uint64_t> max_dest_files_ = std::nullopt;
 
-  bool putFile(core::ProcessSession *session,
-               std::shared_ptr<core::FlowFile> flowFile,
-               const std::string &tmpFile,
-               const std::string &destFile,
-               const std::string &destDir);
-  std::shared_ptr<logging::Logger> logger_;
+  void prepareDirectory(const std::filesystem::path& directory_path) const;
+  bool directoryIsFull(const std::filesystem::path& directory) const;
+  std::optional<std::filesystem::path> getDestinationPath(core::ProcessContext& context, const std::shared_ptr<core::FlowFile>& flow_file);
+  void putFile(core::ProcessSession& session, const std::shared_ptr<core::FlowFile>& flow_file, const std::filesystem::path& dest_file);
   static std::shared_ptr<utils::IdGenerator> id_generator_;
 
 #ifndef WIN32
   class FilePermissions {
     static const uint32_t MINIMUM_INVALID_PERMISSIONS_VALUE = 1 << 9;
+
    public:
-    bool valid() { return permissions_ < MINIMUM_INVALID_PERMISSIONS_VALUE; }
-    uint32_t getValue() const { return permissions_; }
+    [[nodiscard]] bool valid() const { return permissions_ < MINIMUM_INVALID_PERMISSIONS_VALUE; }
+    [[nodiscard]] uint32_t getValue() const { return permissions_; }
     void setValue(uint32_t perms) { permissions_ = perms; }
+
    private:
     uint32_t permissions_ = MINIMUM_INVALID_PERMISSIONS_VALUE;
   };
   FilePermissions permissions_;
   FilePermissions directory_permissions_;
-  void getPermissions(core::ProcessContext *context);
-  void getDirectoryPermissions(core::ProcessContext *context);
+  void getPermissions(const core::ProcessContext& context);
+  void getDirectoryPermissions(const core::ProcessContext& context);
 #endif
-};
+};  // NOLINT the linter gets confused by the '{'s inside #ifdef's
 
-}  // namespace processors
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_PUTFILE_H_
+}  // namespace org::apache::nifi::minifi::processors

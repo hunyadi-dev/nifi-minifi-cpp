@@ -1,0 +1,44 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#pragma once
+
+#include <memory>
+#include <string>
+#include <unordered_map>
+
+#include "core/controller/ControllerServiceBase.h"
+#include "core/Core.h"
+#include "core/logging/LoggerFactory.h"
+#include "minifi-cpp/core/StateManager.h"
+#include "core/StateStorage.h"
+#include "minifi-cpp/controllers/keyvalue/KeyValueStateStorage.h"
+
+namespace org::apache::nifi::minifi::controllers {
+
+class KeyValueStateStorage : public core::StateStorageImpl, public core::controller::ControllerServiceBase, public core::controller::ControllerServiceHandle {
+ public:
+  using ControllerServiceBase::ControllerServiceBase;
+
+  static core::StateManager::State deserialize(const std::string& serialized);
+  static std::string serialize(const core::StateManager::State& kvs);
+
+  using core::StateStorageImpl::createStateManager;
+  std::unique_ptr<core::StateManager> createStateManager(const utils::Identifier& uuid) override;
+  std::unordered_map<utils::Identifier, core::StateManager::State> getAllStates() override;
+
+  virtual bool set(const std::string& key, const std::string& value) = 0;
+  virtual bool get(const std::string& key, std::string& value) = 0;
+  virtual bool get(std::unordered_map<std::string, std::string>& kvs) = 0;
+  virtual bool remove(const std::string& key) = 0;
+  virtual bool clear() = 0;
+  virtual bool update(const std::string& key, const std::function<bool(bool /*exists*/, std::string& /*value*/)>& update_func) = 0;
+  virtual bool persist() = 0;
+  [[nodiscard]] ControllerServiceHandle* getControllerServiceHandle() override {return this;}
+
+ private:
+  bool getAll(std::unordered_map<utils::Identifier, std::string>& kvs);
+};
+
+}  // namespace org::apache::nifi::minifi::controllers

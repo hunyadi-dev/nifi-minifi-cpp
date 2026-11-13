@@ -1,0 +1,14 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+sources:
+  "11.1.1":
+    url: "https://github.com/facebook/rocksdb/archive/refs/tags/v11.1.1.tar.gz"
+    sha256: "63f11183fe40725a0e89a9e392f2c86c94b90064f1d95f5173a02cfe40de13f7"
+patches:
+  "11.1.1":
+    - patch_file: "patches/dboptions_equality_operator.patch"
+      patch_description: "Add equality operator to DBOptions"
+      patch_type: "add-missing-functionality"
+      patch_source: "https://github.com/apache/nifi-minifi-cpp/pull/1731"

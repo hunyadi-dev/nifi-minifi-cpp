@@ -1,37 +1,20 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #pragma once
 
+#include <soci/soci.h>
+#include <soci/odbc/soci-odbc.h>
 #include <memory>
 #include <string>
 #include <ctime>
 
-#include "Exception.h"
+#include "minifi-cpp/Exception.h"
 #include "data/DatabaseConnectors.h"
-#include <soci/soci.h>
-#include <soci/odbc/soci-odbc.h>
+#include "minifi-cpp/core/logging/Logger.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace sql {
+namespace org::apache::nifi::minifi::sql {
 
 class SociRow : public Row {
  public:
@@ -46,8 +29,8 @@ class SociRow : public Row {
   std::string getString(std::size_t index) const override;
   double getDouble(std::size_t index) const override;
   int getInteger(std::size_t index) const override;
-  long long getLongLong(std::size_t index) const override;
-  unsigned long long getUnsignedLongLong(std::size_t index) const override;
+  long long getLongLong(std::size_t index) const override;  // NOLINT(runtime/int)
+  unsigned long long getUnsignedLongLong(std::size_t index) const override;  // NOLINT(runtime/int)
   std::tm getDate(std::size_t index) const override;
 
  private:
@@ -56,7 +39,7 @@ class SociRow : public Row {
 
 class SociRowset : public Rowset {
  public:
-  SociRowset(const soci::rowset<soci::row>& rowset) : rowset_(rowset) {
+  explicit SociRowset(const soci::rowset<soci::row>& rowset) : rowset_(rowset) {
   }
 
   void reset() override;
@@ -71,14 +54,15 @@ class SociRowset : public Rowset {
 
 class SociStatement : public Statement {
  public:
-  explicit SociStatement(soci::session& session, const std::string &query)
-    : Statement(query), session_(session) {
-  }
+  SociStatement(soci::session& session, const std::string &query);
 
   std::unique_ptr<Rowset> execute(const std::vector<std::string>& args = {}) override;
 
  protected:
   soci::session& session_;
+
+ private:
+  std::shared_ptr<core::logging::Logger> logger_;
 };
 
 class SociSession : public Session {
@@ -92,7 +76,7 @@ class SociSession : public Session {
   void rollback() override;
   void execute(const std::string &statement) override;
 
-protected:
+ protected:
   soci::session& session_;
 };
 
@@ -105,15 +89,11 @@ class ODBCConnection : public sql::Connection {
   std::unique_ptr<Session> getSession() const override;
 
  private:
-   soci::connection_parameters getSessionParameters() const;
+  soci::connection_parameters getSessionParameters() const;
 
  private:
   std::unique_ptr<soci::session> session_;
   std::string connection_string_;
 };
 
-} /* namespace sql */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+}  // namespace org::apache::nifi::minifi::sql

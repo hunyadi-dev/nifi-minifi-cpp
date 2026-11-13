@@ -1,0 +1,137 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#define EXTENSION_LIST "*minifi-*"  // NOLINT(cppcoreguidelines-macro-usage)
+
+#include <cassert>
+#include <chrono>
+#include <memory>
+#include <string>
+#include <thread>
+#include <utility>
+#include <vector>
+
+#include "FlowController.h"
+#include "controllers/SSLContextService.h"
+#include "core/ProcessGroup.h"
+#include "core/Resource.h"
+#include "core/controller/ControllerServiceNodeMap.h"
+#include "core/controller/StandardControllerServiceProvider.h"
+#include "core/yaml/YamlConfiguration.h"
+#include "integration/IntegrationBase.h"
+#include "properties/Configure.h"
+#include "unit/Catch.h"
+#include "unit/MockClasses.h"
+#include "unit/ProvenanceTestHelper.h"
+#include "unit/TestUtils.h"
+
+namespace org::apache::nifi::minifi::test {
+
+REGISTER_RESOURCE(MockControllerService, ControllerService);
+REGISTER_RESOURCE(MockProcessor, Processor);
+
+void waitToVerifyProcessor() {
+  std::this_thread::sleep_for(std::chrono::seconds(2));
+}
+
+TEST_CASE("ControllerServiceIntegrationTests", "[controller]") {
+  using org::apache::nifi::minifi::test::utils::verifyEventHappenedInPollTime;
+  std::shared_ptr<minifi::Configure> configuration = std::make_shared<minifi::ConfigureImpl>();
+
+  auto test_repo = std::make_shared<TestThreadedRepository>();
+  std::shared_ptr<core::Repository> test_flow_repo = std::make_shared<TestFlowRepository>();
+
+  const auto test_file_path = std::filesystem::path(TEST_RESOURCES) / "TestControllerServices.yml";
+  configuration->set(minifi::Configure::nifi_flow_configuration_file, test_file_path.string());
+  std::string priv_key_file = "cn.ckey.pem";
+  std::string passphrase = "cn.pass";
+  configuration->set(minifi::Configure::nifi_security_client_certificate, test_file_path.string());
+  configuration->set(minifi::Configure::nifi_security_client_private_key, priv_key_file);
+  configuration->set(minifi::Configure::nifi_security_client_pass_phrase, passphrase);
+  configuration->set(minifi::Configure::nifi_default_directory, TEST_RESOURCES);
+
+  std::shared_ptr<core::ContentRepository> content_repo = std::make_shared<core::repository::VolatileContentRepository>();
+  content_repo->initialize(configuration);
+  auto encryption_key = minifi::utils::string::from_hex("e4bce4be67f417ed2530038626da57da7725ff8c0b519b692e4311e4d4fe8a28");
+  std::unique_ptr<core::FlowConfiguration> yaml_ptr = std::make_unique<core::YamlConfiguration>(core::ConfigurationContext{
+      .flow_file_repo = test_repo,
+      .content_repo = content_repo,
+      .configuration = configuration,
+      .path = test_file_path,
+      .filesystem = std::make_shared<minifi::utils::file::FileSystem>(),
+      .sensitive_values_encryptor = minifi::utils::crypto::EncryptionProvider{minifi::utils::crypto::XSalsa20Cipher{encryption_key}}
+  });
+  const auto controller = std::make_shared<minifi::FlowController>(test_repo, test_flow_repo, configuration, std::move(yaml_ptr), content_repo);
+
+  core::YamlConfiguration yaml_config(core::ConfigurationContext{
+      .flow_file_repo = test_repo,
+      .content_repo = content_repo,
+      .configuration = configuration,
+      .path = test_file_path,
+      .filesystem = std::make_shared<minifi::utils::file::FileSystem>(),
+      .sensitive_values_encryptor = minifi::utils::crypto::EncryptionProvider{minifi::utils::crypto::XSalsa20Cipher{encryption_key}}
+  });
+  auto pg = yaml_config.getRoot();
+
+  auto* mockNode = pg->findControllerService("MockItLikeIts1995");
+  REQUIRE(mockNode != nullptr);
+  mockNode->enable();
+  std::vector<core::controller::ControllerServiceNode*> linkedNodes = mockNode->getLinkedControllerServices();
+  REQUIRE(linkedNodes.size() == 1);
+
+  auto* notInProcessGroup = pg->findControllerService("SubMockController");
+  REQUIRE(notInProcessGroup == nullptr);
+  REQUIRE(pg->getChildProcessGroups().size() == 1);
+  auto* cpg = pg->getChildProcessGroups().begin()->get();
+  auto subMockController = cpg->findControllerService("SubMockController");
+  REQUIRE(subMockController != nullptr);
+  subMockController->enable();
+  std::vector<core::controller::ControllerServiceNode*> subMockControllerLinkedNodes = subMockController->getLinkedControllerServices();
+  REQUIRE(subMockControllerLinkedNodes.size() == 2);
+
+  core::controller::ControllerServiceNode* notexistNode = pg->findControllerService("MockItLikeItsWrong");
+  REQUIRE(notexistNode == nullptr);
+
+  std::shared_ptr<minifi::controllers::SSLContextServiceInterface> ssl_client;
+  {
+    std::lock_guard<std::mutex> lock(control_mutex);
+    controller->load();
+    controller->start();
+    auto* ssl_client_node = controller->getControllerServiceNode("SSLClientServiceTest");
+    REQUIRE(ssl_client_node != nullptr);
+    ssl_client_node->enable();
+    REQUIRE(ssl_client_node->getControllerServiceImplementation() != nullptr);
+    ssl_client = ssl_client_node->getControllerServiceImplementation<minifi::controllers::SSLContextServiceInterface>();
+  }
+  REQUIRE(!ssl_client->getCACertificate().empty());
+  // now let's disable one of the controller services.
+  const auto* const cs_id = controller->getControllerServiceNode("ID");
+  REQUIRE(cs_id != nullptr);
+  // TODO(adebreceni): MINIFICPP-1992
+//  const auto checkCsIdEnabledMatchesDisabledFlag = [&cs_id] { return !disabled == cs_id->enabled(); };
+//  {
+//    std::lock_guard<std::mutex> lock(control_mutex);
+//    controller->enableControllerService(cs_id);
+//    disabled = false;
+//  }
+//  std::shared_ptr<core::controller::ControllerServiceNode> mock_cont = controller->getControllerServiceNode("MockItLikeIts1995");
+//  REQUIRE(verifyEventHappenedInPollTime(std::chrono::seconds(4), checkCsIdEnabledMatchesDisabledFlag));
+//  {
+//    std::lock_guard<std::mutex> lock(control_mutex);
+//    controller->disableReferencingServices(mock_cont);
+//    disabled = true;
+//  }
+//  REQUIRE(verifyEventHappenedInPollTime(std::chrono::seconds(2), checkCsIdEnabledMatchesDisabledFlag));
+//  {
+//    std::lock_guard<std::mutex> lock(control_mutex);
+//    controller->enableReferencingServices(mock_cont);
+//    disabled = false;
+//  }
+//  REQUIRE(verifyEventHappenedInPollTime(std::chrono::seconds(2), checkCsIdEnabledMatchesDisabledFlag));
+
+  REQUIRE(verifyEventHappenedInPollTime(10s, [&] { return subprocess_controller_service_not_found_correctly.load(); }));
+  REQUIRE(verifyEventHappenedInPollTime(10s, [&] { return subprocess_controller_service_found_correctly.load(); }));
+  controller->waitUnload(60s);
+}
+
+}  // namespace org::apache::nifi::minifi::test

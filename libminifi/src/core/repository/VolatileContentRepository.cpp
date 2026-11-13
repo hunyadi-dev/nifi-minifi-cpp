@@ -1,191 +1,139 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include "core/repository/VolatileContentRepository.h"
+#include "core/logging/LoggerFactory.h"
 
-#include <cstdio>
-#include <memory>
-#include <string>
-#include <thread>
+namespace org::apache::nifi::minifi::core::repository {
 
-#include "core/expect.h"
-#include "io/FileStream.h"
-#include "utils/StringUtils.h"
+namespace {
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace core {
-namespace repository {
+class StringRefStream : public io::BaseStream {
+ public:
+  StringRefStream(std::shared_ptr<std::string> data, std::mutex& data_store_mtx, std::shared_ptr<std::string>& data_store, std::atomic<size_t>& total_size)
+      : data_(std::move(data)), data_store_mtx_(data_store_mtx), data_store_(data_store), total_size_(total_size) {}
 
-const char *VolatileContentRepository::minimal_locking = "minimal.locking";
-
-bool VolatileContentRepository::initialize(const std::shared_ptr<Configure> &configure) {
-  VolatileRepository::initialize(configure);
-
-  if (configure != nullptr) {
-    std::string value;
-    std::stringstream strstream;
-    strstream << Configure::nifi_volatile_repository_options << getName() << "." << minimal_locking;
-    if (configure->get(strstream.str(), value)) {
-      minimize_locking_ =  utils::StringUtils::toBool(value).value_or(true);
-    }
+  [[nodiscard]] size_t size() const override {
+    return data_->size();
   }
-  if (!minimize_locking_) {
-    for (auto ent : value_vector_) {
-      delete ent;
-    }
-    value_vector_.clear();
-  }
-  start();
 
+  size_t read(std::span<std::byte> out_buffer) override {
+    auto read_size = std::min(data_->size() - read_offset_, out_buffer.size());
+    const auto source_span = as_bytes(std::span{*data_}.subspan(read_offset_, read_size));
+    std::copy_n(source_span.data(), source_span.size(), out_buffer.data());
+    read_offset_ += read_size;
+    return read_size;
+  }
+
+  size_t write(const uint8_t *value, size_t len) override {
+    data_ = std::make_shared<std::string>(*data_);
+    data_->append(reinterpret_cast<const char*>(value), len);
+    total_size_ += len;
+    {
+      std::lock_guard lock(data_store_mtx_);
+      data_store_ = data_;
+    }
+    return len;
+  }
+
+  void close() override {}
+
+  void seek(size_t offset) override {
+    read_offset_ = std::min(offset, data_->size());
+  }
+
+  [[nodiscard]] size_t tell() const override {
+    return read_offset_;
+  }
+
+  int initialize() override {
+    return 1;
+  }
+
+  [[nodiscard]] std::span<const std::byte> getBuffer() const override {
+    return as_bytes(std::span{*data_});
+  }
+
+ private:
+  size_t read_offset_{0};
+  std::shared_ptr<std::string> data_;
+  std::mutex& data_store_mtx_;
+  std::shared_ptr<std::string>& data_store_;
+  std::atomic<size_t>& total_size_;
+};
+
+}  // namespace
+
+VolatileContentRepository::VolatileContentRepository(std::string_view name)
+  : ContentRepositoryImpl(name),
+    logger_(logging::LoggerFactory<VolatileContentRepository>::getLogger()) {}
+
+uint64_t VolatileContentRepository::getRepositorySize() const {
+  return total_size_.load();
+}
+
+uint64_t VolatileContentRepository::getMaxRepositorySize() const {
+  return std::numeric_limits<uint64_t>::max();
+}
+
+uint64_t VolatileContentRepository::getRepositoryEntryCount() const {
+  std::lock_guard lock(data_mtx_);
+  return data_.size();
+}
+
+bool VolatileContentRepository::isFull() const {
+  return false;
+}
+
+bool VolatileContentRepository::initialize(const std::shared_ptr<Configure>& /*configure*/) {
   return true;
 }
 
-void VolatileContentRepository::stop() {
-  running_ = false;
-}
-
-void VolatileContentRepository::run() {
-}
-
-void VolatileContentRepository::start() {
-  if (this->purge_period_ <= 0)
-    return;
-  if (running_)
-    return;
-  thread_ = std::thread(&VolatileContentRepository::run, sharedFromThis());
-  thread_.detach();
-  running_ = true;
-  logger_->log_info("%s Repository Monitor Thread Start", getName());
-}
-
-std::shared_ptr<io::BaseStream> VolatileContentRepository::write(const minifi::ResourceClaim &claim, bool /*append*/) {
-  logger_->log_info("enter write for %s", claim.getContentFullPath());
-  {
-    std::lock_guard<std::mutex> lock(map_mutex_);
-    auto claim_check = master_list_.find(claim.getContentFullPath());
-    if (claim_check != master_list_.end()) {
-      logger_->log_info("Creating copy of atomic entry");
-      auto ent = claim_check->second->takeOwnership();
-      if (ent == nullptr) {
-        return nullptr;
-      }
-      return std::make_shared<io::AtomicEntryStream<ResourceClaim::Path>>(claim.getContentFullPath(), ent);
-    }
+std::shared_ptr<io::BaseStream> VolatileContentRepository::write(const minifi::ResourceClaim &claim, bool append) {
+  std::lock_guard lock(data_mtx_);
+  auto& value_ref = data_[claim.getContentFullPath()];
+  if (!value_ref) {
+    value_ref = std::make_shared<std::string>();
+  } else if (!append) {
+    total_size_ -= value_ref->size();
+    value_ref = std::make_shared<std::string>();
   }
+  return std::make_shared<StringRefStream>(value_ref, data_mtx_, value_ref, total_size_);
+}
 
-  int size = 0;
-  if (LIKELY(minimize_locking_ == true)) {
-    for (auto ent : value_vector_) {
-      if (ent->testAndSetKey(claim.getContentFullPath())) {
-        std::lock_guard<std::mutex> lock(map_mutex_);
-        master_list_[claim.getContentFullPath()] = ent;
-        logger_->log_info("Minimize locking, return stream for %s", claim.getContentFullPath());
-        return std::make_shared<io::AtomicEntryStream<ResourceClaim::Path>>(claim.getContentFullPath(), ent);
-      }
-      size++;
-    }
-  } else {
-    std::lock_guard<std::mutex> lock(map_mutex_);
-    auto claim_check = master_list_.find(claim.getContentFullPath());
-    if (claim_check != master_list_.end()) {
-      return std::make_shared<io::AtomicEntryStream<ResourceClaim::Path>>(claim.getContentFullPath(), claim_check->second);
-    } else {
-      auto *ent = new AtomicEntry<ResourceClaim::Path>(&current_size_, &max_size_);
-      if (ent->testAndSetKey(claim.getContentFullPath())) {
-        master_list_[claim.getContentFullPath()] = ent;
-        return std::make_shared<io::AtomicEntryStream<ResourceClaim::Path>>(claim.getContentFullPath(), ent);
-      }
-    }
+std::shared_ptr<io::BaseStream> VolatileContentRepository::read(const minifi::ResourceClaim &claim) {
+  std::lock_guard lock(data_mtx_);
+  if (auto it = data_.find(claim.getContentFullPath()); it != data_.end()) {
+    return std::make_shared<StringRefStream>(it->second, data_mtx_, it->second, total_size_);
   }
-  logger_->log_info("Cannot write %s %d, returning nullptr to roll back session. Repo is either full or locked", claim.getContentFullPath(), size);
   return nullptr;
 }
 
 bool VolatileContentRepository::exists(const minifi::ResourceClaim &claim) {
-  std::lock_guard<std::mutex> lock(map_mutex_);
-  auto claim_check = master_list_.find(claim.getContentFullPath());
-  if (claim_check != master_list_.end()) {
-    auto ent = claim_check->second->takeOwnership();
-    if (ent == nullptr) {
-      return false;
-    }
-    return true;
-  }
-
-  return false;
+  std::lock_guard lock(data_mtx_);
+  return data_.contains(claim.getContentFullPath());
 }
 
-std::shared_ptr<io::BaseStream> VolatileContentRepository::read(const minifi::ResourceClaim &claim) {
-  std::lock_guard<std::mutex> lock(map_mutex_);
-  auto claim_check = master_list_.find(claim.getContentFullPath());
-  if (claim_check != master_list_.end()) {
-    auto ent = claim_check->second->takeOwnership();
-    if (ent == nullptr) {
-      return nullptr;
-    }
-    return std::make_shared<io::AtomicEntryStream<ResourceClaim::Path>>(claim.getContentFullPath(), ent);
-  }
-
-  return nullptr;
+bool VolatileContentRepository::close(const minifi::ResourceClaim &claim) {
+  return remove(claim);
 }
 
-bool VolatileContentRepository::remove(const minifi::ResourceClaim &claim) {
-  if (LIKELY(minimize_locking_ == true)) {
-    std::lock_guard<std::mutex> lock(map_mutex_);
-    auto ent = master_list_.find(claim.getContentFullPath());
-    if (ent != master_list_.end()) {
-      auto ptr = ent->second;
-      // if we cannot remove the entry we will let the owner's destructor
-      // decrement the reference count and free it
-      master_list_.erase(claim.getContentFullPath());
-      // because of the test and set we need to decrement ownership
-      ptr->decrementOwnership();
-      if (ptr->freeValue(claim.getContentFullPath())) {
-        logger_->log_info("Deleting resource %s", claim.getContentFullPath());
-        return true;
-      } else {
-        logger_->log_info("free failed for %s", claim.getContentFullPath());
-      }
-    } else {
-      logger_->log_info("Could not remove %s", claim.getContentFullPath());
-    }
+void VolatileContentRepository::clearOrphans() {
+  // there are no persisted orphans to delete
+}
+
+bool VolatileContentRepository::removeKey(const std::string& content_path) {
+  std::lock_guard lock(data_mtx_);
+  if (auto it = data_.find(content_path); it != data_.end()) {
+    total_size_ -= it->second->size();
+    data_.erase(it);
+    logger_->log_info("Deleting resource {}", content_path);
   } else {
-    std::lock_guard<std::mutex> lock(map_mutex_);
-    auto claim_item = master_list_.find(claim.getContentFullPath());
-    if (claim_item != master_list_.end()) {
-      auto size = claim_item->second->getLength();
-      delete claim_item->second;
-      master_list_.erase(claim.getContentFullPath());
-      current_size_ -= size;
-    }
-    return true;
+    logger_->log_error("Could not find key {}", content_path);
   }
 
-  logger_->log_info("Could not remove %s, may not exist", claim.getContentFullPath());
-  return false;
+  return true;
 }
 
-}  // namespace repository
-}  // namespace core
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+}  // namespace org::apache::nifi::minifi::core::repository

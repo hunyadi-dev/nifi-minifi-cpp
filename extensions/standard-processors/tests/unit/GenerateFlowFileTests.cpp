@@ -1,238 +1,137 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#include <utility>
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #include <memory>
 #include <string>
-#include <vector>
 #include <set>
-#include <fstream>
 
-#include "TestBase.h"
-#include "utils/file/FileUtils.h"
+#include "unit/TestBase.h"
+#include "unit/SingleProcessorTestController.h"
+#include "unit/Catch.h"
 #include "GenerateFlowFile.h"
-#include "PutFile.h"
+#include "unit/TestUtils.h"
 
-TEST_CASE("GenerateFlowFileTest", "[generateflowfiletest]") {
-  TestController testController;
-  LogTestController::getInstance().setTrace<TestPlan>();
-  LogTestController::getInstance().setWarn<minifi::processors::GenerateFlowFile>();
+using minifi::processors::GenerateFlowFile;
 
-  auto dir = testController.createTempDirectory();
+TEST_CASE("GenerateFlowFileWithBinaryData") {
+  std::optional<bool> is_unique;
 
-  std::shared_ptr<TestPlan> plan = testController.createPlan();
+  SECTION("Not unique") {
+    is_unique = false;
+  }
 
-  std::shared_ptr<core::Processor> genfile = plan->addProcessor("GenerateFlowFile", "genfile");
+  SECTION("Unique") {
+    is_unique = true;
+  }
 
-  std::shared_ptr<core::Processor> putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
 
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory.getName(), dir);
+  minifi::test::SingleProcessorTestController test_controller{minifi::test::utils::make_processor<GenerateFlowFile>("GenerateFlowFile")};
+  auto generate_flow_file = test_controller.getProcessor();
+  LogTestController::getInstance().setWarn<GenerateFlowFile>();
 
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::FileSize.getName(), "10");
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::BatchSize.getName(), "2");
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::UniqueFlowFiles.getName(), "true");
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::DataFormat.getName(), "Text");
-
-  // This property will be ignored if unique flow files are used
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::CustomText.getName(), "Current time: ${now()}");
-
-  plan->runNextProcessor();  // Generate
-  plan->runNextProcessor();  // Put
-  plan->runCurrentProcessor();  // Put
-
-  std::vector<std::string> file_contents;
-
-  auto lambda = [&file_contents](const std::string& path, const std::string& filename) -> bool {
-    std::ifstream is(path + utils::file::FileUtils::get_separator() + filename, std::ifstream::binary);
-    std::string file_content((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
-    file_contents.push_back(file_content);
-    return true;
-  };
-
-  utils::file::FileUtils::list_dir(dir, lambda, plan->getLogger(), false);
-
-  REQUIRE(file_contents.size() == 2);
-  REQUIRE(file_contents[0].size() == 10);
-  REQUIRE(file_contents[1].size() == 10);
-  REQUIRE(file_contents[0] != file_contents[1]);
-  REQUIRE(LogTestController::getInstance().contains("Custom Text property is set, but not used!"));
-}
-
-TEST_CASE("GenerateFlowFileWithNonUniqueBinaryData", "[generateflowfiletest]") {
-  TestController testController;
-  LogTestController::getInstance().setTrace<TestPlan>();
-  LogTestController::getInstance().setWarn<minifi::processors::GenerateFlowFile>();
-
-  auto dir = testController.createTempDirectory();
-
-  std::shared_ptr<TestPlan> plan = testController.createPlan();
-
-  std::shared_ptr<core::Processor> genfile = plan->addProcessor("GenerateFlowFile", "genfile");
-
-  std::shared_ptr<core::Processor> putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
-
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory.getName(), dir);
-
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::FileSize.getName(), "10");
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::BatchSize.getName(), "2");
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::UniqueFlowFiles.getName(), "false");
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::FileSize, "10"));
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::BatchSize, "2"));
 
   // This property will be ignored if binary files are used
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::CustomText.getName(), "Current time: ${now()}");
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::CustomText, "Current time: ${now()}"));
 
-  plan->runNextProcessor();  // Generate
-  plan->runNextProcessor();  // Put
-  plan->runCurrentProcessor();  // Put
+  REQUIRE(is_unique.has_value());
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::UniqueFlowFiles, fmt::format("{}", *is_unique)));
 
-  std::vector<std::vector<char>> fileContents;
+  auto first_batch = test_controller.trigger();
+  REQUIRE(first_batch.at(GenerateFlowFile::Success).size() == 2);
+  auto first_batch_0 = test_controller.plan->getContent(first_batch.at(GenerateFlowFile::Success)[0]);
+  auto first_batch_1 = test_controller.plan->getContent(first_batch.at(GenerateFlowFile::Success)[1]);
+  CHECK(first_batch_0.size() == 10);
 
-  auto lambda = [&fileContents](const std::string& path, const std::string& filename) -> bool {
-    std::ifstream is(path + utils::file::FileUtils::get_separator() + filename, std::ifstream::binary);
+  if (*is_unique) {
+    CHECK(first_batch_0 != first_batch_1);
+  } else {
+    CHECK(first_batch_0 == first_batch_1);
+  }
 
-    is.seekg(0, is.end);
-    size_t length = gsl::narrow<size_t>(is.tellg());
-    is.seekg(0, is.beg);
-
-    std::vector<char> content(length);
-
-    is.read(&content[0], length);
-
-    fileContents.push_back(std::move(content));
-
-    return true;
-  };
-
-  utils::file::FileUtils::list_dir(dir, lambda, plan->getLogger(), false);
-
-  REQUIRE(fileContents.size() == 2);
-  REQUIRE(fileContents[0].size() == 10);
-  REQUIRE(fileContents[1].size() == 10);
-  REQUIRE(fileContents[0] == fileContents[1]);
-  REQUIRE(LogTestController::getInstance().contains("Custom Text property is set, but not used!"));
+  CHECK(LogTestController::getInstance().contains("Custom Text property is set but not used. For Custom Text to be used, Data Format needs to be Text, and Unique FlowFiles needs to be false."));
 }
 
-TEST_CASE("GenerateFlowFileTestEmpty", "[generateemptyfiletest]") {
-  TestController testController;
-  LogTestController::getInstance().setTrace<TestPlan>();
+TEST_CASE("GenerateFlowFileTestEmpty") {
+  minifi::test::SingleProcessorTestController test_controller{minifi::test::utils::make_processor<GenerateFlowFile>("GenerateFlowFile")};
+  auto generate_flow_file = test_controller.getProcessor();
 
-  auto dir = testController.createTempDirectory();
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::FileSize, "0"));
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::UniqueFlowFiles, "false"));
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::DataFormat, "Text"));
 
-  std::shared_ptr<TestPlan> plan = testController.createPlan();
-
-  std::shared_ptr<core::Processor> genfile = plan->addProcessor("GenerateFlowFile", "genfile");
-
-  std::shared_ptr<core::Processor> putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
-
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory.getName(), dir);
-
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::FileSize.getName(), "0");
-
-  plan->runNextProcessor();  // Generate
-  plan->runNextProcessor();  // Put
-
-  size_t counter = 0;
-
-  auto lambda = [&counter](const std::string& path, const std::string& filename) -> bool {
-    std::ifstream is(path + utils::file::FileUtils::get_separator() + filename, std::ifstream::binary);
-
-    is.seekg(0, is.end);
-    REQUIRE(is.tellg() == 0);
-
-    counter++;
-
-    return true;
-  };
-
-  utils::file::FileUtils::list_dir(dir, lambda, plan->getLogger(), false);
-
-  REQUIRE(counter == 1);
+  auto result = test_controller.trigger();
+  REQUIRE(result.at(GenerateFlowFile::Success).size() == 1);
+  auto result_0 = test_controller.plan->getContent(result.at(GenerateFlowFile::Success)[0]);
+  CHECK(result_0.empty());
 }
 
-TEST_CASE("GenerateFlowFileCustomTextTest", "[generateflowfiletest]") {
-  TestController test_controller;
-  LogTestController::getInstance().setTrace<TestPlan>();
+TEST_CASE("GenerateFlowFileCustomTextTest") {
+  minifi::test::SingleProcessorTestController test_controller{minifi::test::utils::make_processor<GenerateFlowFile>("GenerateFlowFile")};
+  auto generate_flow_file = test_controller.getProcessor();
 
-  auto dir = test_controller.createTempDirectory();
 
-  std::shared_ptr<TestPlan> plan = test_controller.createPlan();
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::CustomText, "${UUID()}"));
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::UniqueFlowFiles, "false"));
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::DataFormat, "Text"));
 
-  std::shared_ptr<core::Processor> genfile = plan->addProcessor("GenerateFlowFile", "genfile");
-
-  std::shared_ptr<core::Processor> putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
-
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory.getName(), dir);
-
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::CustomText.getName(), "${UUID()}");
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::UniqueFlowFiles.getName(), "false");
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::DataFormat.getName(), "Text");
-
-  plan->runNextProcessor();  // Generate
-  plan->runNextProcessor();  // Put
-  plan->runCurrentProcessor();  // Put
-
-  std::vector<std::string> file_contents;
-
-  auto lambda = [&file_contents](const std::string& path, const std::string& filename) -> bool {
-    std::ifstream is(path + utils::file::FileUtils::get_separator() + filename, std::ifstream::binary);
-    std::string file_content((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
-    file_contents.push_back(file_content);
-    return true;
-  };
-
-  utils::file::FileUtils::list_dir(dir, lambda, plan->getLogger(), false);
-
-  REQUIRE(file_contents.size() == 1);
-  REQUIRE(file_contents[0].size() == 36);
+  auto result = test_controller.trigger();
+  REQUIRE(result.at(GenerateFlowFile::Success).size() == 1);
+  auto result_0 = test_controller.plan->getContent(result.at(GenerateFlowFile::Success)[0]);
+  CHECK(result_0.length() == utils::Identifier::UUID_STR_LEN);
 }
 
-TEST_CASE("GenerateFlowFileCustomTextEmptyTest", "[generateflowfiletest]") {
-  TestController test_controller;
-  LogTestController::getInstance().setTrace<TestPlan>();
+TEST_CASE("GenerateFlowFileCustomTextEmptyTest") {
+  minifi::test::SingleProcessorTestController test_controller{minifi::test::utils::make_processor<GenerateFlowFile>("GenerateFlowFile")};
+  auto generate_flow_file = test_controller.getProcessor();
 
-  auto dir = test_controller.createTempDirectory();
+  constexpr int32_t file_size = 10;
 
-  std::shared_ptr<TestPlan> plan = test_controller.createPlan();
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::FileSize, std::to_string(file_size)));
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::UniqueFlowFiles, "false"));
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::DataFormat, "Text"));
+  SECTION("Empty custom data") {
+    CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::CustomText, ""));
+  }
 
-  std::shared_ptr<core::Processor> genfile = plan->addProcessor("GenerateFlowFile", "genfile");
+  SECTION("No custom data") {
+  }
 
-  std::shared_ptr<core::Processor> putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
+  auto result = test_controller.trigger();
+  REQUIRE(result.at(GenerateFlowFile::Success).size() == 1);
+  auto result_0 = test_controller.plan->getContent(result.at(GenerateFlowFile::Success)[0]);
+  CHECK(result_0.length() == file_size);
+}
 
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory.getName(), dir);
+TEST_CASE("GenerateFlowFile reevaluating CustomText") {
+  minifi::test::SingleProcessorTestController test_controller{minifi::test::utils::make_processor<GenerateFlowFile>("GenerateFlowFile")};
+  auto generate_flow_file = test_controller.getProcessor();
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::DataFormat, "Text"));
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::UniqueFlowFiles, "false"));
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::CustomText, "${nextInt()}"));
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::BatchSize, "2"));
 
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::FileSize.getName(), "10");
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::CustomText.getName(), "");
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::UniqueFlowFiles.getName(), "false");
-  plan->setProperty(genfile, org::apache::nifi::minifi::processors::GenerateFlowFile::DataFormat.getName(), "Text");
+  for (auto i = 0; i < 100; ++i) {
+    auto batch = test_controller.trigger();
+    auto batch_0 = test_controller.plan->getContent(batch.at(GenerateFlowFile::Success)[0]);
+    auto batch_1 = test_controller.plan->getContent(batch.at(GenerateFlowFile::Success)[1]);
+    CHECK(batch_0 == batch_1);
+    CHECK(batch_0 == std::to_string(i));
+  }
+}
 
-  plan->runNextProcessor();  // Generate
-  plan->runNextProcessor();  // Put
-  plan->runCurrentProcessor();  // Put
+TEST_CASE("GenerateFlowFile CustomText evaluates to empty string") {
+  minifi::test::SingleProcessorTestController test_controller{minifi::test::utils::make_processor<GenerateFlowFile>("GenerateFlowFile")};
+  auto generate_flow_file = test_controller.getProcessor();
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::DataFormat, "Text"));
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::UniqueFlowFiles, "false"));
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::CustomText, "${invalid_variable}"));
+  CHECK(test_controller.plan->setProperty(generate_flow_file, GenerateFlowFile::BatchSize, "2"));
 
-  std::vector<std::string> file_contents;
-
-  auto lambda = [&file_contents](const std::string& path, const std::string& filename) -> bool {
-    std::ifstream is(path + utils::file::FileUtils::get_separator() + filename, std::ifstream::binary);
-    std::string file_content((std::istreambuf_iterator<char>(is)), std::istreambuf_iterator<char>());
-    file_contents.push_back(file_content);
-    return true;
-  };
-
-  utils::file::FileUtils::list_dir(dir, lambda, plan->getLogger(), false);
-
-  REQUIRE(file_contents.size() == 1);
-  REQUIRE(file_contents[0].size() == 10);
+  auto batch = test_controller.trigger();
+  auto batch_0 = test_controller.plan->getContent(batch.at(GenerateFlowFile::Success)[0]);
+  auto batch_1 = test_controller.plan->getContent(batch.at(GenerateFlowFile::Success)[1]);
+  CHECK(batch_0 == batch_1);
+  CHECK(batch_0.empty());
 }

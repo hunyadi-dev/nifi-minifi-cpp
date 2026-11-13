@@ -1,0 +1,78 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include <string>
+#include <mutex>
+#include <memory>
+#include "c2/protocols/RESTProtocol.h"
+#include "CivetServer.h"
+#include "c2/C2Protocol.h"
+
+namespace org::apache::nifi::minifi::c2 {
+
+int log_message(const struct mg_connection *conn, const char *message);
+
+int ssl_protocol_en(void *ssl_context, void *user_data);
+
+/**
+ * Purpose and Justification: Encapsulates the restful protocol that is built upon C2Protocol.
+ *
+ * The external interfaces rely solely on send, where send includes a Direction. Transmit will perform a POST
+ * and RECEIVE will perform a GET. This does not mean we can't receive on a POST; however, since Direction
+ * will encompass other protocols the context of its meaning here simply translates into POST and GET respectively.
+ *
+ */
+class RESTReceiver : public RESTProtocol, public HeartbeatReporter {
+ public:
+  explicit RESTReceiver(std::string_view name, const utils::Identifier& uuid = {});
+
+  EXTENSIONAPI static constexpr const char* Description = "Provides a webserver to display C2 heartbeat information";
+
+  void initialize(core::controller::ControllerServiceProvider* controller, state::StateMonitor* updateSink,
+                          const std::shared_ptr<Configure> &configure) override;
+  int16_t heartbeat(const C2Payload &payload) override;
+
+ protected:
+  class ListeningProtocol : public CivetHandler {
+   public:
+    ListeningProtocol() = default;
+
+    bool handleGet(CivetServer* /*server*/, struct mg_connection *conn) {
+      std::string currentvalue;
+      {
+        std::lock_guard<std::mutex> lock(reponse_mutex_);
+        currentvalue = resp_;
+      }
+
+      std::stringstream output;
+      output << "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: " << currentvalue.length() << "\r\nConnection: close\r\n\r\n";
+
+      mg_printf(conn, "%s", output.str().c_str());
+      mg_printf(conn, "%s", currentvalue.c_str());
+      return true;
+    }
+
+    void setResponse(std::string response) {
+      std::lock_guard<std::mutex> lock(reponse_mutex_);
+      resp_ = response;
+    }
+
+   protected:
+    std::mutex reponse_mutex_;
+    std::string resp_;
+  };
+
+  static std::unique_ptr<CivetServer> start_webserver(const std::string &port, std::string &rooturi, CivetHandler *handler, std::string &ca_cert);
+
+  static std::unique_ptr<CivetServer> start_webserver(const std::string &port, std::string &rooturi, CivetHandler *handler);
+
+  std::unique_ptr<CivetServer> listener;
+  std::unique_ptr<ListeningProtocol> handler;
+
+ private:
+  std::shared_ptr<core::logging::Logger> logger_ = core::logging::LoggerFactory<RESTReceiver>::getLogger();
+};
+
+}  // namespace org::apache::nifi::minifi::c2

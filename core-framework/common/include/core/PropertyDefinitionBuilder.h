@@ -1,0 +1,134 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include <utility>
+
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "minifi-cpp/core/PropertyValidator.h"
+#include "core/ClassName.h"
+
+namespace org::apache::nifi::minifi::core {
+
+namespace detail {
+template<typename... Types>
+inline constexpr auto TypeNames = std::array<std::string_view, sizeof...(Types)>{core::className<Types>()...};
+
+template <size_t N>
+struct StringLiteral {
+  char value[N];
+  constexpr StringLiteral(const char (&str)[N]) {  // NOLINT(runtime/explicit)
+    for (size_t i = 0; i < N; ++i) {
+      value[i] = str[i];
+    }
+  }
+};
+
+// A variable template that creates permanent static memory for the span to point to
+template <StringLiteral str>
+inline constexpr auto StaticAllowedType = std::array<std::string_view, 1>{std::string_view{str.value, sizeof(str.value) - 1}};
+}  // namespace detail
+
+template<size_t NumAllowedValues = 0>
+struct PropertyDefinitionBuilder {
+  static constexpr PropertyDefinitionBuilder<NumAllowedValues> createProperty(std::string_view name) {
+    PropertyDefinitionBuilder<NumAllowedValues> builder;
+    builder.property.name = name;
+    return builder;
+  }
+
+  static constexpr PropertyDefinitionBuilder<NumAllowedValues> createProperty(std::string_view name, std::string_view display_name) {
+    PropertyDefinitionBuilder<NumAllowedValues> builder;
+    builder.property.name = name;
+    builder.property.display_name = display_name;
+    return builder;
+  }
+
+  constexpr PropertyDefinitionBuilder<NumAllowedValues> withDescription(std::string_view description) {
+    property.description = description;
+    return *this;
+  }
+
+  constexpr PropertyDefinitionBuilder<NumAllowedValues> isRequired(bool required) {
+    property.is_required = required;
+    return *this;
+  }
+
+  constexpr PropertyDefinitionBuilder<NumAllowedValues> isSensitive(bool sensitive) {
+    property.is_sensitive = sensitive;
+    return *this;
+  }
+
+  constexpr PropertyDefinitionBuilder<NumAllowedValues> supportsExpressionLanguage(bool supports_expression_language) {
+    property.supports_expression_language = supports_expression_language;
+    return *this;
+  }
+
+  constexpr PropertyDefinitionBuilder<NumAllowedValues> withDefaultValue(std::string_view default_value) {
+    property.default_value = std::optional<std::string_view>{default_value};  // workaround for gcc 11.1; on gcc 11.3 and later, `property.default_value = default_value` works, too
+    return *this;
+  }
+
+  constexpr PropertyDefinitionBuilder<NumAllowedValues> withAllowedValues(
+      std::array<std::string_view, NumAllowedValues> allowed_values) {
+    property.allowed_values = allowed_values;
+    return *this;
+  }
+
+  template<typename... AllowedTypes>
+  constexpr PropertyDefinitionBuilder<NumAllowedValues> withAllowedTypes() {
+    property.allowed_types = {detail::TypeNames<AllowedTypes...>};
+    return *this;
+  }
+
+  template <detail::StringLiteral TypeName>
+  constexpr PropertyDefinitionBuilder<NumAllowedValues> withAllowedType() {
+    property.allowed_types = detail::StaticAllowedType<TypeName>;
+    return *this;
+  }
+
+  constexpr PropertyDefinitionBuilder<NumAllowedValues> withValidator(const PropertyValidator& property_validator) {
+#if defined(__clang__) && (__clang_major__ <= 18)
+    property.validator = &property_validator;
+#else
+    property.validator = gsl::make_not_null(&property_validator);
+#endif
+    return *this;
+  }
+
+  constexpr PropertyDefinition<NumAllowedValues> build() {
+    if (property.name.size() == 0) {
+      throw std::logic_error("A Property must have a name");
+    }
+    if (property.supports_expression_language) {
+      if (property.allowed_values.size() > 0) {
+        throw std::logic_error("Either supports EL or has allowed values");
+      }
+      if (property.validator != &StandardPropertyValidators::NON_BLANK_VALIDATOR && property.validator != &StandardPropertyValidators::ALWAYS_VALID_VALIDATOR) {
+        throw std::logic_error("Only ALWAYS_VALID_VALIDATOR and NON_BLANK_VALIDATOR has EL support");
+      }
+    }
+    return property;
+  }
+
+  PropertyDefinition<NumAllowedValues> property{
+    .name = {},
+    .display_name = {},
+    .description = {},
+    .is_required = false,
+    .is_sensitive = false,
+    .allowed_values = {},
+    .allowed_types = {},
+    .default_value = {},
+#if defined(__clang__) && (__clang_major__ <= 18)
+    .validator = &StandardPropertyValidators::ALWAYS_VALID_VALIDATOR,
+#else
+    .validator = gsl::make_not_null(&StandardPropertyValidators::ALWAYS_VALID_VALIDATOR),
+#endif
+    .supports_expression_language = false,
+    .version = 1
+  };
+};
+
+}  // namespace org::apache::nifi::minifi::core

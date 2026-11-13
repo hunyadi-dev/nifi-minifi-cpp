@@ -1,40 +1,20 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-#ifdef OPENSSL_SUPPORT
-
-#include <fstream>
-#include <map>
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#include <array>
 #include <memory>
 #include <utility>
 #include <string>
-#include <set>
 #include <iostream>
 
-#include "TestBase.h"
-#include "TestUtils.h"
-#include "core/Core.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
+#include "unit/SingleProcessorTestController.h"
+#include "unit/TestUtils.h"
+#include "unit/ProvenanceTestHelper.h"
 
-#include "core/FlowFile.h"
 #include "core/Processor.h"
-#include "core/ProcessContext.h"
 #include "core/ProcessSession.h"
-#include "core/ProcessorNode.h"
 
 #include "GetFile.h"
 #include "HashContent.h"
@@ -51,9 +31,11 @@ const char* MD5_CHECKSUM = "4FE8A693C64F93F65C5FAF42DC49AB23";
 const char* SHA1_CHECKSUM = "03840DEB949D6CF0C0A624FA7EBA87FBDBCB7783";
 const char* SHA256_CHECKSUM = "66D5B2CC06203137F8A0E9714638DC1085C57A3F1FA26C8823AE5CF89AB26488";
 
+namespace org::apache::nifi::minifi::processors::test {
+
 TEST_CASE("Test Creation of HashContent", "[HashContentCreate]") {
   TestController testController;
-  std::shared_ptr<core::Processor> processor = std::make_shared<org::apache::nifi::minifi::processors::HashContent>("processorname");
+  auto processor = minifi::test::utils::make_processor<org::apache::nifi::minifi::processors::HashContent>("processorname");
   REQUIRE(processor->getName() == "processorname");
   REQUIRE(processor->getUUID());
 }
@@ -71,31 +53,28 @@ TEST_CASE("Test usage of ExtractText", "[extracttextTest]") {
   auto tempdir = testController.createTempDirectory();
   REQUIRE(!tempdir.empty());
 
-  std::shared_ptr<core::Processor> getfile = plan->addProcessor("GetFile", "getfileCreate2");
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory.getName(), tempdir);
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::KeepSourceFile.getName(), "true");
+  auto getfile = plan->addProcessor("GetFile", "getfileCreate2");
+  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory, tempdir.string());
+  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::KeepSourceFile, "true");
 
-  std::shared_ptr<core::Processor> md5processor = plan->addProcessor("HashContent", "HashContentMD5",
+  auto md5processor = plan->addProcessor("HashContent", "HashContentMD5",
       core::Relationship("success", "description"), true);
-  plan->setProperty(md5processor, org::apache::nifi::minifi::processors::HashContent::HashAttribute.getName(), MD5_ATTR);
-  plan->setProperty(md5processor, org::apache::nifi::minifi::processors::HashContent::HashAlgorithm.getName(), "MD5");
+  plan->setProperty(md5processor, org::apache::nifi::minifi::processors::HashContent::HashAttribute, MD5_ATTR);
+  plan->setProperty(md5processor, org::apache::nifi::minifi::processors::HashContent::HashAlgorithm, "MD5");
 
-  std::shared_ptr<core::Processor> shaprocessor = plan->addProcessor("HashContent", "HashContentSHA1",
+  auto shaprocessor = plan->addProcessor("HashContent", "HashContentSHA1",
       core::Relationship("success", "description"), true);
-  plan->setProperty(shaprocessor, org::apache::nifi::minifi::processors::HashContent::HashAttribute.getName(), SHA1_ATTR);
-  plan->setProperty(shaprocessor, org::apache::nifi::minifi::processors::HashContent::HashAlgorithm.getName(), "sha1");
+  plan->setProperty(shaprocessor, org::apache::nifi::minifi::processors::HashContent::HashAttribute, SHA1_ATTR);
+  plan->setProperty(shaprocessor, org::apache::nifi::minifi::processors::HashContent::HashAlgorithm, "sha1");
 
-  std::shared_ptr<core::Processor> sha2processor = plan->addProcessor("HashContent", "HashContentSHA256",
+  auto sha2processor = plan->addProcessor("HashContent", "HashContentSHA256",
       core::Relationship("success", "description"), true);
-  plan->setProperty(sha2processor, org::apache::nifi::minifi::processors::HashContent::HashAttribute.getName(), SHA256_ATTR);
-  plan->setProperty(sha2processor, org::apache::nifi::minifi::processors::HashContent::HashAlgorithm.getName(), "sha-256");
+  plan->setProperty(sha2processor, org::apache::nifi::minifi::processors::HashContent::HashAttribute, SHA256_ATTR);
+  plan->setProperty(sha2processor, org::apache::nifi::minifi::processors::HashContent::HashAlgorithm, "sha-256");
 
-  std::shared_ptr<core::Processor> laprocessor = plan->addProcessor("LogAttribute", "outputLogAttribute",
-      core::Relationship("success", "description"), true);
+  plan->addProcessor("LogAttribute", "outputLogAttribute", core::Relationship("success", "description"), true);
 
-  std::stringstream ss1;
-  ss1 << tempdir << utils::file::FileUtils::get_separator() << TEST_FILE;
-  std::string test_file_path = ss1.str();
+  auto test_file_path = tempdir / TEST_FILE;
 
   std::ofstream test_file(test_file_path, std::ios::binary);
 
@@ -112,26 +91,26 @@ TEST_CASE("Test usage of ExtractText", "[extracttextTest]") {
   }
 
   std::stringstream ss2;
-  ss2 << "key:" << MD5_ATTR << " value:" << MD5_CHECKSUM;
+  ss2 << "key:" << MD5_ATTR << " value:" << MD5_CHECKSUM << "\n";
   std::string log_check = ss2.str();
 
   REQUIRE(LogTestController::getInstance().contains(log_check));
 
   ss2.str("");
-  ss2 << "key:" << SHA1_ATTR << " value:" << SHA1_CHECKSUM;
+  ss2 << "key:" << SHA1_ATTR << " value:" << SHA1_CHECKSUM << "\n";
   log_check = ss2.str();
 
   REQUIRE(LogTestController::getInstance().contains(log_check));
 
   ss2.str("");
-  ss2 << "key:" << SHA256_ATTR << " value:" << SHA256_CHECKSUM;
+  ss2 << "key:" << SHA256_ATTR << " value:" << SHA256_CHECKSUM << "\n";
   log_check = ss2.str();
 
   REQUIRE(LogTestController::getInstance().contains(log_check));
 }
 
 TEST_CASE("TestingFailOnEmptyProperty", "[HashContentPropertiesCheck]") {
-  using processors::HashContent;
+  using minifi::processors::HashContent;
   TestController testController;
   LogTestController::getInstance().setTrace<org::apache::nifi::minifi::processors::LogAttribute>();
   LogTestController::getInstance().setTrace<org::apache::nifi::minifi::processors::GetFile>();
@@ -140,24 +119,22 @@ TEST_CASE("TestingFailOnEmptyProperty", "[HashContentPropertiesCheck]") {
   std::shared_ptr<TestPlan> plan = testController.createPlan();
 
   auto tempdir = testController.createTempDirectory();
-  std::shared_ptr<core::Processor> getfile = plan->addProcessor("GetFile", "getfileCreate2");
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory.getName(), tempdir);
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::KeepSourceFile.getName(), "true");
+  auto getfile = plan->addProcessor("GetFile", "getfileCreate2");
+  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory, tempdir.string());
+  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::KeepSourceFile, "true");
 
-  std::shared_ptr<core::Processor> md5processor = plan->addProcessor("HashContent", "HashContentMD5",
+  auto md5processor = plan->addProcessor("HashContent", "HashContentMD5",
                                                                      core::Relationship("success", "description"), true);
-  plan->setProperty(md5processor, HashContent::HashAttribute.getName(), MD5_ATTR);
-  plan->setProperty(md5processor, HashContent::HashAlgorithm.getName(), "MD5");
+  plan->setProperty(md5processor, HashContent::HashAttribute, MD5_ATTR);
+  plan->setProperty(md5processor, HashContent::HashAlgorithm, "MD5");
 
-  md5processor->setAutoTerminatedRelationships({HashContent::Success, HashContent::Failure});
+  md5processor->setAutoTerminatedRelationships(std::array<core::Relationship, 2>{HashContent::Success, HashContent::Failure});
 
-  std::stringstream stream_dir;
-  stream_dir << tempdir << utils::file::FileUtils::get_separator() << TEST_FILE;
-  std::string test_file_path = stream_dir.str();
+  auto test_file_path = tempdir / TEST_FILE;
   std::ofstream test_file(test_file_path, std::ios::binary);
 
   SECTION("with an empty file and fail on empty property set to false") {
-    plan->setProperty(md5processor, HashContent::FailOnEmpty.getName(), "false");
+    plan->setProperty(md5processor, HashContent::FailOnEmpty, "false");
 
     plan->runNextProcessor();
     plan->runNextProcessor();
@@ -165,7 +142,7 @@ TEST_CASE("TestingFailOnEmptyProperty", "[HashContentPropertiesCheck]") {
     REQUIRE(LogTestController::getInstance().contains("attempting read"));
   }
   SECTION("with an empty file and fail on empty property set to true") {
-    plan->setProperty(md5processor, HashContent::FailOnEmpty.getName(), "true");
+    plan->setProperty(md5processor, HashContent::FailOnEmpty, "true");
 
     plan->runNextProcessor();
     plan->runNextProcessor();
@@ -173,4 +150,12 @@ TEST_CASE("TestingFailOnEmptyProperty", "[HashContentPropertiesCheck]") {
     REQUIRE(LogTestController::getInstance().contains("Failure as flow file is empty"));
   }
 }
-#endif  // OPENSSL_SUPPORT
+
+TEST_CASE("Invalid hash algorithm throws in onSchedule", "[HashContent]") {
+  minifi::test::SingleProcessorTestController controller{minifi::test::utils::make_processor<HashContent>("HashContent")};
+  auto hash_content = controller.getProcessor();
+  REQUIRE(hash_content->setProperty(HashContent::HashAlgorithm.name, "My-Algo"));
+  REQUIRE_THROWS_WITH(controller.plan->scheduleProcessor(hash_content), "Process Schedule Operation: MYALGO is not supported, supported algorithms are: MD5, SHA1, SHA256");
+}
+
+}  // namespace org::apache::nifi::minifi::processors::test

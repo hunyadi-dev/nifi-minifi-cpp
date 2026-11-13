@@ -1,0 +1,172 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+import logging
+
+from docker.errors import ContainerError
+from minifi_behave.containers.container_linux import LinuxContainer
+from minifi_behave.containers.file import File
+from minifi_behave.core.helpers import retry_check, wait_for_condition
+from minifi_behave.core.minifi_test_context import MinifiTestContext
+from minifi_behave.core.ssl_utils import dump_cert, dump_key, make_server_cert
+
+logger = logging.getLogger(__name__)
+
+
+class GrafanaLokiOptions:
+    def __init__(self, enable_ssl: bool = False, enable_multi_tenancy: bool = False):
+        self.enable_ssl = enable_ssl
+        self.enable_multi_tenancy = enable_multi_tenancy
+
+
+class GrafanaLokiContainer(LinuxContainer):
+    IMAGE = "grafana/loki:3.2.1"
+
+    def __init__(self, test_context: MinifiTestContext, options: GrafanaLokiOptions):
+        super().__init__(
+            GrafanaLokiContainer.IMAGE,
+            f"grafana-loki-server-{test_context.scenario_id}",
+            test_context.network,
+        )
+        extra_ssl_settings = ""
+        if options.enable_ssl:
+            grafana_loki_cert, grafana_loki_key = make_server_cert(
+                self.container_name, test_context.root_ca_cert, test_context.root_ca_key
+            )
+
+            root_ca_content = dump_cert(test_context.root_ca_cert)
+            self.files.append(File("/etc/loki/root_ca.crt", root_ca_content, permissions=0o644))
+
+            grafana_loki_cert_content = dump_cert(grafana_loki_cert)
+            self.files.append(File("/etc/loki/cert.pem", grafana_loki_cert_content, permissions=0o644))
+
+            grafana_loki_key_content = dump_key(grafana_loki_key)
+            self.files.append(File("/etc/loki/key.pem", grafana_loki_key_content, permissions=0o644))
+
+            extra_ssl_settings = """
+  http_tls_config:
+    cert_file: /etc/loki/cert.pem
+    key_file: /etc/loki/key.pem
+    client_ca_file: /etc/loki/root_ca.crt
+    client_auth_type: VerifyClientCertIfGiven
+
+  grpc_tls_config:
+    cert_file: /etc/loki/cert.pem
+    key_file: /etc/loki/key.pem
+    client_ca_file: /etc/loki/root_ca.crt
+    client_auth_type: VerifyClientCertIfGiven
+
+query_scheduler:
+  grpc_client_config:
+    grpc_compression: snappy
+    tls_enabled: true
+    tls_ca_path: /etc/loki/root_ca.crt
+    tls_insecure_skip_verify: true
+
+ingester_client:
+  grpc_client_config:
+    grpc_compression: snappy
+    tls_enabled: true
+    tls_ca_path: /etc/loki/root_ca.crt
+    tls_insecure_skip_verify: true
+
+frontend:
+  grpc_client_config:
+    grpc_compression: snappy
+    tls_enabled: true
+    tls_ca_path: /etc/loki/root_ca.crt
+    tls_insecure_skip_verify: true
+
+frontend_worker:
+  grpc_client_config:
+    grpc_compression: snappy
+    tls_enabled: true
+    tls_ca_path: /etc/loki/root_ca.crt
+    tls_insecure_skip_verify: true
+"""
+
+        grafana_loki_yml_content = f"""
+auth_enabled: {options.enable_multi_tenancy}
+
+server:
+  http_listen_port: 3100
+  grpc_listen_port: 9095
+{extra_ssl_settings}
+
+common:
+  path_prefix: /loki
+  storage:
+    filesystem:
+      chunks_directory: /loki/chunks
+      rules_directory: /loki/rules
+  replication_factor: 1
+  ring:
+    kvstore:
+      store: inmemory
+
+schema_config:
+  configs:
+    - from: 2020-05-15
+      store: tsdb
+      object_store: filesystem
+      schema: v13
+      index:
+        prefix: index_
+        period: 24h
+
+ruler:
+  alertmanager_url: http://localhost:9093
+
+analytics:
+  reporting_enabled: false
+"""
+
+        self.files.append(
+            File(
+                "/etc/loki/local-config.yaml",
+                grafana_loki_yml_content.encode(),
+                permissions=0o644,
+            )
+        )
+
+    def deploy(self, context: MinifiTestContext | None) -> bool:
+        super().deploy(context)
+        finished_str = "Loki started"
+        return wait_for_condition(
+            condition=lambda: finished_str in self.get_logs(),
+            timeout_seconds=120,
+            bail_condition=lambda: self.exited,
+            context=context,
+        )
+
+    @retry_check()
+    def are_lines_present(self, lines: str, timeout: int, ssl: bool, tenant_id: str = "") -> bool:
+        try:
+            self.client.containers.run(
+                "minifi-grafana-loki-helper:latest",
+                [
+                    "python",
+                    "/scripts/check_log_lines_on_grafana.py",
+                    self.container_name,
+                    lines,
+                    str(timeout),
+                    str(ssl),
+                    tenant_id,
+                ],
+                remove=True,
+                stdout=True,
+                stderr=True,
+                network=self.network.name,
+            )
+            return True
+        except ContainerError as e:
+            stdout = e.stdout.decode("utf-8", errors="replace") if hasattr(e, "stdout") and e.stdout else ""
+            stderr = e.stderr.decode("utf-8", errors="replace") if hasattr(e, "stderr") and e.stderr else ""
+            logger.error(
+                f"Failed to run python command in grafana loki helper docker with error: '{e}', stdout: '{stdout}', stderr: '{stderr}'"
+            )
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error while running python command in grafana loki helper docker: '{e}'")
+            return False

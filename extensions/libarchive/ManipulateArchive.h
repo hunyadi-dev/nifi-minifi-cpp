@@ -1,50 +1,66 @@
-/**
- * @file ManipulateArchive.h
- * ManipulateArchive class declaration
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #pragma once
 
-#include <string>
 #include <memory>
+#include <string>
+#include <utility>
 
-#include "FlowFileRecord.h"
+#include "minifi-cpp/FlowFileRecord.h"
 #include "ArchiveMetadata.h"
-#include "core/Processor.h"
+#include "core/ProcessorImpl.h"
 #include "core/ProcessSession.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "minifi-cpp/core/RelationshipDefinition.h"
+#include "minifi-cpp/utils/Export.h"
 
-#include "utils/Export.h"
+namespace org::apache::nifi::minifi::processors {
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace processors {
+using core::logging::Logger;
 
-using logging::Logger;
-
-class ManipulateArchive : public core::Processor {
+class ManipulateArchive : public core::ProcessorImpl {
  public:
-  explicit ManipulateArchive(const std::string& name, const utils::Identifier& uuid = {})
-  : core::Processor(name, uuid),
-    logger_(logging::LoggerFactory<ManipulateArchive>::getLogger()) {
-  }
-  virtual ~ManipulateArchive() = default;
-  EXTENSIONAPI static constexpr char const* ProcessorName = "ManipulateArchive";
+  using ProcessorImpl::ProcessorImpl;
+  ~ManipulateArchive() override = default;
+
+  EXTENSIONAPI static constexpr const char* Description = "Performs an operation which manipulates an archive without needing to split the archive into multiple FlowFiles.";
+
+  EXTENSIONAPI static constexpr auto Operation = core::PropertyDefinitionBuilder<>::createProperty("Operation")
+      .withDescription("Operation to perform on the archive (touch, remove, copy, move).")
+      .build();
+  EXTENSIONAPI static constexpr auto Target = core::PropertyDefinitionBuilder<>::createProperty("Target")
+      .withDescription("An existing entry within the archive to perform the operation on.")
+      .build();
+  EXTENSIONAPI static constexpr auto Destination = core::PropertyDefinitionBuilder<>::createProperty("Destination")
+      .withDescription("Destination for operations (touch, move or copy) which result in new entries.")
+      .build();
+  EXTENSIONAPI static constexpr auto Before = core::PropertyDefinitionBuilder<>::createProperty("Before")
+      .withDescription("For operations which result in new entries, places the new entry before the entry specified by this property.")
+      .build();
+  EXTENSIONAPI static constexpr auto After = core::PropertyDefinitionBuilder<>::createProperty("After")
+      .withDescription("For operations which result in new entries, places the new entry after the entry specified by this property.")
+      .build();
+  EXTENSIONAPI static constexpr auto Properties = std::to_array<core::PropertyReference>({
+      Operation,
+      Target,
+      Destination,
+      Before,
+      After
+  });
+
+
+  EXTENSIONAPI static constexpr auto Success = core::RelationshipDefinition{"success", "FlowFiles will be transferred to the success relationship if the operation succeeds."};
+  EXTENSIONAPI static constexpr auto Failure = core::RelationshipDefinition{"failure", "FlowFiles will be transferred to the failure relationship if the operation fails."};
+  EXTENSIONAPI static constexpr auto Relationships = std::array{Success, Failure};
+
+  EXTENSIONAPI static constexpr bool SupportsDynamicProperties = false;
+  EXTENSIONAPI static constexpr bool SupportsDynamicRelationships = false;
+  EXTENSIONAPI static constexpr core::annotation::Input InputRequirement = core::annotation::Input::INPUT_ALLOWED;
+  EXTENSIONAPI static constexpr bool IsSingleThreaded = false;
+
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_PROCESSORS
 
   // Supported operations
   EXTENSIONAPI static char const* OPERATION_REMOVE;
@@ -52,30 +68,12 @@ class ManipulateArchive : public core::Processor {
   EXTENSIONAPI static char const* OPERATION_MOVE;
   EXTENSIONAPI static char const* OPERATION_TOUCH;
 
-  // Supported Properties
-  EXTENSIONAPI static core::Property Operation;
-  EXTENSIONAPI static core::Property Target;
-  EXTENSIONAPI static core::Property Destination;
-  EXTENSIONAPI static core::Property Before;
-  EXTENSIONAPI static core::Property After;
-  // Supported Relationships
-  EXTENSIONAPI static core::Relationship Success;
-  EXTENSIONAPI static core::Relationship Failure;
-
-  // OnTrigger method, implemented by NiFi ManipulateArchive
-  void onTrigger(core::ProcessContext *context, core::ProcessSession *session);
-  void onSchedule(core::ProcessContext *context, core::ProcessSessionFactory *sessionFactory);
-  // Initialize, over write by NiFi ManipulateArchive
-  void initialize(void);
+  void onTrigger(core::ProcessContext& context, core::ProcessSession& session) override;
+  void onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& session_factory) override;
+  void initialize() override;
 
  private:
-  // Logger
-  std::shared_ptr<Logger> logger_;
   std::string before_, after_, operation_, destination_, targetEntry_;
 };
 
-} /* namespace processors */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+}  // namespace org::apache::nifi::minifi::processors

@@ -1,73 +1,60 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef LIBMINIFI_INCLUDE_CORE_REPOSITORY_FILESYSTEMREPOSITORY_H_
-#define LIBMINIFI_INCLUDE_CORE_REPOSITORY_FILESYSTEMREPOSITORY_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
-#include <memory>
+#pragma once
+
 #include <string>
+#include <string_view>
 
-#include "core/Core.h"
-#include "../ContentRepository.h"
+#include "core/ContentRepository.h"
 #include "properties/Configure.h"
-#include "core/logging/LoggerConfiguration.h"
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace core {
-namespace repository {
+#include "core/logging/LoggerFactory.h"
+#include "utils/file/FileUtils.h"
 
-/**
- * FileSystemRepository is a content repository that stores data onto the local file system.
- */
-class FileSystemRepository : public core::ContentRepository, public core::CoreComponent {
+namespace org::apache::nifi::minifi::core::repository {
+
+class FileSystemRepository : public ContentRepositoryImpl {
  public:
-  FileSystemRepository(std::string name = getClassName<FileSystemRepository>()) // NOLINT
-      : core::CoreComponent(name),
-        logger_(logging::LoggerFactory<FileSystemRepository>::getLogger()) {
+  explicit FileSystemRepository(const std::string_view name = className<FileSystemRepository>())
+    : ContentRepositoryImpl(name),
+      logger_(logging::LoggerFactory<FileSystemRepository>::getLogger()) {
   }
-  virtual ~FileSystemRepository() = default;
 
-  virtual bool initialize(const std::shared_ptr<minifi::Configure> &configuration);
+  FileSystemRepository(FileSystemRepository&&) = delete;
+  FileSystemRepository(const FileSystemRepository&) = delete;
+  FileSystemRepository& operator=(FileSystemRepository&&) = delete;
+  FileSystemRepository& operator=(const FileSystemRepository&) = delete;
+  ~FileSystemRepository() override = default;
 
-  virtual void stop();
+  bool initialize(const std::shared_ptr<Configure>& configuration) override;
+  bool exists(const ResourceClaim& streamId) override;
+  std::shared_ptr<io::BaseStream> write(const ResourceClaim& claim, bool append) override;
+  std::shared_ptr<io::BaseStream> read(const ResourceClaim& claim) override;
 
-  bool exists(const minifi::ResourceClaim &streamId);
-
-  virtual std::shared_ptr<io::BaseStream> write(const minifi::ResourceClaim &claim, bool append = false);
-
-  virtual std::shared_ptr<io::BaseStream> read(const minifi::ResourceClaim &claim);
-
-  virtual bool close(const minifi::ResourceClaim &claim) {
+  bool close(const ResourceClaim& claim) override {
     return remove(claim);
   }
 
-  virtual bool remove(const minifi::ResourceClaim &claim);
+  std::shared_ptr<ContentSession> createSession() override;
+
+  void clearOrphans() override;
+
+  uint64_t getRepositorySize() const override {
+    return utils::file::path_size(directory_);
+  }
+
+  size_t size(const ResourceClaim& claim) override;
+
+  uint64_t getRepositoryEntryCount() const override;
+
+ protected:
+  bool removeKey(const std::string& content_path) override;
 
  private:
   std::shared_ptr<logging::Logger> logger_;
 };
 
-}  // namespace repository
-}  // namespace core
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+std::shared_ptr<core::ContentRepository> createFileSystemRepository();
 
-#endif  // LIBMINIFI_INCLUDE_CORE_REPOSITORY_FILESYSTEMREPOSITORY_H_
+}  // namespace org::apache::nifi::minifi::core::repository

@@ -1,22 +1,6 @@
-/**
- * @file DeleteS3Object.h
- * DeleteS3Object class declaration
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #pragma once
 
@@ -26,60 +10,77 @@
 #include <string>
 #include <utility>
 
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "core/PropertyDefinitionBuilder.h"
 #include "S3Processor.h"
+#include "utils/ArrayUtils.h"
 #include "utils/GeneralUtils.h"
 
+
 template<typename T>
-class S3TestsFixture;
+class FlowProcessorS3TestsFixture;
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace aws {
-namespace processors {
+namespace org::apache::nifi::minifi::aws::processors {
 
-class DeleteS3Object : public S3Processor {
+class DeleteS3Object : public S3Processor {  // NOLINT(cppcoreguidelines-special-member-functions)
  public:
-  static constexpr char const* ProcessorName = "DeleteS3Object";
+  EXTENSIONAPI static constexpr const char* Description = "Deletes FlowFiles on an Amazon S3 Bucket. If attempting to delete a file that does not exist, FlowFile is routed to success.";
 
-  // Supported Properties
-  static const core::Property ObjectKey;
-  static const core::Property Version;
+  EXTENSIONAPI static constexpr auto ObjectKey = core::PropertyDefinitionBuilder<>::createProperty("Object Key")
+    .withDescription("The key of the S3 object. If none is given the filename attribute will be used by default.")
+    .supportsExpressionLanguage(true)
+    .build();
+  EXTENSIONAPI static constexpr auto Version = core::PropertyDefinitionBuilder<>::createProperty("Version")
+    .withDescription("The Version of the Object to delete")
+    .supportsExpressionLanguage(true)
+    .build();
+  EXTENSIONAPI static constexpr auto Properties = minifi::utils::array_cat(S3Processor::Properties, std::to_array<core::PropertyReference>({
+      ObjectKey,
+      Version
+  }));
 
-  // Supported Relationships
-  static const core::Relationship Failure;
-  static const core::Relationship Success;
 
-  explicit DeleteS3Object(const std::string& name, const minifi::utils::Identifier& uuid = minifi::utils::Identifier())
-    : S3Processor(name, uuid, logging::LoggerFactory<DeleteS3Object>::getLogger()) {
-  }
+  EXTENSIONAPI static constexpr auto Success = core::RelationshipDefinition{"success", "FlowFiles are routed to success relationship"};
+  EXTENSIONAPI static constexpr auto Failure = core::RelationshipDefinition{"failure", "FlowFiles are routed to failure relationship"};
+  EXTENSIONAPI static constexpr auto Relationships = std::array{Success, Failure};
+
+  EXTENSIONAPI static constexpr auto S3Exception = core::OutputAttributeDefinition<>{
+      S3_EXCEPTION, {Failure}, "Exception name of the S3 request failure"};
+  EXTENSIONAPI static constexpr auto S3ErrorMessage = core::OutputAttributeDefinition<>{
+      S3_ERROR_MESSAGE, {Failure}, "Error message of the S3 request failure"};
+  EXTENSIONAPI static constexpr auto S3ErrorRetryable = core::OutputAttributeDefinition<>{
+      S3_ERROR_RETRYABLE, {Failure}, "Is the S3 request error retryable"};
+  EXTENSIONAPI static constexpr auto S3StatusCode = core::OutputAttributeDefinition<>{
+      S3_STATUS_CODE, {Failure}, "HTTP code of the S3 request failure. -1 indicates no HTTP request was made."};
+  EXTENSIONAPI static constexpr auto OutputAttributes =
+      std::to_array<core::OutputAttributeReference>({S3Exception, S3ErrorMessage, S3ErrorRetryable, S3StatusCode});
+
+  EXTENSIONAPI static constexpr bool SupportsDynamicProperties = true;
+  EXTENSIONAPI static constexpr bool SupportsDynamicRelationships = false;
+  EXTENSIONAPI static constexpr core::annotation::Input InputRequirement = core::annotation::Input::INPUT_REQUIRED;
+  EXTENSIONAPI static constexpr bool IsSingleThreaded = false;
+
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_PROCESSORS
+
+  using S3Processor::S3Processor;
 
   ~DeleteS3Object() override = default;
 
   void initialize() override;
-  void onTrigger(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSession> &session) override;
+  void onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& session_factory) override;
+  void onTrigger(core::ProcessContext& context, core::ProcessSession& session) override;
 
  private:
-  core::annotation::Input getInputRequirement() const override {
-    return core::annotation::Input::INPUT_REQUIRED;
-  }
+  friend class ::FlowProcessorS3TestsFixture<DeleteS3Object>;
 
-  friend class ::S3TestsFixture<DeleteS3Object>;
-
-  explicit DeleteS3Object(const std::string& name, const minifi::utils::Identifier& uuid, std::unique_ptr<aws::s3::S3RequestSender> s3_request_sender)
-    : S3Processor(name, uuid, logging::LoggerFactory<DeleteS3Object>::getLogger(), std::move(s3_request_sender)) {
+  DeleteS3Object(core::ProcessorMetadata metadata, S3WrapperFactory s3_wrapper_factory)
+      : S3Processor(std::move(metadata), std::move(s3_wrapper_factory)) {
   }
 
   std::optional<aws::s3::DeleteObjectRequestParameters> buildDeleteS3RequestParams(
-    const std::shared_ptr<core::ProcessContext> &context,
-    const std::shared_ptr<core::FlowFile> &flow_file,
-    const CommonProperties &common_properties) const;
+    const core::ProcessContext& context,
+    const core::FlowFile& flow_file,
+    std::string_view bucket) const;
 };
 
-}  // namespace processors
-}  // namespace aws
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+}  // namespace org::apache::nifi::minifi::aws::processors

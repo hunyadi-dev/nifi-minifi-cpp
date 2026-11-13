@@ -1,0 +1,57 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+include(FetchContent)
+
+include(GetZstd)
+include(GetLZ4)
+
+set(WITH_SSL "ON" CACHE STRING "" FORCE)
+set(WITH_SASL "OFF" CACHE STRING "" FORCE)
+set(WITH_ZSTD "ON" CACHE STRING "" FORCE)
+set(WITH_SNAPPY "ON" CACHE STRING "" FORCE)
+set(ENABLE_LZ4_EXT "ON" CACHE STRING "" FORCE)
+set(RDKAFKA_BUILD_STATIC "ON" CACHE STRING "" FORCE)
+set(RDKAFKA_BUILD_EXAMPLES "OFF" CACHE STRING "" FORCE)
+set(RDKAFKA_BUILD_TESTS "OFF" CACHE STRING "" FORCE)
+set(LIBRDKAFKA_STATICLIB "1" CACHE STRING "" FORCE)
+
+set(PATCH_FILE_1 "${CMAKE_SOURCE_DIR}/thirdparty/librdkafka/0001-remove-findLZ4-and-findZSTD.patch")
+set(PATCH_FILE_2 "${CMAKE_SOURCE_DIR}/thirdparty/librdkafka/0002-undef-X509_NAME.patch")
+set(PC ${Bash_EXECUTABLE}  -c "set -x &&\
+        (\\\"${Patch_EXECUTABLE}\\\" -p1 -R -s -f --dry-run -i \\\"${PATCH_FILE_1}\\\" || \\\"${Patch_EXECUTABLE}\\\" -p1 -N -i \\\"${PATCH_FILE_1}\\\") &&\
+        (\\\"${Patch_EXECUTABLE}\\\" -p1 -R -s -f --dry-run -i \\\"${PATCH_FILE_2}\\\" || \\\"${Patch_EXECUTABLE}\\\" -p1 -N -i \\\"${PATCH_FILE_2}\\\")")
+
+FetchContent_Declare(libkafka
+        URL https://github.com/confluentinc/librdkafka/archive/refs/tags/v2.14.2.tar.gz
+        URL_HASH SHA256=d7eec9c31c817fa44402f679c252dfbf97e4c338a849a25c3579a31fd127beb8
+        PATCH_COMMAND "${PC}"
+        SYSTEM
+)
+
+FetchContent_MakeAvailable(libkafka)
+
+get_target_property(ZSTD_INCLUDE_DIRS zstd::zstd INTERFACE_INCLUDE_DIRECTORIES)
+
+if(NOT DEFINED LZ4_INCLUDE_DIRS)
+    get_target_property(LZ4_INCLUDE_DIRS lz4::lz4 INCLUDE_DIRECTORIES)
+endif()
+
+target_include_directories(rdkafka SYSTEM PRIVATE ${ZSTD_INCLUDE_DIRS})
+target_include_directories(rdkafka SYSTEM PRIVATE ${LZ4_INCLUDE_DIRS})
+
+target_link_libraries(rdkafka INTERFACE zstd::zstd lz4::lz4)
+
+if (NOT TARGET RdKafka::rdkafka++)
+    add_library(RdKafka::rdkafka++ ALIAS rdkafka)
+endif()
+
+set(RDKAFKA_PUBLIC_INCLUDE_DIR "${libkafka_BINARY_DIR}/include")
+foreach(RDKAFKA_PUBLIC_HEADER rdkafka.h rdkafka_mock.h)
+    configure_file(
+            "${libkafka_SOURCE_DIR}/src/${RDKAFKA_PUBLIC_HEADER}"
+            "${RDKAFKA_PUBLIC_INCLUDE_DIR}/librdkafka/${RDKAFKA_PUBLIC_HEADER}"
+            COPYONLY)
+endforeach()
+target_include_directories(rdkafka SYSTEM INTERFACE "$<BUILD_INTERFACE:${RDKAFKA_PUBLIC_INCLUDE_DIR}>")

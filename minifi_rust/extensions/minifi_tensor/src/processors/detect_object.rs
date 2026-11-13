@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+mod detect_object_def;
+
+use crate::low_level_processors::filter_bounding_boxes::FilterBoundingBoxes;
+use crate::low_level_processors::image_to_tensor::ImageToTensor;
+use crate::utils::dimensions::Dimensions;
+use crate::utils::tensor_helpers::load_as_image;
+use detect_object_def::TRACT_MODEL_SERVICE;
+use minifi_native::macros::ComponentIdentifier;
+use minifi_native::{
+    FlowFileTransform, GetAttribute, GetControllerService, GetId, GetProperty, InputStream, Logger,
+    MinifiError, ProcessError, RouteErrorExt, Schedule, TransformedFlowFile,
+};
+use tract::Tensor;
+
+tract::impl_ndarray_interop!();
+
+#[derive(ComponentIdentifier)]
+pub(crate) struct DetectObject {
+    image_to_tensor: ImageToTensor,
+    filter_bounding_boxes: FilterBoundingBoxes,
+}
+
+impl Schedule for DetectObject {
+    fn schedule<Ctx: GetProperty + GetControllerService, L: Logger>(
+        context: &Ctx,
+        logger: &L,
+    ) -> Result<Self, MinifiError>
+    where
+        Self: Sized,
+    {
+        let image_to_tensor = ImageToTensor::schedule(context, logger)?;
+        let filter_bounding_boxes = FilterBoundingBoxes::schedule(context, logger)?;
+        let _tract_model_service = context.get_controller_service(&TRACT_MODEL_SERVICE)?;
+        Ok(Self {
+            image_to_tensor,
+            filter_bounding_boxes,
+        })
+    }
+}
+
+impl FlowFileTransform for DetectObject {
+    fn transform<
+        'a,
+        Context: GetProperty + GetControllerService + GetAttribute + GetId,
+        LoggerImpl: Logger,
+    >(
+        &self,
+        context: &Context,
+        input_stream: &'a mut dyn InputStream,
+        logger: &LoggerImpl,
+    ) -> Result<TransformedFlowFile<'a>, ProcessError> {
+        let tract_model_service = context.get_controller_service(&TRACT_MODEL_SERVICE)?;
+        let img = load_as_image(input_stream).route_err_to_failure()?;
+        let orig_dim = Dimensions::from_image(&img);
+        let target_dim = self.image_to_tensor.get_target_dim();
+
+        // ImageToTensor
+        let input_tensor: Tensor = self
+            .image_to_tensor
+            .get_tensor(img)
+            .route_err_to_failure()?;
+
+        // InvokeTract
+        let output_tensors = tract_model_service
+            .run_inference(vec![input_tensor])
+            .route_err_to_failure()?;
+
+        // FilterBoundingBox
+        self.filter_bounding_boxes.filter(
+            context,
+            logger,
+            output_tensors,
+            orig_dim,
+            target_dim,
+            self.image_to_tensor.get_resize_mode(),
+        )
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::low_level_processors::image_to_tensor::{
+        PIXEL_DIVISOR, TARGET_HEIGHT, TARGET_WIDTH,
+    };
+    use minifi_native::{MockLogger, MockProcessContext};
+
+    #[test]
+    fn test_missing_controller_service_errors() {
+        let mut context = MockProcessContext::new();
+        context.properties.insert(TARGET_HEIGHT.name(), "100");
+        context.properties.insert(TARGET_WIDTH.name(), "100");
+        context.properties.insert(PIXEL_DIVISOR.name(), "1.0");
+        let processor = DetectObject::schedule(&context, &MockLogger::new());
+        assert!(
+            processor.is_err(),
+            "Should error when TractModelService is missing"
+        );
+    }
+}

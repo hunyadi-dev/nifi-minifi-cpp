@@ -1,239 +1,226 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
-#include "../TestBase.h"
-#include "core/ConfigurableComponent.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "minifi-cpp/core/PropertyValidator.h"
 #include "utils/PropertyErrors.h"
-#include "core/PropertyValidation.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace core {
+namespace org::apache::nifi::minifi::core {
 
-using namespace utils::internal;
-/**
- * This Tests checks a deprecated behavior that should be removed
- * in the next major release.
- */
-TEST_CASE("Some default values get coerced to typed variants") {
-  auto prop = Property("prop", "d", "true");
-  REQUIRE_THROWS_AS(prop.setValue("banana"), ConversionException);
-
-  const std::string SPACE = " ";
-  auto prop2 = Property("prop", "d", SPACE + "true");
-  prop2.setValue("banana");
-}
 
 TEST_CASE("Converting invalid PropertyValue") {
-  auto prop = PropertyBuilder::createProperty("prop")
-      ->withDefaultValue<int>(0)
-      ->build();
-  REQUIRE_THROWS_AS(prop.setValue("not int"), ParseException);
-  auto cast_check = [&]{ return static_cast<int>(prop.getValue()) == 0; };  // To avoid unused-value warning
-  REQUIRE_THROWS_AS(cast_check(), InvalidValueException);
+  static constexpr auto property_definition = PropertyDefinitionBuilder<>::createProperty("prop")
+      .withValidator(core::StandardPropertyValidators::INTEGER_VALIDATOR)
+      .withDefaultValue("0")
+      .build();
+  Property property{property_definition};
+  CHECK_FALSE(property.setValue("not int"));
+  CHECK(property.getValue() == "0");
+}
+
+TEST_CASE("Allowed values") {
+  static constexpr auto abc_without_el = PropertyDefinitionBuilder<3>::createProperty("prop")
+      .supportsExpressionLanguage(false)
+      .withAllowedValues({"a", "b", "c"})
+      .build();
+
+  Property property{abc_without_el};
+  CHECK_FALSE(property.setValue("d"));
+  CHECK_FALSE(property.getValue());
 }
 
 TEST_CASE("Parsing int has baggage after") {
-  auto prop = PropertyBuilder::createProperty("prop")
-      ->withDefaultValue<int>(0)
-      ->build();
-  REQUIRE_THROWS_AS(prop.setValue("55almost int"), ParseException);
+  static constexpr auto property_definition = PropertyDefinitionBuilder<>::createProperty("prop")
+      .withValidator(core::StandardPropertyValidators::INTEGER_VALIDATOR)
+      .withDefaultValue("0")
+      .build();
+  Property property{property_definition};
+  CHECK_FALSE(property.setValue("not int").has_value());
+  CHECK(property.getValue() == "0");
 }
 
 TEST_CASE("Parsing int has spaces") {
-  auto prop = PropertyBuilder::createProperty("prop")
-      ->withDefaultValue<int>(0)
-      ->build();
-  prop.setValue("  55  ");
-  REQUIRE(static_cast<int>(prop.getValue()) == 55);
-}
-
-TEST_CASE("Parsing int out of range") {
-  auto prop = PropertyBuilder::createProperty("prop")
-      ->withDefaultValue<int>(0)
-      ->build();
-  REQUIRE_THROWS_AS(prop.setValue("  5000000000  "), ParseException);
+  static constexpr auto property_definition = PropertyDefinitionBuilder<>::createProperty("prop")
+      .withValidator(core::StandardPropertyValidators::INTEGER_VALIDATOR)
+      .withDefaultValue("0")
+      .build();
+  Property property{property_definition};
+  CHECK(property.setValue("  55  "));
+  CHECK(property.getValue() == "  55  ");
+  CHECK_FALSE(property.setValue("  10000000000000000000  "));
 }
 
 TEST_CASE("Parsing bool has baggage after") {
-  auto prop = PropertyBuilder::createProperty("prop")
-      ->withDefaultValue<bool>(true)
-      ->build();
-  REQUIRE_THROWS_AS(prop.setValue("false almost bool"), ParseException);
+  static constexpr auto property_definition = PropertyDefinitionBuilder<>::createProperty("prop")
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("true")
+      .build();
+  Property property{property_definition};
+  CHECK_FALSE(property.setValue("false almost bool"));
+  CHECK(property.getValue() == "true");
 }
 
-class TestConfigurableComponent : public ConfigurableComponent {
+TEST_CASE("NON_BLANK_VALIDATOR test") {
+  static constexpr auto property_definition = PropertyDefinitionBuilder<>::createProperty("prop")
+      .withValidator(core::StandardPropertyValidators::NON_BLANK_VALIDATOR)
+      .withDefaultValue("true")
+      .build();
+  Property property{property_definition};
+  CHECK_FALSE(property.setValue(""));
+  CHECK(property.setValue("foo"));
+}
+
+TEST_CASE("UNSIGNED_INTEGER_VALIDATOR test") {
+  static constexpr auto property_definition = PropertyDefinitionBuilder<>::createProperty("prop")
+      .withValidator(core::StandardPropertyValidators::UNSIGNED_INTEGER_VALIDATOR)
+      .withDefaultValue("true")
+      .build();
+  Property property{property_definition};
+  CHECK_FALSE(property.setValue(" -12"));
+  CHECK_FALSE(property.setValue(" 1000000000000000000000"));
+  CHECK(property.setValue("  231  "));
+}
+
+TEST_CASE("DATA_SIZE_VALIDATOR test") {
+  static constexpr auto property_definition = PropertyDefinitionBuilder<>::createProperty("prop")
+      .withValidator(core::StandardPropertyValidators::DATA_SIZE_VALIDATOR)
+      .withDefaultValue("true")
+      .build();
+  Property property{property_definition};
+  CHECK_FALSE(property.setValue("100 MaciBytes"));
+  CHECK(property.setValue("100 KB "));
+  CHECK(property.setValue("  100 KB  "));
+  CHECK_FALSE(property.setValue("GB"));
+  CHECK_FALSE(property.setValue("foo"));
+}
+
+TEST_CASE("PORT_VALIDATOR test") {
+  static constexpr auto property_definition = PropertyDefinitionBuilder<>::createProperty("prop")
+      .withValidator(core::StandardPropertyValidators::PORT_VALIDATOR)
+      .withDefaultValue("true")
+      .build();
+  Property property{property_definition};
+  CHECK(property.setValue("0"));
+  CHECK(property.setValue(" 65535"));
+  CHECK_FALSE(property.setValue("65536"));
+  CHECK_FALSE(property.setValue("  -2  "));
+  CHECK_FALSE(property.setValue("foo"));
+}
+
+class TestConfigurableComponent : public ConfigurableComponentImpl, public CoreComponentImpl {
  public:
-  bool supportsDynamicProperties() override {
+  TestConfigurableComponent() : ConfigurableComponentImpl(), CoreComponentImpl("TestConfigurableComponent") {}
+
+  bool supportsDynamicProperties() const override {
+    return true;
+  }
+
+  bool supportsDynamicRelationships() const override {
     return true;
   }
 
   bool canEdit() override {
     return true;
   }
-
-  void onPropertyModified(const Property &old_property, const Property &new_property) override {
-    if (onPropertyModifiedCallback) onPropertyModifiedCallback(old_property, new_property);
-  }
-
-  void onDynamicPropertyModified(const Property &old_property, const Property &new_property) override {
-    if (onDynamicPropertyModifiedCallback) onDynamicPropertyModifiedCallback(old_property, new_property);
-  }
-
-  template<typename Fn>
-  void setPropertyModifiedCallback(Fn &&functor) {
-    onPropertyModifiedCallback = std::forward<Fn>(functor);
-  }
-
-  template<typename Fn>
-  void setDynamicPropertyModifiedCallback(Fn &&functor) {
-    onDynamicPropertyModifiedCallback = std::forward<Fn>(functor);
-  }
-
- private:
-  std::function<void(const Property &, const Property &)> onPropertyModifiedCallback;
-  std::function<void(const Property &, const Property &)> onDynamicPropertyModifiedCallback;
 };
 
 TEST_CASE("Missing Required With Default") {
-  auto prop = PropertyBuilder::createProperty("prop")
-      ->isRequired(true)
-      ->withDefaultValue<std::string>("default")
-      ->build();
+  static constexpr auto property_definition = PropertyDefinitionBuilder<>::createProperty("prop").isRequired(true).withDefaultValue("default").build();
+  const Property property{property_definition};
   TestConfigurableComponent component;
-  component.setSupportedProperties({prop});
-  std::string value;
-  REQUIRE(component.getProperty(prop.getName(), value));
-  REQUIRE(value == "default");
+  component.setSupportedProperties(std::array<PropertyReference, 1>{property_definition});
+  CHECK(component.getProperty(property.getName()) == "default");
 }
 
 TEST_CASE("Missing Required Without Default") {
-  auto prop = PropertyBuilder::createProperty("prop")
-      ->isRequired(true)
-      ->build();
+  static constexpr auto property_definition = PropertyDefinitionBuilder<>::createProperty("prop").isRequired(true).build();
+  const Property property{property_definition};
   TestConfigurableComponent component;
-  component.setSupportedProperties({prop});
-  std::string value;
-  REQUIRE_THROWS_AS(component.getProperty(prop.getName(), value), RequiredPropertyMissingException);
+  component.setSupportedProperties(std::array<PropertyReference, 1>{property_definition});
+  CHECK(component.getProperty(property.getName()).error() == core::PropertyErrorCode::PropertyNotSet);
 }
 
 TEST_CASE("Missing Optional Without Default") {
-  auto prop = PropertyBuilder::createProperty("prop")
-      ->isRequired(false)
-      ->build();
+  static constexpr auto property_definition = PropertyDefinitionBuilder<>::createProperty("prop")
+      .isRequired(false)
+      .build();
+  const Property property{property_definition};
   TestConfigurableComponent component;
-  component.setSupportedProperties({prop});
-  std::string value;
-  REQUIRE_FALSE(component.getProperty(prop.getName(), value));
+  component.setSupportedProperties(std::array<PropertyReference, 1>{property_definition});
+  CHECK(component.getProperty(property.getName()).error() == core::PropertyErrorCode::PropertyNotSet);
 }
 
 TEST_CASE("Valid Optional Without Default") {
   // without a default the value will be stored as a string
-  auto prop = PropertyBuilder::createProperty("prop")
-      ->isRequired(false)
-      ->build();
+  static constexpr auto property_definition = PropertyDefinitionBuilder<>::createProperty("prop").isRequired(false).build();
+  const Property property{property_definition};
   TestConfigurableComponent component;
-  component.setSupportedProperties({prop});
-  component.setProperty(prop.getName(), "some data");
-  std::string value;
-  REQUIRE(component.getProperty(prop.getName(), value));
-  REQUIRE(value == "some data");
+  component.setSupportedProperties(std::array<PropertyReference, 1>{property_definition});
+  CHECK(component.setProperty(property.getName(), "some data"));
+  CHECK(component.getProperty(property.getName()) == "some data");
 }
 
 TEST_CASE("Invalid With Default") {
-  auto prop = PropertyBuilder::createProperty("prop")
-      ->withDefaultValue<bool>(true)
-      ->build();
+  static constexpr auto property_definition = PropertyDefinitionBuilder<>::createProperty("prop")
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("true")
+      .build();
+  const Property property{property_definition};
   TestConfigurableComponent component;
-  component.setSupportedProperties({prop});
-  REQUIRE_THROWS_AS(component.setProperty("prop", "banana"), ParseException);
-  std::string value;
-  REQUIRE_THROWS_AS(component.getProperty(prop.getName(), value), InvalidValueException);
+  component.setSupportedProperties(std::array<PropertyReference, 1>{property_definition});
+  CHECK(component.setProperty(property.getName(), "banana").error() == core::PropertyErrorCode::ValidationFailed);
+  CHECK(component.getProperty(property.getName()) == "true");
 }
 
 TEST_CASE("Valid With Default") {
-  auto prop = PropertyBuilder::createProperty("prop")
-      ->withDefaultValue<int>(55)
-      ->build();
+  static constexpr auto property_definition = PropertyDefinitionBuilder<>::createProperty("prop")
+      .withValidator(core::StandardPropertyValidators::INTEGER_VALIDATOR)
+      .withDefaultValue("55")
+      .build();
+  const Property property{property_definition};
   TestConfigurableComponent component;
-  component.setSupportedProperties({prop});
-  REQUIRE(component.setProperty("prop", "23"));
-  int value;
-  REQUIRE(component.getProperty(prop.getName(), value));
-  REQUIRE(value == 23);
-}
-
-TEST_CASE("Invalid conversion") {
-  auto prop = PropertyBuilder::createProperty("prop")
-      ->withDefaultValue<std::string>("banana")
-      ->build();
-  TestConfigurableComponent component;
-  component.setSupportedProperties({prop});
-  bool value;
-  REQUIRE_THROWS_AS(component.getProperty(prop.getName(), value), ConversionException);
+  component.setSupportedProperties(std::array<PropertyReference, 1>{property_definition});
+  CHECK(component.setProperty("prop", "23"));
+  CHECK(component.getProperty(property.getName()) == "23");
 }
 
 TEST_CASE("Write Invalid Then Override With Valid") {
-  // we always base the assignment on the default value
-  auto prop = PropertyBuilder::createProperty("prop")
-      ->withDefaultValue<int>(55)
-      ->build();
+  static constexpr auto property_definition = PropertyDefinitionBuilder<>::createProperty("prop")
+      .withValidator(core::StandardPropertyValidators::INTEGER_VALIDATOR)
+      .withDefaultValue("55")
+      .build();
+  const Property property{property_definition};
   TestConfigurableComponent component;
-  component.setSupportedProperties({prop});
-  REQUIRE_THROWS_AS(component.setProperty(prop.getName(), "banana"), ConversionException);
-  component.setProperty(prop.getName(), "98");
-  int value;
-  REQUIRE(component.getProperty(prop.getName(), value));
-  REQUIRE(value == 98);
+  component.setSupportedProperties(std::array<PropertyReference, 1>{property_definition});
+  CHECK(component.setProperty(property.getName(), "banana").error() == core::PropertyErrorCode::ValidationFailed);
+  CHECK(component.setProperty(property.getName(), "98"));
+  CHECK(component.getProperty(property.getName()) == "98");
 }
 
-TEST_CASE("Property Change notification gets called even on erroneous assignment") {
-  auto prop = PropertyBuilder::createProperty("prop")
-      ->withDefaultValue<bool>(true)
-      ->build();
+TEST_CASE("TimePeriodValue Property") {
+  using namespace std::literals::chrono_literals;
+  static constexpr auto property_definition =
+      PropertyDefinitionBuilder<>::createProperty("prop").withValidator(core::StandardPropertyValidators::TIME_PERIOD_VALIDATOR).withDefaultValue("10 minutes").build();
+  const Property property{property_definition};
   TestConfigurableComponent component;
-  component.setSupportedProperties({prop});
-  int callbackCount = 0;
-  component.setPropertyModifiedCallback([&](const Property &, const Property &) {
-    ++callbackCount;
-  });
-  REQUIRE_THROWS_AS(component.setProperty(prop.getName(), "banana"), ConversionException);
-  REQUIRE(callbackCount == 1);
+  component.setSupportedProperties(std::array<PropertyReference, 1>{property_definition});
+  CHECK(component.getProperty(property.getName()) == "10 minutes");
+  CHECK(component.setProperty(property.getName(), "20").error() == core::PropertyErrorCode::ValidationFailed);
 }
 
-TEST_CASE("Correctly Typed Property With Invalid Validation") {
-  auto prop = PropertyBuilder::createProperty("prop")
-      ->withDefaultValue<int64_t>(5, std::make_shared<LongValidator>("myValidator", 0, 10))
-      ->build();
+TEST_CASE("Number validator") {
+  static constexpr auto property_definition = PropertyDefinitionBuilder<>::createProperty("prop").withValidator(core::StandardPropertyValidators::NUMBER_VALIDATOR).build();
+  const Property property{property_definition};
   TestConfigurableComponent component;
-  component.setSupportedProperties({prop});
-  int callbackCount = 0;
-  component.setPropertyModifiedCallback([&](const Property &, const Property &) {
-    ++callbackCount;
-  });
-  REQUIRE_THROWS_AS(component.setProperty(prop.getName(), "20"), InvalidValueException);
-  REQUIRE(callbackCount == 1);
+  component.setSupportedProperties(std::array<PropertyReference, 1>{property_definition});
+  CHECK(component.setProperty(property.getName(), "20"));
+  CHECK(component.setProperty(property.getName(), "3.14"));
+  CHECK(component.setProperty(property.getName(), "0.0000000001"));
+  CHECK_FALSE(component.setProperty(property.getName(), "10 000"));
+  CHECK_FALSE(component.setProperty(property.getName(), "20 apples"));
 }
 
-} /* namespace core */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+}  // namespace org::apache::nifi::minifi::core

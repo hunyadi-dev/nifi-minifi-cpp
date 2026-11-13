@@ -1,33 +1,37 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include "agent/agent_docs.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
+namespace org::apache::nifi::minifi {
 
-std::map<std::string, std::string>& AgentDocs::getDescriptions() {
-  static std::map<std::string, std::string> extensions;
-  return extensions;
+namespace {
+std::map<BundleCoordinate, Components>& getAgentDocsClassMappings() {
+  static std::map<BundleCoordinate, Components> mappings;
+  return mappings;
+}
+}  // namespace
+
+const std::map<BundleCoordinate, Components>& ClassDescriptionRegistry::getClassDescriptions() {
+  return getAgentDocsClassMappings();
 }
 
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+std::map<BundleCoordinate, Components>& ClassDescriptionRegistry::getMutableClassDescriptions() {
+  return getAgentDocsClassMappings();
+}
+
+void ClassDescriptionRegistry::clearClassDescriptionsForBundle(const std::string& bundle_name) {
+  std::erase_if(getAgentDocsClassMappings(), [&bundle_name](const auto& entry) {
+    return entry.first.name == bundle_name;
+  });
+}
+
+Components& ClassDescriptionRegistry::getMutableComponents(const BundleCoordinate& bundle_coordinate) {
+  const auto [it, success] = getMutableClassDescriptions().try_emplace(bundle_coordinate, bundle_coordinate);
+  (void)success;
+  return it->second;
+}
+
+
+}  // namespace org::apache::nifi::minifi

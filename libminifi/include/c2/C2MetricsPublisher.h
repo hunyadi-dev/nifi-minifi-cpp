@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#pragma once
+
+#include <unordered_map>
+#include <memory>
+#include <mutex>
+#include <optional>
+#include <string>
+#include <vector>
+#include <functional>
+
+#include "c2/C2Agent.h"
+#include "properties/Configure.h"
+#include "minifi-cpp/core/logging/Logger.h"
+#include "minifi-cpp/core/state/nodes/MetricsBase.h"
+#include "core/ProcessGroup.h"
+#include "core/Core.h"
+#include "utils/file/FileSystem.h"
+#include "utils/Id.h"
+#include "core/state/MetricsPublisher.h"
+
+namespace org::apache::nifi::minifi::c2 {
+
+class C2MetricsPublisher : public state::response::NodeReporter, public state::MetricsPublisherImpl {
+ public:
+  using MetricsPublisherImpl::MetricsPublisherImpl;
+
+  MINIFIAPI static constexpr const char* Description = "Class that provides C2 metrics to the C2Agent";
+
+  std::optional<state::response::NodeReporter::ReportedNode> getMetricsNode(const std::string& metrics_class) const override;
+  std::vector<state::response::NodeReporter::ReportedNode> getHeartbeatNodes(bool include_manifest) const override;
+  state::response::NodeReporter::ReportedNode getAgentManifest() override;
+
+  void clearMetricNodes() override;
+  void loadMetricNodes(core::ProcessGroup* root) override;
+
+ private:
+  void loadC2ResponseConfiguration(const std::string &prefix);
+  state::response::SharedResponseNode loadC2ResponseConfiguration(const std::string &prefix, state::response::SharedResponseNode prev_node);
+  void loadNodeClasses(const std::string& class_definitions, const state::response::SharedResponseNode& new_node);
+
+  mutable std::mutex metrics_mutex_;
+
+  // Name and response node value of the root response nodes defined in nifi.c2.root.classes and nifi.c2.root.class.definitions
+  // In case a root class is defined to be a processor metric there can be multiple response nodes if the same processor is defined
+  // multiple times in the flow
+  std::unordered_map<std::string, std::vector<state::response::SharedResponseNode>> root_response_nodes_;
+
+  std::shared_ptr<core::logging::Logger> logger_ = core::logging::LoggerFactory<C2MetricsPublisher>::getLogger();
+};
+
+}  // namespace org::apache::nifi::minifi::c2

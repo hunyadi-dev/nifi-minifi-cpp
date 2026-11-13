@@ -1,37 +1,22 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include "c2/HeartbeatJsonSerializer.h"
+#include "core/TypedValues.h"
 
 #include "rapidjson/document.h"
 #include "rapidjson/writer.h"
 #include "rapidjson/stringbuffer.h"
 #include "rapidjson/prettywriter.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace c2 {
+namespace org::apache::nifi::minifi::c2 {
 
 static void serializeOperationInfo(rapidjson::Value& target, const C2Payload& payload, rapidjson::Document::AllocatorType& alloc) {
   gsl_Expects(target.IsObject());
 
-  target.AddMember("operation", rapidjson::Value(payload.getOperation().toStringOr("unknown"), alloc), alloc);
+  // magic_enum::enum_name() returns a string_view that is a null-terminated string literal
+  target.AddMember("operation", rapidjson::Value(magic_enum::enum_name<Operation>(payload.getOperation()).data(), alloc), alloc);  // NOLINT(bugprone-suspicious-stringview-data-usage)
 
   std::string id = payload.getIdentifier();
   if (id.empty()) {
@@ -47,6 +32,8 @@ static void serializeOperationInfo(rapidjson::Value& target, const C2Payload& pa
         return "PARTIALLY_APPLIED";
       case state::UpdateState::READ_ERROR:
         return "OPERATION_NOT_UNDERSTOOD";
+      case state::UpdateState::NO_OPERATION:
+        return "NO_OPERATION";
       case state::UpdateState::SET_ERROR:
       default:
         return "NOT_APPLIED";
@@ -56,17 +43,22 @@ static void serializeOperationInfo(rapidjson::Value& target, const C2Payload& pa
   rapidjson::Value state(rapidjson::kObjectType);
 
   state.AddMember("state", rapidjson::Value(state_str.c_str(), alloc), alloc);
-  const auto details = payload.getRawData();
-
-  state.AddMember("details", rapidjson::Value(std::string{details.data(), details.size()}.c_str(), alloc), alloc);
+  state.AddMember("details", rapidjson::Value(payload.getRawDataAsString().c_str(), alloc), alloc);
 
   target.AddMember("operationState", state, alloc);
   target.AddMember("identifier", rapidjson::Value(id.c_str(), alloc), alloc);
 }
 
-static void setJsonStr(const std::string& key, const state::response::ValueNode& value, rapidjson::Value& parent, rapidjson::Document::AllocatorType& alloc) {  // NOLINT
+static void setJsonStr(const std::string& key, const c2::C2Value& value, rapidjson::Value& parent, rapidjson::Document::AllocatorType& alloc) {
   rapidjson::Value valueVal;
-  auto base_type = value.getValue();
+
+  if (auto* json_val = value.json()) {
+    valueVal.CopyFrom(*json_val, alloc);
+    parent.AddMember(rapidjson::Value(key.c_str(), alloc), valueVal, alloc);
+    return;
+  }
+
+  auto base_type = gsl::not_null(value.valueNode())->getValue();
 
   auto type_index = base_type->getTypeIndex();
   if (auto sub_type = std::dynamic_pointer_cast<core::TransformableValue>(base_type)) {
@@ -74,27 +66,27 @@ static void setJsonStr(const std::string& key, const state::response::ValueNode&
   } else {
     if (type_index == state::response::Value::BOOL_TYPE) {
       bool value = false;
-      base_type->convertValue(value);
+      base_type->getValue(value);
       valueVal.SetBool(value);
     } else if (type_index == state::response::Value::INT_TYPE) {
       int value = 0;
-      base_type->convertValue(value);
+      base_type->getValue(value);
       valueVal.SetInt(value);
     } else if (type_index == state::response::Value::UINT32_TYPE) {
       uint32_t value = 0;
-      base_type->convertValue(value);
+      base_type->getValue(value);
       valueVal.SetUint(value);
     } else if (type_index == state::response::Value::INT64_TYPE) {
       int64_t value = 0;
-      base_type->convertValue(value);
+      base_type->getValue(value);
       valueVal.SetInt64(value);
     } else if (type_index == state::response::Value::UINT64_TYPE) {
       int64_t value = 0;
-      base_type->convertValue(value);
+      base_type->getValue(value);
       valueVal.SetInt64(value);
     } else if (type_index == state::response::Value::DOUBLE_TYPE) {
       double value = 0;
-      base_type->convertValue(value);
+      base_type->getValue(value);
       valueVal.SetDouble(value);
     } else {
       valueVal.SetString(base_type->getStringValue().c_str(), alloc);
@@ -160,9 +152,9 @@ static rapidjson::Value serializeConnectionQueues(const C2Payload& payload, std:
   updatedContent.name = uuid;
   adjusted.setLabel(uuid);
   adjusted.setIdentifier(uuid);
-  c2::AnnotatedValue nd;
+  c2::C2Value nd;
   // name should be what was previously the TLN ( top level node )
-  nd = name;
+  nd = C2Value{name};
   updatedContent.operation_arguments.insert(std::make_pair("name", nd));
   // the rvalue reference is an unfortunate side effect of the underlying API decision.
   adjusted.addContent(std::move(updatedContent), true);
@@ -223,13 +215,10 @@ struct NamedValue {
       }
       return;
     }
-    rapidjson::Value& val = [&] () -> rapidjson::Value& {
-      return values[0].IsObject() && values[0].HasMember(member_key) ? values[0][member_key] : values[0];
-    }();
     if (target.IsArray()) {
-      target.PushBack(val, alloc);
+      target.PushBack(values[0], alloc);
     } else {
-      target.AddMember(member_key, val, alloc);
+      target.AddMember(member_key, values[0], alloc);
     }
   }
 };
@@ -244,7 +233,7 @@ class NamedValueMap {
     }
     return data_.end();
   }
-  Container::const_iterator find(const std::string& key) const {
+  [[nodiscard]] Container::const_iterator find(const std::string& key) const {
     for (auto it = data_.begin(); it != data_.end(); ++it) {
       if (it->name == key) return it;
     }
@@ -300,8 +289,4 @@ rapidjson::Value HeartbeatJsonSerializer::serializeJsonPayload(const C2Payload& 
   return json_payload;
 }
 
-}  // namespace c2
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+}  // namespace org::apache::nifi::minifi::c2

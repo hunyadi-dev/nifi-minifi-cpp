@@ -1,22 +1,10 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
-#include "../TestBase.h"
-#include "utils/TestUtils.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
+#include "unit/TestUtils.h"
 #include "core/state/nodes/ConfigurationChecksums.h"
 #include "utils/ChecksumCalculator.h"
 
@@ -29,16 +17,16 @@ TEST_CASE("If no checksum calculators are added, we get an empty node", "[Config
 
   REQUIRE(serialized_response_nodes.size() == 1);
   const auto& checksum_node = serialized_response_nodes[0];
-  REQUIRE(checksum_node.children.size() == 0);
+  REQUIRE(checksum_node.children.empty());
 }
 
 TEST_CASE("If one checksum calculator is added, we get a node with one child", "[ConfigurationChecksums]") {
   TestController test_controller;
-  std::string test_dir = test_controller.createTempDirectory();
-  std::string file_location = utils::putFileToDir(test_dir, "simple.txt", "one line of text\n");
+  auto test_dir = test_controller.createTempDirectory();
+  auto file_location = minifi::test::utils::putFileToDir(test_dir, "simple.txt", "one line of text\n");
 
   utils::ChecksumCalculator checksum_calculator;
-  checksum_calculator.setFileLocation(file_location);
+  checksum_calculator.setFileLocations(std::vector{file_location});
 
   ConfigurationChecksums configuration_checksums;
   configuration_checksums.addChecksumCalculator(checksum_calculator);
@@ -56,14 +44,14 @@ TEST_CASE("If one checksum calculator is added, we get a node with one child", "
 
 TEST_CASE("If two checksum calculators are added, we get a node with two children", "[ConfigurationChecksums]") {
   TestController test_controller;
-  std::string test_dir = test_controller.createTempDirectory();
-  std::string file_location_1 = utils::putFileToDir(test_dir, "first.txt", "this is the first file\n");
-  std::string file_location_2 = utils::putFileToDir(test_dir, "second.txt", "this is the second file\n");
+  auto test_dir = test_controller.createTempDirectory();
+  auto file_location_1 = minifi::test::utils::putFileToDir(test_dir, "first.txt", "this is the first file\n");
+  auto file_location_2 = minifi::test::utils::putFileToDir(test_dir, "second.txt", "this is the second file\n");
 
   utils::ChecksumCalculator checksum_calculator_1;
-  checksum_calculator_1.setFileLocation(file_location_1);
+  checksum_calculator_1.setFileLocations(std::vector{file_location_1});
   utils::ChecksumCalculator checksum_calculator_2;
-  checksum_calculator_2.setFileLocation(file_location_2);
+  checksum_calculator_2.setFileLocations(std::vector{file_location_2});
 
   ConfigurationChecksums configuration_checksums;
   configuration_checksums.addChecksumCalculator(checksum_calculator_1);

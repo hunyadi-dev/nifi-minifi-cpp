@@ -1,0 +1,13 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+sources:
+  "2.47.1":
+    url: "https://github.com/googleapis/google-cloud-cpp/archive/refs/tags/v2.47.1.tar.gz"
+    sha256: "8863056af88460e449264a976f64a0c9f4f3d98477cdad7770c2dca353fea68c"
+patches:
+  "2.47.1":
+    - patch_file: "patches/c++23_fixes.patch"
+      patch_description: "Fix C++23 compatibility issues"
+      patch_type: "portability"

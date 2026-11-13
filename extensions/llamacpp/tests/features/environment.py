@@ -1,0 +1,54 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+from pathlib import Path
+from textwrap import dedent
+
+from minifi_behave.containers.docker_image_builder import DockerImageBuilder
+from minifi_behave.core.hooks import (
+    common_after_scenario,
+    common_before_scenario,
+    get_minifi_container_image,
+)
+from minifi_behave.core.minifi_test_context import MinifiTestContext
+
+# These hooks are executed by behave before and after each scenario
+# The common_before_scenario and common_after_scenario must be called for proper setup and tear down
+
+
+def before_all(context: MinifiTestContext):
+    minifi_container_image = get_minifi_container_image()
+
+    wget_with_retry_path = Path(__file__).resolve().parent / "resources" / "wget_with_retry.sh"
+    wget_with_retry_content = None
+    with open(wget_with_retry_path, "rb") as f:
+        wget_with_retry_content = f.read()
+
+    dockerfile = dedent(
+        """\
+                FROM {base_image}
+                USER root
+                COPY wget_with_retry.sh /scripts/wget_with_retry.sh
+                RUN chmod 755 /scripts/wget_with_retry.sh && mkdir {models_path} && \\
+                    /scripts/wget_with_retry.sh https://huggingface.co/bartowski/Qwen2-VL-2B-Instruct-GGUF/resolve/main/Qwen2-VL-2B-Instruct-Q3_K_M.gguf {models_path} && \\
+                    /scripts/wget_with_retry.sh https://huggingface.co/bartowski/Qwen2-VL-2B-Instruct-GGUF/resolve/main/mmproj-Qwen2-VL-2B-Instruct-f16.gguf {models_path}
+                USER minificpp
+        """.format(base_image=minifi_container_image, models_path="/tmp/models")
+    )
+
+    builder = DockerImageBuilder(
+        image_tag="apacheminificpp:llama",
+        dockerfile_content=dockerfile,
+        files_on_context={"wget_with_retry.sh": wget_with_retry_content},
+    )
+    builder.build()
+
+
+def before_scenario(context: MinifiTestContext, scenario):
+    context.minifi_container_image = "apacheminificpp:llama"
+    common_before_scenario(context, scenario)
+    context.resource_dir = Path(__file__).resolve().parent / "resources"
+
+
+def after_scenario(context, scenario):
+    common_after_scenario(context, scenario)

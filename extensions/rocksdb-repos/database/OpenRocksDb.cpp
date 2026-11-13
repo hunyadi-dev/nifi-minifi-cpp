@@ -1,20 +1,6 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include <utility>
 
@@ -22,11 +8,7 @@
 #include "ColumnHandle.h"
 #include "RocksDbInstance.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace internal {
+namespace org::apache::nifi::minifi::internal {
 
 OpenRocksDb::OpenRocksDb(RocksDbInstance& db, gsl::not_null<std::shared_ptr<rocksdb::DB>> impl, gsl::not_null<std::shared_ptr<ColumnHandle>> column)
     : db_(&db), impl_(std::move(impl)), column_(std::move(column)) {}
@@ -95,6 +77,14 @@ rocksdb::Status OpenRocksDb::FlushWAL(bool sync) {
   return result;
 }
 
+rocksdb::Status OpenRocksDb::RunCompaction() {
+  rocksdb::Status result = impl_->CompactRange(rocksdb::CompactRangeOptions{
+    .bottommost_level_compaction = rocksdb::BottommostLevelCompaction::kForce
+  }, nullptr, nullptr);
+  handleResult(result);
+  return result;
+}
+
 void OpenRocksDb::handleResult(const rocksdb::Status& result) {
   if (result == rocksdb::Status::NoSpace()) {
     db_->invalidate();
@@ -118,8 +108,38 @@ rocksdb::DB* OpenRocksDb::get() {
   return impl_.get();
 }
 
-}  // namespace internal
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+std::optional<uint64_t> OpenRocksDb::getApproximateSizes() const {
+  const rocksdb::SizeApproximationOptions options{ .include_memtables = true };
+  std::string del_char_str(1, static_cast<char>(127));
+  std::string empty_str;
+  const rocksdb::Range range(empty_str, del_char_str);
+  uint64_t value = 0;
+  auto status = impl_->GetApproximateSizes(options, column_->handle.get(), &range, 1, &value);
+  if (status.ok()) {
+    return value;
+  }
+  return std::nullopt;
+}
+
+void OpenRocksDb::fillU64FromProperty(uint64_t& member, std::string_view property_name) {
+  std::string property_value;
+  GetProperty(property_name, &property_value);
+  try {
+    member = std::stoull(property_value);
+  } catch (const std::exception&) {
+    logger_->log_warn("Could not retrieve valid '{}' property value from rocksdb content repository!", property_name);
+  }
+}
+
+
+minifi::core::RepositoryMetricsSource::RocksDbStats OpenRocksDb::getStats() {
+  minifi::core::RepositoryMetricsSource::RocksDbStats stats;
+  fillU64FromProperty(stats.table_readers_size, "rocksdb.estimate-table-readers-mem");
+  fillU64FromProperty(stats.all_memory_tables_size, "rocksdb.cur-size-all-mem-tables");
+  fillU64FromProperty(stats.block_cache_usage, "rocksdb.block-cache-usage");
+  fillU64FromProperty(stats.block_cache_pinned_usage, "rocksdb.block-cache-pinned-usage");
+
+  return stats;
+}
+
+}  // namespace org::apache::nifi::minifi::internal

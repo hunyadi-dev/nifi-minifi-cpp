@@ -1,0 +1,55 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+find_package(OpenSSL REQUIRED)
+find_package(ZLIB REQUIRED)
+find_package(Threads REQUIRED)
+
+include(FetchContent)
+
+set(PATCH_FILE "${CMAKE_SOURCE_DIR}/thirdparty/curl/module-path.patch")
+set(PC "${Patch_EXECUTABLE}" -p1 -i "${PATCH_FILE}")
+
+FetchContent_Declare(
+        curl
+        URL "https://github.com/curl/curl/archive/refs/tags/curl-8_20_0.tar.gz"
+        URL_HASH "SHA256=738fe8ae973a6f171b4e7cf7146edd19894e19f09cd45a3b673ebdba3549a435"
+        PATCH_COMMAND ${PC}
+        SYSTEM
+        OVERRIDE_FIND_PACKAGE
+)
+
+set(BUILD_CURL_EXE OFF CACHE BOOL "" FORCE)
+set(BUILD_TESTING OFF CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(HTTP_ONLY ON CACHE BOOL "" FORCE)
+set(CURL_CA_PATH "none" CACHE STRING "" FORCE)
+set(CURL_USE_LIBSSH2 OFF CACHE BOOL "" FORCE)
+set(USE_LIBIDN2 OFF CACHE BOOL "" FORCE)
+set(CURL_USE_LIBPSL OFF CACHE BOOL "" FORCE)
+set(CURL_USE_OPENSSL ON CACHE BOOL "" FORCE)
+set(USE_NGHTTP2 OFF CACHE BOOL "" FORCE)
+set(CURL_ZSTD OFF CACHE BOOL "" FORCE)
+set(CURL_BROTLI OFF CACHE BOOL "" FORCE)
+
+FetchContent_MakeAvailable(curl)
+
+if (TARGET libcurl_static)
+    target_compile_definitions(libcurl_static PUBLIC CURL_STATICLIB)
+
+    if (APPLE)
+        target_link_libraries(libcurl_static INTERFACE "-framework CoreFoundation -framework SystemConfiguration -framework CoreServices")
+    elseif (WIN32)
+        target_link_libraries(libcurl_static INTERFACE Iphlpapi.lib)
+    endif ()
+else()
+    message(WARNING "libcurl_static target not found; bundled curl may not link correctly.")
+endif()
+
+# --- EXPORT LEGACY VARIABLES ---
+set(CURL_FOUND "YES" CACHE INTERNAL "")
+set(CURL_INCLUDE_DIR "${curl_SOURCE_DIR}/include" CACHE INTERNAL "")
+set(CURL_INCLUDE_DIRS "${curl_SOURCE_DIR}/include" CACHE INTERNAL "")
+set(CURL_LIBRARY CURL::libcurl CACHE INTERNAL "")
+set(CURL_LIBRARIES CURL::libcurl CACHE INTERNAL "")

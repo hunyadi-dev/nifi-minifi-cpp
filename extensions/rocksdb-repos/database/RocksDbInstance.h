@@ -1,20 +1,6 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #pragma once
 
@@ -24,54 +10,59 @@
 #include <unordered_map>
 #include "RocksDbUtils.h"
 #include "rocksdb/db.h"
-#include "logging/Logger.h"
+#include "minifi-cpp/core/logging/Logger.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace internal {
+namespace org::apache::nifi::minifi::internal {
 
+class RocksDatabase;
 class OpenRocksDb;
 struct ColumnHandle;
+struct DbHandle;
 
 /**
  * Purpose: represents a single rocksdb instance backed by a directory
  */
 class RocksDbInstance {
   friend class OpenRocksDb;
+  friend class RocksDatabase;
+
+  struct ColumnConfig {
+    DBOptionsPatch dbo_patch;
+    ColumnFamilyOptionsPatch cfo_patch;
+  };
 
  public:
-  explicit RocksDbInstance(const std::string& path, RocksDbMode mode = RocksDbMode::ReadWrite);
+  explicit RocksDbInstance(std::string path, RocksDbMode mode = RocksDbMode::ReadWrite);
 
-  std::optional<OpenRocksDb> open(const std::string& column, const DBOptionsPatch& db_options_patch, const ColumnFamilyOptionsPatch& cf_options_patch);
+  std::optional<OpenRocksDb> open(const std::string& column);
 
  protected:
   // caller must hold the mtx_ mutex
-  std::shared_ptr<ColumnHandle> getOrCreateColumnFamily(const std::string& column, const ColumnFamilyOptionsPatch& cf_options_patch, const std::lock_guard<std::mutex>& guard);
+  std::shared_ptr<ColumnHandle> getOrCreateColumnFamily(const std::string& column, const std::lock_guard<std::mutex>& guard);
   /*
    * notify RocksDatabase that the next open should check if they can reopen the database
    * until a successful reopen no more open is possible
    */
   void invalidate();
 
+  void invalidate(const std::lock_guard<std::mutex>&);
+
+  void registerColumnConfig(const std::string& column, const DBOptionsPatch& db_options_patch, const ColumnFamilyOptionsPatch& cf_options_patch,
+    const std::unordered_map<std::string, std::string>& db_config_override);
+  void unregisterColumnConfig(const std::string& column);
+
   rocksdb::DBOptions db_options_;
   const std::string db_name_;
+  std::unordered_map<std::string, std::string> db_config_override_;
   const RocksDbMode mode_;
 
   std::mutex mtx_;
-  std::shared_ptr<rocksdb::DB> impl_;
+  std::shared_ptr<DbHandle> impl_;
   std::unordered_map<std::string, std::shared_ptr<ColumnHandle>> columns_;
 
-  // the patcher could have internal resources the we need to keep alive
-  // as long as the database is open (e.g. custom environment)
-  DBOptionsPatch db_options_patch_;
+  std::unordered_map<std::string, ColumnConfig> column_configs_;
 
-  static std::shared_ptr<core::logging::Logger> logger_;
+  std::shared_ptr<core::logging::Logger> logger_;
 };
 
-}  // namespace internal
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+}  // namespace org::apache::nifi::minifi::internal

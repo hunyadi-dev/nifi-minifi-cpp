@@ -1,79 +1,34 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements. See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership. The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License. You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied. See the License for the
-# specific language governing permissions and limitations
-# under the License.
-#
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
-ARG BASE_ALPINE_IMAGE="alpine:3.13"
+ARG BASE_IMAGE="alpine:3.22.4"
 
 # Build image
-FROM ${BASE_ALPINE_IMAGE} AS build
+FROM ${BASE_IMAGE} AS build
 LABEL maintainer="Apache NiFi <dev@nifi.apache.org>"
 
 ARG MINIFI_VERSION
 ARG UID=1000
 ARG GID=1000
 
-# PDH and WEL extensions and not listed as they are Windows specific
-# SYSTEMD extension is turned OFF explicitly as it has no use in an alpine container
-ARG ENABLE_ALL=OFF
-ARG ENABLE_PYTHON=OFF
-ARG ENABLE_OPS=ON
-ARG ENABLE_JNI=OFF
-ARG ENABLE_OPENCV=OFF
-ARG ENABLE_OPC=OFF
-ARG ENABLE_GPS=OFF
-ARG ENABLE_COAP=OFF
-ARG ENABLE_SQL=OFF
-ARG ENABLE_MQTT=OFF
-ARG ENABLE_PCAP=OFF
-ARG ENABLE_LIBRDKAFKA=OFF
-ARG ENABLE_SENSORS=OFF
-ARG ENABLE_USB_CAMERA=OFF
-ARG ENABLE_TENSORFLOW=OFF
-ARG ENABLE_AWS=OFF
-ARG ENABLE_BUSTACHE=OFF
-ARG ENABLE_SFTP=OFF
-ARG ENABLE_OPENWSMAN=OFF
-ARG ENABLE_AZURE=OFF
-ARG ENABLE_ENCRYPT_CONFIG=ON
-ARG ENABLE_NANOFI=OFF
-ARG DISABLE_CURL=OFF
-ARG DISABLE_JEMALLOC=ON
-ARG DISABLE_CIVET=OFF
-ARG DISABLE_EXPRESSION_LANGUAGE=OFF
-ARG DISABLE_ROCKSDB=OFF
-ARG DISABLE_LIBARCHIVE=OFF
-ARG DISABLE_LZMA=OFF
-ARG DISABLE_BZIP2=OFF
-ARG ENABLE_SCRIPTING=ON
-ARG DISABLE_PYTHON_SCRIPTING=
-ARG DISABLE_CONTROLLER=OFF
+# MINIFI_OPTIONS will be passed directly to cmake
+# use it to define cmake options (e.g. -DENABLE_AWS=ON -DENABLE_AZURE=ON)
+ARG MINIFI_OPTIONS=""
 ARG CMAKE_BUILD_TYPE=Release
+ARG DOCKER_SKIP_TESTS=ON
+ARG DOCKER_USE_CONAN=OFF
+ARG DOCKER_NIFI_CONAN_USER=
 
 # Install the system dependencies needed for a build
 RUN apk --no-cache add gcc \
   g++ \
   make \
+  bash \
   bison \
   flex \
   flex-dev \
   linux-headers \
-  maven \
-  openjdk8-jre-base \
-  openjdk8 \
   autoconf \
   automake \
   libtool \
@@ -81,88 +36,93 @@ RUN apk --no-cache add gcc \
   cmake \
   git \
   patch \
-  libpcap-dev \
-  libpng-dev \
-  libusb-dev \
-  gpsd-dev \
   python3-dev \
-  boost-dev \
   doxygen \
-  ccache
+  ccache \
+  python3 \
+  py3-pip \
+  m4 \
+  pkgconf \
+  curl \
+  clang-dev
 
-ENV USER minificpp
-ENV MINIFI_BASE_DIR /opt/minifi
-ENV JAVA_HOME /usr/lib/jvm/default-jvm
-ENV PATH ${PATH}:/usr/lib/jvm/default-jvm/bin
-ENV MINIFI_HOME $MINIFI_BASE_DIR/nifi-minifi-cpp-${MINIFI_VERSION}
-ENV MINIFI_VERSION ${MINIFI_VERSION}
+ENV USER=minificpp
+ENV MINIFI_BASE_DIR=/opt/minifi
+ENV MINIFI_HOME=$MINIFI_BASE_DIR/nifi-minifi-cpp-${MINIFI_VERSION}
+ENV MINIFI_VERSION=${MINIFI_VERSION}
 
 # Setup minificpp user
 RUN addgroup -g ${GID} ${USER} && adduser -u ${UID} -D -G ${USER} -g "" ${USER} && \
     install -d -o ${USER} -g ${USER} ${MINIFI_BASE_DIR}
 COPY --chown=${USER}:${USER} . ${MINIFI_BASE_DIR}
-RUN if [ -d "${MINIFI_BASE_DIR}/.ccache" ]; then mv ${MINIFI_BASE_DIR}/.ccache /home/${USER}/.ccache; fi
 
 USER ${USER}
 
-ENV PATH /usr/lib/ccache/bin:${PATH}
-RUN mkdir ${MINIFI_BASE_DIR}/build
-WORKDIR ${MINIFI_BASE_DIR}/build
-RUN cmake -DSTATIC_BUILD= -DSKIP_TESTS=true -DENABLE_ALL="${ENABLE_ALL}" -DENABLE_PYTHON="${ENABLE_PYTHON}" -DENABLE_OPS="${ENABLE_OPS}" \
-    -DENABLE_JNI="${ENABLE_JNI}" -DENABLE_OPENCV="${ENABLE_OPENCV}" -DENABLE_OPC="${ENABLE_OPC}" -DENABLE_GPS="${ENABLE_GPS}" \
-    -DENABLE_COAP="${ENABLE_COAP}" -DENABLE_SQL="${ENABLE_SQL}" -DENABLE_MQTT="${ENABLE_MQTT}" -DENABLE_PCAP="${ENABLE_PCAP}" \
-    -DENABLE_LIBRDKAFKA="${ENABLE_LIBRDKAFKA}" -DENABLE_SENSORS="${ENABLE_SENSORS}" -DENABLE_USB_CAMERA="${ENABLE_USB_CAMERA}" \
-    -DENABLE_TENSORFLOW="${ENABLE_TENSORFLOW}" -DENABLE_AWS="${ENABLE_AWS}" -DENABLE_BUSTACHE="${ENABLE_BUSTACHE}" -DENABLE_SFTP="${ENABLE_SFTP}" \
-    -DENABLE_OPENWSMAN="${ENABLE_OPENWSMAN}" -DENABLE_AZURE="${ENABLE_AZURE}" -DENABLE_NANOFI=${ENABLE_NANOFI} -DENABLE_SYSTEMD=OFF \
-    -DDISABLE_CURL="${DISABLE_CURL}" -DDISABLE_JEMALLOC="${DISABLE_JEMALLOC}" -DDISABLE_CIVET="${DISABLE_CIVET}" \
-    -DDISABLE_EXPRESSION_LANGUAGE="${DISABLE_EXPRESSION_LANGUAGE}" -DDISABLE_ROCKSDB="${DISABLE_ROCKSDB}" \
-    -DDISABLE_LIBARCHIVE="${DISABLE_LIBARCHIVE}" -DDISABLE_LZMA="${DISABLE_LZMA}" -DDISABLE_BZIP2="${DISABLE_BZIP2}" \
-    -DENABLE_SCRIPTING="${ENABLE_SCRIPTING}" -DDISABLE_PYTHON_SCRIPTING="${DISABLE_PYTHON_SCRIPTING}" -DDISABLE_CONTROLLER="${DISABLE_CONTROLLER}" \
-    -DENABLE_ENCRYPT_CONFIG="${ENABLE_ENCRYPT_CONFIG}" -DAWS_ENABLE_UNITY_BUILD=OFF -DEXCLUDE_BOOST=ON -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" .. && \
-    make -j "$(nproc)" package && \
-    tar -xzvf "${MINIFI_BASE_DIR}/build/nifi-minifi-cpp-${MINIFI_VERSION}-bin.tar.gz" -C "${MINIFI_BASE_DIR}"
+# Unlike Alpine's patched rust, the rustup musl toolchain links statically by default. Corrosion always passes --target, so the
+# -crt-static rustflags from minifi_rust/.cargo/config.toml don't reach build scripts, and bindgen's build script can't dlopen libclang.
+# The rustc wrapper applies the flag to every rustc invocation, including build scripts.
+RUN if echo "$MINIFI_OPTIONS" | grep -q "MINIFI_RUST=ON"; then \
+      curl --proto '=https' --tlsv1.2 -sSf https://sh.rustup.rs | \
+        CARGO_HOME=${MINIFI_BASE_DIR}/.cargo RUSTUP_HOME=${MINIFI_BASE_DIR}/.rustup sh -s -- -y --no-modify-path --profile minimal && \
+      printf '#!/bin/sh\nexec "$@" -C target-feature=-crt-static\n' > ${MINIFI_BASE_DIR}/.cargo/bin/rustc-no-crt-static && \
+      chmod +x ${MINIFI_BASE_DIR}/.cargo/bin/rustc-no-crt-static; \
+    fi
 
+RUN --mount=type=secret,id=nifi_conan_password,mode=0444 if [ "${DOCKER_USE_CONAN}" == "ON" ]; then \
+      set -e; \
+      cd ${MINIFI_BASE_DIR}/bootstrap && \
+      python3 -m venv venv && \
+      source venv/bin/activate && \
+      pip install -r requirements.txt && \
+      python3 main.py --skip-compiler-install --run-conan-install --minifi-options="${MINIFI_OPTIONS} -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}" && \
+      if [ -n "${DOCKER_NIFI_CONAN_USER}" ] && [ -f /run/secrets/nifi_conan_password ]; then \
+        conan remote login nifi-conan ${DOCKER_NIFI_CONAN_USER} -p "$(cat /run/secrets/nifi_conan_password)" || true; \
+        conan upload "*" -r nifi-conan --confirm || true; \
+      fi; \
+    fi
+
+RUN mkdir -p ${MINIFI_BASE_DIR}/build
+WORKDIR ${MINIFI_BASE_DIR}/build
+RUN export PATH=/usr/lib64/ccache/bin${PATH:+:${PATH}} && \
+    export CCACHE_DIR=${MINIFI_BASE_DIR}/.ccache && \
+    if echo "$MINIFI_OPTIONS" | grep -q "MINIFI_RUST=ON"; then \
+        export CARGO_HOME=${MINIFI_BASE_DIR}/.cargo RUSTUP_HOME=${MINIFI_BASE_DIR}/.rustup && \
+        export PATH=${CARGO_HOME}/bin${PATH:+:${PATH}} && \
+        export RUSTC_WRAPPER=${CARGO_HOME}/bin/rustc-no-crt-static; \
+    fi && \
+    if [ "${DOCKER_USE_CONAN}" == "ON" ]; then CONAN_TOOLCHAIN="-DCMAKE_TOOLCHAIN_FILE=conan_toolchain.cmake"; fi && \
+    cmake -DSTATIC_BUILD= -DSKIP_TESTS=${DOCKER_SKIP_TESTS} ${CONAN_TOOLCHAIN:-} ${MINIFI_OPTIONS} -DAWS_ENABLE_UNITY_BUILD=OFF -DCMAKE_BUILD_TYPE="${CMAKE_BUILD_TYPE}" .. && \
+    make -j "$(nproc)" package && \
+    tar -xzvf "${MINIFI_BASE_DIR}/build/nifi-minifi-cpp-${MINIFI_VERSION}.tar.gz" -C "${MINIFI_BASE_DIR}"
 
 # Release image
-FROM ${BASE_ALPINE_IMAGE} AS release
+FROM ${BASE_IMAGE} AS release
 LABEL maintainer="Apache NiFi <dev@nifi.apache.org>"
 
 ARG UID=1000
 ARG GID=1000
 ARG MINIFI_VERSION
 
-ARG ENABLE_GPS=OFF
-ARG ENABLE_JNI=OFF
-ARG ENABLE_PCAP=OFF
-ARG ENABLE_USB_CAMERA=OFF
-ARG ENABLE_OPENCV=OFF
-ARG ENABLE_PYTHON=OFF
-ARG ENABLE_BUSTACHE=OFF
-ARG ENABLE_SCRIPTING=ON
-ARG DISABLE_PYTHON_SCRIPTING=
+ARG MINIFI_OPTIONS
 
 # Add testing repo for rocksdb
 RUN echo 'http://dl-cdn.alpinelinux.org/alpine/edge/testing' >> /etc/apk/repositories
 
-ENV USER minificpp
-ENV MINIFI_BASE_DIR /opt/minifi
-ENV MINIFI_HOME ${MINIFI_BASE_DIR}/minifi-current
-ENV MINIFI_VERSIONED_HOME ${MINIFI_BASE_DIR}/nifi-minifi-cpp-${MINIFI_VERSION}
-ENV JAVA_HOME /usr/lib/jvm/default-jvm
-ENV PATH ${PATH}:/usr/lib/jvm/default-jvm/bin
+ENV USER=minificpp
+ENV MINIFI_BASE_DIR=/opt/minifi
+ENV MINIFI_HOME=${MINIFI_BASE_DIR}/minifi-current
+ENV MINIFI_VERSIONED_HOME=${MINIFI_BASE_DIR}/nifi-minifi-cpp-${MINIFI_VERSION}
 
 RUN addgroup -g ${GID} ${USER} && adduser -u ${UID} -D -G ${USER} -g "" ${USER} && \
     install -d -o ${USER} -g ${USER} ${MINIFI_BASE_DIR} && ln -s ${MINIFI_VERSIONED_HOME} ${MINIFI_HOME} && \
-    apk add --no-cache libstdc++ && \
-    if [ "$ENABLE_GPS" = "ON" ]; then apk add --no-cache gpsd; fi && \
-    if [ "$ENABLE_JNI" = "ON" ]; then apk add --no-cache openjdk8-jre-base; fi && \
-    if [ "$ENABLE_PCAP" = "ON" ]; then apk add --no-cache libpcap; fi && \
-    if [ "$ENABLE_USB_CAMERA" = "ON" ]; then apk add --no-cache libpng libusb; fi && \
-    if [ "$ENABLE_OPENCV" = "ON" ] || [ "$ENABLE_BUSTACHE" = "ON" ]; then apk add --no-cache boost; fi && \
-    if { [ "$ENABLE_PYTHON" = "ON" ] || [ "$ENABLE_SCRIPTING" = "ON" ]; } && [ -z "$DISABLE_PYTHON_SCRIPTING" ]; then apk add --no-cache python3-dev; fi
+    apk add --no-cache libstdc++ tzdata alpine-conf && \
+    if echo "$MINIFI_OPTIONS" | grep -q "ENABLE_ALL=ON\|ENABLE_PYTHON_SCRIPTING=ON"; then apk add --no-cache python3; fi && \
+    setup-timezone -z UTC && \
+    apk del alpine-conf
 
 # Copy built minifi distribution from builder
 COPY --from=build --chown=${USER}:${USER} ${MINIFI_VERSIONED_HOME} ${MINIFI_HOME}
+COPY --from=build --chown=${USER}:${USER} ${MINIFI_BASE_DIR}/docker/conf/minifi-log.properties ${MINIFI_HOME}/conf/minifi-log.properties
 
 USER ${USER}
 WORKDIR ${MINIFI_HOME}

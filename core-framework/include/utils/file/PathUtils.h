@@ -1,0 +1,94 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include <climits>
+#include <cctype>
+#include <cinttypes>
+#include <filesystem>
+#include <memory>
+#include <optional>
+#include <string>
+#include <system_error>
+#include <utility>
+#include "utils/expected.h"
+
+namespace org::apache::nifi::minifi::utils::file {
+
+namespace PathUtils = ::org::apache::nifi::minifi::utils::file;
+using path = const char*;
+
+std::string globToRegex(std::string glob);
+
+inline std::optional<std::filesystem::path> canonicalize(const std::filesystem::path& path) {
+  std::error_code canonical_error;
+  auto result = std::filesystem::canonical(path, canonical_error);
+  if (canonical_error)
+    return std::nullopt;
+
+  return result;
+}
+
+inline std::expected<void, std::string> validateRelativeFilePath(const std::filesystem::path& path) {
+  if (path.empty()) {
+    return std::unexpected{"Empty file path"};
+  }
+  if (!path.is_relative()) {
+    return std::unexpected{"File path must be a relative path '" + path.string() + "'"};
+  }
+  if (!path.has_filename()) {
+    return std::unexpected{"Filename missing in output path '" + path.string() + "'"};
+  }
+  if (path.filename() == "." || path.filename() == "..") {
+    return std::unexpected{"Invalid filename '" + path.filename().string() + "'"};
+  }
+  for (const auto& segment : path) {
+    if (segment == "..") {
+      return std::unexpected{"Accessing parent directory is forbidden in file path '" + path.string() + "'"};
+    }
+  }
+  return {};
+}
+
+
+/**
+ * Represents filesystem space information in bytes
+ */
+struct space_info {
+  std::uintmax_t capacity;
+  std::uintmax_t free;
+  std::uintmax_t available;
+
+  friend bool operator==(const space_info& a, const space_info& b) noexcept {
+    return a.capacity == b.capacity && a.free == b.free && a.available == b.available;
+  }
+};
+
+class filesystem_error : public std::system_error {
+ public:
+  filesystem_error(const std::string& what_arg, const std::error_code ec)
+      :std::system_error{ec, what_arg}
+  {}
+  filesystem_error(const std::string& what_arg, const path path1, const path path2, const std::error_code ec)
+      :std::system_error{ec, what_arg}, paths_involved_{std::make_shared<const std::pair<std::string, std::string>>(path1, path2)}
+  {}
+
+  // copy should be noexcept as soon as libstdc++ fixes std::system_error copy
+  filesystem_error(const filesystem_error& o) = default;
+  filesystem_error& operator=(const filesystem_error&) = default;
+
+  path path1() const noexcept { return paths_involved_->first.c_str(); }
+  path path2() const noexcept { return paths_involved_->second.c_str(); }
+
+ private:
+  std::shared_ptr<const std::pair<std::string, std::string>> paths_involved_;
+};
+
+/**
+ * Provides filesystem space information for the specified directory
+ */
+space_info space(path);
+space_info space(path, std::error_code&) noexcept;
+
+}  // namespace org::apache::nifi::minifi::utils::file

@@ -1,41 +1,26 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-#undef NDEBUG
-
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #include "ConsumeWindowsEventLog.h"
 
 #include "core/ConfigurableComponent.h"
 #include "processors/LogAttribute.h"
 #include "processors/PutFile.h"
-#include "TestBase.h"
-#include "utils/TestUtils.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
+#include "unit/TestUtils.h"
 #include "utils/file/FileUtils.h"
 #include "wel/UniqueEvtHandle.h"
-#include "IntegrationTestUtils.h"
 
 #include "rapidjson/document.h"
 
 #include "CWELTestUtils.h"
-#include "Utils.h"
 
 // generated from the manifest file "custom-provider/unit-test-provider.man"
 // using the command "mc -um unit-test-provider.man"
 #include "custom-provider/unit-test-provider.h"
+
+namespace org::apache::nifi::minifi::test {
 
 namespace {
 
@@ -119,7 +104,7 @@ class CustomProviderController : public OutputFormatTestController {
 
  private:
   bool checkNewEventAvailable() {
-    return org::apache::nifi::minifi::utils::verifyEventHappenedInPollTime(std::chrono::seconds{5}, [&] {
+    return org::apache::nifi::utils::verifyEventHappenedInPollTime(std::chrono::seconds{5}, [&] {
       return advanceBookmark(bookmark_, channel_, query_);
     });
   }
@@ -150,7 +135,7 @@ const std::string EVENT_DATA_JSON = R"(
 
 TEST_CASE("ConsumeWindowsEventLog prints events in JSON::Simple correctly custom provider", "[onTrigger]") {
   std::string event = CustomProviderController{"JSON", "Simple"}.run();
-  verifyJSON(event, R"(
+  utils::verifyJSON(event, R"(
     {
       "System": {
         "Provider": {
@@ -165,13 +150,16 @@ TEST_CASE("ConsumeWindowsEventLog prints events in JSON::Simple correctly custom
 
 TEST_CASE("ConsumeWindowsEventLog prints events in JSON::Flattened correctly custom provider", "[onTrigger]") {
   std::string event = CustomProviderController{"JSON", "Flattened"}.run();
-  verifyJSON(event, R"(
+  utils::verifyJSON(event, R"(
     {
       "Name": ")" + CUSTOM_PROVIDER_NAME + R"(",
       "Channel": ")" + CUSTOM_CHANNEL /* Channel is not overwritten by data named "Channel" */ + R"(",
-      "EventData": )" + EVENT_DATA_JSON /* EventData is not discarded */ + R"(,
-      "param1": "Actual event",
-      "param2": "Second"
+      "EventData.param1": "Actual event",
+      "EventData.param2": "Second",
+      "EventData.Channel": "Third",
+      "EventData": "0901"
     }
   )");
 }
+
+}  // namespace org::apache::nifi::minifi::test

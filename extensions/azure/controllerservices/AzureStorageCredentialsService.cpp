@@ -1,85 +1,47 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include "AzureStorageCredentialsService.h"
 
 #include <set>
 
 #include "core/Resource.h"
+#include "minifi-cpp/Exception.h"
 
 namespace org::apache::nifi::minifi::azure::controllers {
 
-const core::Property AzureStorageCredentialsService::StorageAccountName(
-    core::PropertyBuilder::createProperty("Storage Account Name")
-      ->withDescription("The storage account name.")
-      ->build());
-const core::Property AzureStorageCredentialsService::StorageAccountKey(
-    core::PropertyBuilder::createProperty("Storage Account Key")
-      ->withDescription("The storage account key. This is an admin-like password providing access to every container in this account. "
-                        "It is recommended one uses Shared Access Signature (SAS) token instead for fine-grained control with policies.")
-      ->build());
-const core::Property AzureStorageCredentialsService::SASToken(
-    core::PropertyBuilder::createProperty("SAS Token")
-      ->withDescription("Shared Access Signature token. Specify either SAS Token (recommended) or Storage Account Key together with Storage Account Name if Managed Identity is not used.")
-      ->build());
-const core::Property AzureStorageCredentialsService::CommonStorageAccountEndpointSuffix(
-    core::PropertyBuilder::createProperty("Common Storage Account Endpoint Suffix")
-      ->withDescription("Storage accounts in public Azure always use a common FQDN suffix. Override this endpoint suffix with a "
-                        "different suffix in certain circumstances (like Azure Stack or non-public Azure regions).")
-      ->build());
-const core::Property AzureStorageCredentialsService::ConnectionString(
-  core::PropertyBuilder::createProperty("Connection String")
-    ->withDescription("Connection string used to connect to Azure Storage service. This overrides all other set credential properties if Managed Identity is not used.")
-    ->build());
-const core::Property AzureStorageCredentialsService::UseManagedIdentityCredentials(
-  core::PropertyBuilder::createProperty("Use Managed Identity Credentials")
-    ->withDescription("If true Managed Identity credentials will be used together with the Storage Account Name for authentication.")
-    ->isRequired(true)
-    ->withDefaultValue<bool>(false)
-    ->build());
-
 void AzureStorageCredentialsService::initialize() {
-  setSupportedProperties({StorageAccountName, StorageAccountKey, SASToken, CommonStorageAccountEndpointSuffix, ConnectionString, UseManagedIdentityCredentials});
+  setSupportedProperties(Properties);
 }
 
 void AzureStorageCredentialsService::onEnable() {
-  std::string value;
-  if (getProperty(StorageAccountName.getName(), value)) {
-    credentials_.setStorageAccountName(value);
+  auto credential_configuration_strategy_str = getProperty(CredentialConfigurationStrategy.name).value_or(std::string{magic_enum::enum_name(CredentialConfigurationStrategyOption::FromProperties)});
+  if (auto credential_configuration_strategy = magic_enum::enum_cast<CredentialConfigurationStrategyOption>(credential_configuration_strategy_str)) {
+    credentials_.setCredentialConfigurationStrategy(*credential_configuration_strategy);
+  } else {
+    throw minifi::Exception(ExceptionType::PROCESS_SCHEDULE_EXCEPTION, "Invalid Credential Configuration Strategy: " + credential_configuration_strategy_str);
   }
-  if (getProperty(StorageAccountKey.getName(), value)) {
-    credentials_.setStorageAccountKey(value);
+  if (auto storage_account_name = getProperty(StorageAccountName.name)) {
+    credentials_.setStorageAccountName(*storage_account_name);
   }
-  if (getProperty(SASToken.getName(), value)) {
-    credentials_.setSasToken(value);
+  if (auto storage_account_key = getProperty(StorageAccountKey.name)) {
+    credentials_.setStorageAccountKey(*storage_account_key);
   }
-  if (getProperty(CommonStorageAccountEndpointSuffix.getName(), value)) {
-    credentials_.setEndpontSuffix(value);
+  if (auto sas_token = getProperty(SASToken.name)) {
+    credentials_.setSasToken(*sas_token);
   }
-  if (getProperty(ConnectionString.getName(), value)) {
-    credentials_.setConnectionString(value);
+  if (auto common_storage_account_endpoint_suffix = getProperty(CommonStorageAccountEndpointSuffix.name)) {
+    credentials_.setEndpointSuffix(*common_storage_account_endpoint_suffix);
   }
-  bool use_managed_identity_credentials = false;
-  if (getProperty(UseManagedIdentityCredentials.getName(), use_managed_identity_credentials)) {
-    credentials_.setUseManagedIdentityCredentials(use_managed_identity_credentials);
+  if (auto connection_String = getProperty(ConnectionString.name)) {
+    credentials_.setConnectionString(*connection_String);
+  }
+  if (auto managed_identity_client_id = getProperty(ManagedIdentityClientId.name)) {
+    credentials_.setManagedIdentityClientId(*managed_identity_client_id);
   }
 }
 
-REGISTER_RESOURCE(AzureStorageCredentialsService, "Azure Storage Credentials Management Service");
+REGISTER_RESOURCE(AzureStorageCredentialsService, ControllerService);
 
 }  // namespace org::apache::nifi::minifi::azure::controllers

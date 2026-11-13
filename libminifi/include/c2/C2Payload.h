@@ -1,22 +1,7 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef LIBMINIFI_INCLUDE_C2_C2PAYLOAD_H_
-#define LIBMINIFI_INCLUDE_C2_C2PAYLOAD_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
 
 #include <vector>
 #include <memory>
@@ -25,30 +10,57 @@
 #include <map>
 #include <limits>
 
-#include "../core/state/Value.h"
+#include "core/state/Value.h"
 #include "core/state/UpdateController.h"
 #include "utils/Enum.h"
+#include "minifi-cpp/utils/gsl.h"
+#include "utils/span.h"
+#include "rapidjson/document.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace c2 {
+namespace org::apache::nifi::minifi::c2 {
 
-SMART_ENUM(Operation,
-  (ACKNOWLEDGE, "acknowledge"),
-  (START, "start"),
-  (STOP, "stop"),
-  (RESTART, "restart"),
-  (DESCRIBE, "describe"),
-  (HEARTBEAT, "heartbeat"),
-  (UPDATE, "update"),
-  (VALIDATE, "validate"),
-  (CLEAR, "clear"),
-  (TRANSFER, "transfer"),
-  (PAUSE, "pause"),
-  (RESUME, "resume")
-)
+enum class Operation : uint8_t {
+  acknowledge,
+  start,
+  stop,
+  restart,
+  describe,
+  heartbeat,
+  update,
+  clear,
+  transfer,
+  pause,
+  resume,
+  sync
+};
+
+enum class DescribeOperand : uint8_t {
+  metrics,
+  configuration,
+  manifest,
+  jstack,
+  corecomponentstate
+};
+
+enum class UpdateOperand : uint8_t {
+  configuration,
+  properties,
+  asset
+};
+
+enum class TransferOperand : uint8_t {
+  debug
+};
+
+enum class ClearOperand : uint8_t{
+  connection,
+  repositories,
+  corecomponentstate
+};
+
+enum class SyncOperand : uint8_t{
+  resource
+};
 
 #define PAYLOAD_NO_STATUS 0
 #define PAYLOAD_SUCCESS 1
@@ -59,19 +71,65 @@ enum Direction {
   RECEIVE
 };
 
-struct AnnotatedValue : state::response::ValueNode {
-  using state::response::ValueNode::ValueNode;
-  using state::response::ValueNode::operator=;
+class C2Value {
+ public:
+  friend std::ostream& operator<<(std::ostream& out, const C2Value& val);
 
-  [[nodiscard]] std::optional<std::reference_wrapper<const AnnotatedValue>> getAnnotation(const std::string& name) const {
-    auto it = annotations.find(name);
-    if (it == annotations.end()) {
-      return {};
-    }
-    return std::cref(it->second);
+  C2Value() = default;
+  C2Value(const C2Value& other) {
+    (*this) = other;
+  }
+  C2Value(C2Value&&) = default;
+  template<typename T>
+  requires(std::constructible_from<state::response::ValueNode, T>)
+  explicit C2Value(T&& value) { value_ = state::response::ValueNode{std::forward<T>(value)}; }
+  explicit C2Value(const rapidjson::Value& json_value) {
+    value_.emplace<rapidjson::Document>();
+    get<rapidjson::Document>(value_).CopyFrom(json_value, get<rapidjson::Document>(value_).GetAllocator());
+  }
+  explicit C2Value(rapidjson::Document&& json_doc) {
+    value_ = std::move(json_doc);
   }
 
-  std::map<std::string, AnnotatedValue> annotations;
+  C2Value& operator=(const C2Value& other) {
+    if (auto* other_val_node = get_if<state::response::ValueNode>(&other.value_)) {
+      value_ = *other_val_node;
+    } else {
+      value_.emplace<rapidjson::Document>();
+      get<rapidjson::Document>(value_).CopyFrom(get<rapidjson::Document>(other.value_), get<rapidjson::Document>(value_).GetAllocator());
+    }
+    return *this;
+  }
+
+  C2Value& operator=(C2Value&&) = default;
+
+
+  bool empty() const {
+    if (auto* val_node = get_if<state::response::ValueNode>(&value_)) {
+      return val_node->empty();
+    }
+    return false;
+  }
+
+  std::string to_string() const {
+    if (auto* val_node = get_if<state::response::ValueNode>(&value_)) {
+      return val_node->to_string();
+    }
+    return std::string{get<rapidjson::Document>(value_).GetString(), get<rapidjson::Document>(value_).GetStringLength()};
+  }
+
+  const rapidjson::Document* json() const {
+    return get_if<rapidjson::Document>(&value_);
+  }
+
+  const state::response::ValueNode* valueNode() const {
+    return get_if<state::response::ValueNode>(&value_);
+  }
+
+  bool operator==(const C2Value&) const = default;
+
+ private:
+  std::variant<state::response::ValueNode, rapidjson::Document> value_;
 };
 
 struct C2ContentResponse {
@@ -91,6 +149,15 @@ struct C2ContentResponse {
 
   bool operator!=(const C2ContentResponse &rhs) const { return !(*this == rhs); }
 
+  friend std::ostream& operator<<(std::ostream& out, const C2ContentResponse& response);
+
+  std::optional<std::string> getStringArgument(const std::string& arg_name) const {
+    if (auto it = operation_arguments.find(arg_name); it != operation_arguments.end()) {
+      return it->second.to_string();
+    }
+    return std::nullopt;
+  }
+
   Operation op;
   // determines if the operation is required
   bool required{ false };
@@ -103,7 +170,7 @@ struct C2ContentResponse {
   // name applied to commands
   std::string name;
   // commands that correspond with the operation.
-  std::map<std::string, AnnotatedValue> operation_arguments;
+  std::map<std::string, C2Value> operation_arguments;
 };
 
 /**
@@ -128,14 +195,17 @@ class C2Payload : public state::Update {
   ~C2Payload() override = default;
 
   void setIdentifier(std::string ident) { ident_ = std::move(ident); }
+  [[nodiscard]]
   std::string getIdentifier() const { return ident_; }
 
   void setLabel(std::string label) { label_ = std::move(label); }
+  [[nodiscard]]
   std::string getLabel() const { return label_; }
 
   /**
    * Gets the operation for this payload. May be nested or a single operation.
    */
+  [[nodiscard]]
   Operation getOperation() const noexcept { return op_; }
 
   /**
@@ -143,6 +213,7 @@ class C2Payload : public state::Update {
    */
   bool validate() override { return true; }
 
+  [[nodiscard]]
   const std::vector<C2ContentResponse> &getContent() const noexcept { return content_; }
 
   /**
@@ -153,6 +224,7 @@ class C2Payload : public state::Update {
   /**
    * Determines if this object contains raw data.
    */
+  [[nodiscard]]
   bool isRaw() const noexcept { return raw_; }
 
   /**
@@ -160,12 +232,17 @@ class C2Payload : public state::Update {
    */
   void setRawData(const std::string&);
   void setRawData(const std::vector<char>&);
-  void setRawData(const std::vector<uint8_t>&);
+  void setRawData(std::span<const std::byte>);
 
   /**
    * Returns raw data.
    */
-  std::vector<char> getRawData() const { return raw_data_; }
+  [[nodiscard]] std::vector<std::byte> getRawData() const noexcept { return raw_data_; }
+  [[nodiscard]] std::string getRawDataAsString() const {
+    const auto raw_data = getRawData();
+    return utils::span_to<std::string>(utils::as_span<const char>(std::span(raw_data)));
+  }
+  [[nodiscard]] std::vector<std::byte> moveRawData() && {return std::move(raw_data_);}
 
   /**
    * Add a nested payload.
@@ -173,12 +250,15 @@ class C2Payload : public state::Update {
    */
   void addPayload(C2Payload &&payload);
 
+  [[nodiscard]]
   bool isCollapsible() const noexcept { return is_collapsible_; }
   void setCollapsible(bool is_collapsible) noexcept { is_collapsible_ = is_collapsible; }
 
+  [[nodiscard]]
   bool isContainer() const noexcept { return is_container_; }
   void setContainer(bool is_container) noexcept { is_container_ = is_container; }
 
+  [[nodiscard]]
   const std::vector<C2Payload> &getNestedPayloads() const & noexcept { return payloads_; }
 
   std::vector<C2Payload>&& getNestedPayloads() && noexcept {return std::move(payloads_);}
@@ -192,6 +272,14 @@ class C2Payload : public state::Update {
 
   bool operator!=(const C2Payload &rhs) const { return !(*this == rhs); }
 
+  friend std::ostream& operator<<(std::ostream& out, const C2Payload& payload);
+
+  [[nodiscard]] std::string str() const {
+    std::stringstream ss;
+    ss << *this;
+    return std::move(ss).str();
+  }
+
  protected:
   std::string ident_;  // identifier for this payload.
   std::string label_;
@@ -199,15 +287,9 @@ class C2Payload : public state::Update {
   std::vector<C2ContentResponse> content_;
   Operation op_;
   bool raw_{ false };
-  std::vector<char> raw_data_;
+  std::vector<std::byte> raw_data_;
   bool is_container_{ false };
   bool is_collapsible_{ true };
 };
 
-}  // namespace c2
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // LIBMINIFI_INCLUDE_C2_C2PAYLOAD_H_
+}  // namespace org::apache::nifi::minifi::c2

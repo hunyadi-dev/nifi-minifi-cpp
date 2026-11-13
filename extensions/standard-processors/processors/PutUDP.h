@@ -1,0 +1,62 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+#include <cstddef>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "core/ProcessorImpl.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "minifi-cpp/core/RelationshipDefinition.h"
+#include "minifi-cpp/utils/Export.h"
+
+namespace org::apache::nifi::minifi::core::logging { class Logger; }
+
+namespace org::apache::nifi::minifi::processors {
+class PutUDP final : public core::ProcessorImpl {
+ public:
+  EXTENSIONAPI static constexpr const char* Description = "The PutUDP processor receives a FlowFile and packages the FlowFile content into a single UDP datagram packet "
+      "which is then transmitted to the configured UDP server. "
+      "The processor doesn't guarantee a successful transfer, even if the flow file is routed to the success relationship.";
+
+  EXTENSIONAPI static constexpr auto Hostname = core::PropertyDefinitionBuilder<>::createProperty("Hostname")
+    .withDescription("The ip address or hostname of the destination.")
+    .withDefaultValue("localhost")
+    .withValidator(core::StandardPropertyValidators::NON_BLANK_VALIDATOR)
+    .isRequired(true)
+    .supportsExpressionLanguage(true)
+    .build();
+  EXTENSIONAPI static constexpr auto Port = core::PropertyDefinitionBuilder<>::createProperty("Port")
+    .withDescription("The port on the destination. Can be a service name like ssh or http, as defined in /etc/services.")
+    .withValidator(core::StandardPropertyValidators::NON_BLANK_VALIDATOR)
+    .isRequired(true)
+    .supportsExpressionLanguage(true)
+    .build();
+  EXTENSIONAPI static constexpr auto Properties = std::to_array<core::PropertyReference>({Hostname, Port});
+
+  EXTENSIONAPI static constexpr auto Success = core::RelationshipDefinition{"success", "FlowFiles that are sent to the destination are sent out this relationship."};
+  EXTENSIONAPI static constexpr auto Failure = core::RelationshipDefinition{"failure", "FlowFiles that encountered IO errors are sent out this relationship."};
+  EXTENSIONAPI static constexpr auto Relationships = std::array{Success, Failure};
+
+  EXTENSIONAPI static constexpr bool SupportsDynamicProperties = false;
+  EXTENSIONAPI static constexpr bool SupportsDynamicRelationships = false;
+  EXTENSIONAPI static constexpr core::annotation::Input InputRequirement = core::annotation::Input::INPUT_REQUIRED;
+  EXTENSIONAPI static constexpr bool IsSingleThreaded = true;
+
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_PROCESSORS
+
+  using ProcessorImpl::ProcessorImpl;
+  PutUDP(const PutUDP&) = delete;
+  PutUDP& operator=(const PutUDP&) = delete;
+  ~PutUDP() final;
+
+  void initialize() final;
+  void notifyStop() final;
+  void onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& session_factory) final;
+  void onTrigger(core::ProcessContext& context, core::ProcessSession& session) final;
+};
+}  // namespace org::apache::nifi::minifi::processors

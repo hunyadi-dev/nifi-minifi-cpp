@@ -1,38 +1,19 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #pragma once
-#ifdef OPENSSL_SUPPORT
 
 #include <bitset>
 #include <cinttypes>
 #include <memory>
 #include <string>
 
-#include "core/logging/Logger.h"
+#include "minifi-cpp/core/logging/Logger.h"
 
 struct stack_st_ASN1_OBJECT;
 typedef stack_st_ASN1_OBJECT EXTENDED_KEY_USAGE;
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace utils {
-namespace tls {
+namespace org::apache::nifi::minifi::utils::tls {
 
 struct EXTENDED_KEY_USAGE_deleter {
   void operator()(EXTENDED_KEY_USAGE* key_usage) const;
@@ -55,11 +36,4 @@ class ExtendedKeyUsage {
   std::shared_ptr<core::logging::Logger> logger_;
 };
 
-}  // namespace tls
-}  // namespace utils
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // OPENSSL_SUPPORT
+}  // namespace org::apache::nifi::minifi::utils::tls

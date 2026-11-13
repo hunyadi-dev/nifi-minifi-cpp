@@ -1,0 +1,114 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#include "PutUDP.h"
+
+#include "range/v3/range/conversion.hpp"
+
+#include "minifi-cpp/utils/gsl.h"
+#include "utils/expected.h"
+#include "minifi-cpp/core/ProcessContext.h"
+#include "core/ProcessSession.h"
+#include "core/Resource.h"
+#include "core/logging/LoggerFactory.h"
+
+#include "asio/ip/udp.hpp"
+#include "utils/net/AsioSocketUtils.h"
+
+using asio::ip::udp;
+
+namespace org::apache::nifi::minifi::processors {
+
+PutUDP::~PutUDP() = default;
+
+void PutUDP::initialize() {
+  setSupportedProperties(Properties);
+  setSupportedRelationships(Relationships);
+}
+
+void PutUDP::notifyStop() {}
+
+void PutUDP::onSchedule(core::ProcessContext& context, core::ProcessSessionFactory&) {
+  // if the required properties are missing or empty even before evaluating the EL expression, then we can throw in onSchedule, before we waste any flow files
+  if (!context.hasNonEmptyProperty(Hostname.name)) {
+    throw Exception{ExceptionType::PROCESSOR_EXCEPTION, "missing hostname"};
+  }
+  if (!context.hasNonEmptyProperty(Port.name)) {
+    throw Exception{ExceptionType::PROCESSOR_EXCEPTION, "missing port"};
+  }
+}
+
+void PutUDP::onTrigger(core::ProcessContext& context, core::ProcessSession& session) {
+  const auto flow_file = session.get();
+  if (!flow_file) {
+    context.yield();
+    return;
+  }
+
+  const auto hostname = context.getProperty(Hostname, flow_file.get()).value_or(std::string{});
+  const auto port = context.getProperty(Port, flow_file.get()).value_or(std::string{});
+  if (hostname.empty() || port.empty()) {
+    logger_->log_error("[{}] invalid target endpoint: hostname: {}, port: {}", flow_file->getUUIDStr(),
+        hostname.empty() ? "(empty)" : hostname.c_str(),
+        port.empty() ? "(empty)" : port.c_str());
+    session.transfer(flow_file, Failure);
+    return;
+  }
+
+  const auto data = session.readBuffer(flow_file);
+  if (io::isError(data.status)) {
+    session.transfer(flow_file, Failure);
+    return;
+  }
+
+  asio::io_context io_context;
+
+  const auto resolve_hostname = [&io_context, &hostname, &port]() -> std::expected<udp::resolver::results_type, std::error_code> {
+    udp::resolver resolver(io_context);
+    std::error_code error_code;
+    auto results = resolver.resolve(hostname, port, error_code);
+    if (error_code)
+      return std::unexpected{error_code};
+    return results;
+  };
+
+  const auto send_data_to_endpoint = [&io_context, &data, &logger = this->logger_](const udp::resolver::results_type& resolved_query) -> std::expected<void, std::error_code> {
+    std::error_code error;
+    for (const auto& resolver_entry : resolved_query) {
+      error.clear();
+      udp::socket socket(io_context);
+      std::ignore = socket.open(resolver_entry.endpoint().protocol(), error);
+      if (error) {
+        logger->log_debug("opening {} socket failed due to {} ", resolver_entry.endpoint().protocol() == udp::v4() ? "IPv4" : "IPv6", error.message());
+        continue;
+      }
+      socket.send_to(asio::buffer(data.buffer), resolver_entry.endpoint(), udp::socket::message_flags{}, error);
+      if (error) {
+        logger->log_debug("sending to endpoint {} failed due to {}", resolver_entry.endpoint(), error.message());
+        continue;
+      }
+      logger->log_debug("sending to endpoint {} succeeded", resolver_entry.endpoint());
+      return {};
+    }
+    return std::unexpected{error};
+  };
+
+  const auto transfer_to_success = [&session, &flow_file]() -> void {
+    session.transfer(flow_file, Success);
+  };
+
+  const auto transfer_to_failure = [&session, &flow_file, &logger = this->logger_](std::error_code ec) -> void {
+    gsl_Expects(ec);
+    logger->log_error("{}", ec.message());
+    session.transfer(flow_file, Failure);
+  };
+
+  std::ignore = resolve_hostname()
+      | utils::andThen(send_data_to_endpoint)
+      | utils::transform(transfer_to_success)
+      | utils::orElse(transfer_to_failure);
+}
+
+REGISTER_RESOURCE(PutUDP, Processor);
+
+}  // namespace org::apache::nifi::minifi::processors

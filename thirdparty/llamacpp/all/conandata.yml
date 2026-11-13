@@ -1,0 +1,12 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+sources:
+  "b8944":
+    url: "https://github.com/ggml-org/llama.cpp/archive/refs/tags/b8944.tar.gz"
+    sha256: "ca231c8aca086f56bad3ed371f6dc5b01e971e812a8ddf67564f087390c0e781"
+patches:
+  "b8944":
+    - patch_file: "patches/mtmd-fix.patch"
+      strip: 1

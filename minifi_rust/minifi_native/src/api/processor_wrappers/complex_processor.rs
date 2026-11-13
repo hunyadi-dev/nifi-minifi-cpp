@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+use crate::api::raw_processor::{MultiThreadedTrigger, SingleThreadedTrigger};
+use crate::{
+    ComponentIdentifier, Logger, MinifiError, MultiThreaded, OnTriggerResult, ProcessContext,
+    ProcessError, ProcessSession, Processor, ProcessorDefinition, Schedule, SingleThreaded,
+};
+
+pub trait MutTrigger {
+    fn trigger<Ctx, Session, Lggr>(
+        &mut self,
+        context: &mut Ctx,
+        session: &mut Session,
+        logger: &Lggr,
+    ) -> Result<OnTriggerResult, ProcessError>
+    where
+        Ctx: ProcessContext,
+        Session: ProcessSession<FlowFile = Ctx::FlowFile>,
+        Lggr: Logger;
+}
+
+pub trait Trigger {
+    fn trigger<Context, Session, Lggr>(
+        &self,
+        context: &mut Context,
+        session: &mut Session,
+        logger: &Lggr,
+    ) -> Result<OnTriggerResult, ProcessError>
+    where
+        Context: ProcessContext,
+        Session: ProcessSession<FlowFile = Context::FlowFile>,
+        Lggr: Logger;
+}
+
+pub struct ComplexProcessorType {}
+
+impl<Implementation, L> SingleThreadedTrigger
+    for Processor<Implementation, ComplexProcessorType, SingleThreaded, L>
+where
+    Implementation: Schedule + MutTrigger + ComponentIdentifier + ProcessorDefinition,
+    L: Logger,
+{
+    fn trigger<PC, PS>(
+        &mut self,
+        context: &mut PC,
+        session: &mut PS,
+    ) -> Result<OnTriggerResult, ProcessError>
+    where
+        PC: ProcessContext,
+        PS: ProcessSession<FlowFile = PC::FlowFile>,
+    {
+        if let Some(ref mut scheduled_impl) = self.scheduled_impl {
+            scheduled_impl.trigger(context, session, &self.logger)
+        } else {
+            Err(MinifiError::UnscheduledProcessor.into())
+        }
+    }
+}
+
+impl<Implementation, L> MultiThreadedTrigger
+    for Processor<Implementation, ComplexProcessorType, MultiThreaded, L>
+where
+    Implementation: Schedule + Trigger + ComponentIdentifier + ProcessorDefinition,
+    L: Logger,
+{
+    fn trigger<PC, PS>(
+        &self,
+        context: &mut PC,
+        session: &mut PS,
+    ) -> Result<OnTriggerResult, ProcessError>
+    where
+        PC: ProcessContext,
+        PS: ProcessSession<FlowFile = PC::FlowFile>,
+    {
+        if let Some(ref scheduled_impl) = self.scheduled_impl {
+            scheduled_impl.trigger(context, session, &self.logger)
+        } else {
+            Err(MinifiError::UnscheduledProcessor.into())
+        }
+    }
+}

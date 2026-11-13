@@ -1,0 +1,55 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#include <cstring>
+#include <memory>
+
+#include "aws/core/Aws.h"
+#include "minifi-api.h"
+#include "minifi-cpp/agent/agent_version.h"
+#include "utils/AWSSdkLogger.h"
+#include "utils/ExtensionInitUtils.h"
+
+#define MKSOC(x) #x
+#define MAKESTRING(x) MKSOC(x)  // NOLINT(cppcoreguidelines-macro-usage)
+
+namespace minifi = org::apache::nifi::minifi;
+
+namespace org::apache::nifi::minifi::aws::init {
+namespace {
+template<size_t N>
+minifi_string_view toStringView(const char (&s)[N]) {  // NOLINT(cppcoreguidelines-avoid-c-arrays): using template argument deduction for string literal length requires reference to array
+  return minifi_string_view{.data = s, .length = N};
+}
+minifi_string_view toStringView(const char* s) {
+  if (!s) {
+    return minifi_string_view{.data = nullptr, .length = 0};
+  }
+  return minifi_string_view{.data = s, .length = std::strlen(s)};
+}
+}  // namespace
+
+void deinit(gsl::owner<void*> sdk_opts_ptr) {
+  std::unique_ptr<Aws::SDKOptions> sdk_options{static_cast<Aws::SDKOptions*>(sdk_opts_ptr)};
+
+  Aws::Utils::Logging::ShutdownAWSLogging();
+  Aws::ShutdownAPI(*sdk_options);
+}
+}  // namespace org::apache::nifi::minifi::aws::init
+
+extern "C" void minifi_init_cpp_extension(minifi_extension_context* extension_context) {
+  using minifi::aws::init::toStringView;
+  auto sdk_options = std::make_unique<Aws::SDKOptions>();
+  Aws::InitAPI(*sdk_options);
+  Aws::Utils::Logging::InitializeAWSLogging(std::make_shared<minifi::aws::utils::AWSSdkLogger>());
+
+  minifi_extension_definition ext_definition{.name = toStringView(MAKESTRING(MODULE_NAME)),
+      .version = toStringView(minifi::AgentBuild::VERSION),
+      .group_name = toStringView("org.apache.nifi.minifi"),
+      .deinit = &minifi::aws::init::deinit,
+      .user_data = sdk_options.get()};
+
+  minifi::utils::MinifiRegisterCppExtension(extension_context, &ext_definition);
+  std::ignore = sdk_options.release();  // ownership is transferred to deinit
+}

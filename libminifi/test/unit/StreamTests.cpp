@@ -1,35 +1,24 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
-#include <thread>
-#include <random>
 #include <chrono>
-#include <vector>
-#include <string>
 #include <memory>
+#include <random>
+#include <string>
+#include <thread>
 #include <utility>
-#include "../TestBase.h"
-#include "io/BaseStream.h"
+#include <vector>
+
 #include "io/StreamSlice.h"
+#include "minifi-cpp/io/BaseStream.h"
+#include "unit/Catch.h"
+#include "unit/TestBase.h"
+#include "utils/span.h"
 
 TEST_CASE("TestReadData", "[testread]") {
   auto base = std::make_shared<minifi::io::BufferStream>();
-  base->write((const uint8_t*)"\x01\x02\x03\x04\x05\x06\x07\x08", 8);
+  base->write(reinterpret_cast<const uint8_t*>("\x01\x02\x03\x04\x05\x06\x07\x08"), 8);
   uint64_t c = 0;
   REQUIRE(8 == base->read(c));
   REQUIRE(c == 0x0102030405060708);
@@ -73,28 +62,63 @@ TEST_CASE("TestRead4", "[testread]") {
 
 TEST_CASE("TestWrite1", "[testwrite]") {
   auto base = std::make_shared<minifi::io::BufferStream>();
-  base->write((uint64_t)0x0102030405060708);
+  base->write(static_cast<uint64_t>(0x0102030405060708));
   std::string bytes(8, '\0');
-  REQUIRE(8 == base->read(reinterpret_cast<uint8_t*>(const_cast<char*>(bytes.data())), 8));
+  REQUIRE(8 == base->read(as_writable_bytes(std::span(bytes))));
   REQUIRE(bytes == "\x01\x02\x03\x04\x05\x06\x07\x08");
 }
 
 TEST_CASE("InvalidStreamSliceTest", "[teststreamslice]") {
   std::shared_ptr<minifi::io::BaseStream> base = std::make_shared<minifi::io::BufferStream>();
-  base->write((const uint8_t*)"\x01\x02\x03\x04\x05\x06\x07\x08", 8);
-  REQUIRE_THROWS_WITH(std::make_shared<minifi::io::StreamSlice>(base, 0, 9), "StreamSlice is bigger than the Stream");
-  REQUIRE_THROWS_WITH(std::make_shared<minifi::io::StreamSlice>(base, 7, 3), "StreamSlice is bigger than the Stream");
+  base->write(reinterpret_cast<const uint8_t*>("\x01\x02\x03\x04\x05\x06\x07\x08"), 8);
+  auto input_stream = std::static_pointer_cast<minifi::io::InputStream>(base);
+  REQUIRE_THROWS_WITH(std::make_shared<minifi::io::StreamSlice>(input_stream, 0, 9), "StreamSlice is bigger than the Stream, Stream size: 8, StreamSlice size: 9, offset: 0");
+  REQUIRE_THROWS_WITH(std::make_shared<minifi::io::StreamSlice>(input_stream, 7, 3), "StreamSlice is bigger than the Stream, Stream size: 8, StreamSlice size: 3, offset: 7");
 }
 
 TEST_CASE("StreamSliceTest1", "[teststreamslice]") {
   std::shared_ptr<minifi::io::BaseStream> base = std::make_shared<minifi::io::BufferStream>();
-  base->write((const uint8_t*)"\x01\x02\x03\x04\x05\x06\x07\x08", 8);
-  std::shared_ptr<minifi::io::BaseStream> stream_slice = std::make_shared<minifi::io::StreamSlice>(base, 2, 4);
-  std::vector<uint8_t> buffer;
-  REQUIRE(stream_slice->read(buffer, stream_slice->size()) == 4);
+  base->write(reinterpret_cast<const uint8_t*>("\x01\x02\x03\x04\x05\x06\x07\x08"), 8);
+  auto input_stream = std::static_pointer_cast<minifi::io::InputStream>(base);
+  std::shared_ptr<minifi::io::InputStream> stream_slice = std::make_shared<minifi::io::StreamSlice>(input_stream, 2, 4);
+  std::vector<std::byte> buffer;
+  buffer.resize(stream_slice->size());
+  REQUIRE(stream_slice->read(buffer) == 4);
   stream_slice->seek(0);
-  std::vector<uint8_t> buffer2;
-  REQUIRE(stream_slice->read(buffer2, 1000) == 4);
+  std::vector<std::byte> buffer2;
+  buffer2.resize(1000);
+  REQUIRE(stream_slice->read(buffer2) == 4);
+  buffer2.resize(4);
   REQUIRE(buffer == buffer2);
-  REQUIRE(buffer == std::vector<uint8_t>({3, 4, 5, 6}));
+  REQUIRE(utils::span_to<std::vector>(utils::as_span<uint8_t>(std::span(buffer))) == std::vector<uint8_t>({3, 4, 5, 6}));
+}
+
+TEST_CASE("InputStream max_length test", "[stream][input][maxlength]") {
+  minifi::io::BufferStream buffer_stream;
+  constexpr auto& test_str =
+      "Hello world, partial length prefixed string read from stream test, it should return the truncated string, but read the full string from the "
+      "stream";
+  constexpr auto& test_str2 = "subsequent string";
+  constexpr auto test_str_serialized_length = sizeof(test_str) + 4 /* bytes for length prefix */ - 1 /* null terminator byte */;
+  constexpr auto test_str2_serialized_length = sizeof(test_str2) + 2 /* length prefix */ - 1 /* null terminator */;
+  buffer_stream.write(test_str, /* 32bit length prefix: */ true);
+  REQUIRE(buffer_stream.size() == test_str_serialized_length);
+  buffer_stream.write(test_str2, false);
+  REQUIRE(buffer_stream.size() == test_str_serialized_length + test_str2_serialized_length);
+  {
+    // read the first test string
+    std::string out_str;
+    const auto number_of_bytes_consumed_from_the_stream = buffer_stream.read(out_str, minifi::io::LengthPrefixSize::_32BIT, /* max length: */ 20);
+    REQUIRE(!minifi::io::isError(number_of_bytes_consumed_from_the_stream));
+    REQUIRE(number_of_bytes_consumed_from_the_stream == test_str_serialized_length);
+    REQUIRE(out_str == "Hello world, partial");
+  }
+  {
+    // read the second test string, to ensure that subsequent reads/writes remain aligned
+    std::string out_str;
+    const auto number_of_bytes_consumed_from_the_stream = buffer_stream.read(out_str, minifi::io::LengthPrefixSize::_16BIT, /* max length: */ 20);
+    REQUIRE(!minifi::io::isError(number_of_bytes_consumed_from_the_stream));
+    REQUIRE(number_of_bytes_consumed_from_the_stream == test_str2_serialized_length);
+    REQUIRE(out_str == test_str2);
+  }
 }

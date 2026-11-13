@@ -1,42 +1,25 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ref_count_hip.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef LIBMINIFI_INCLUDE_CORE_REPOSITORY_ATOMICREPOENTRIES_H_
-#define LIBMINIFI_INCLUDE_CORE_REPOSITORY_ATOMICREPOENTRIES_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
-#include <string>
-#include <utility>
+#pragma once
 
+#include <span>
+#include <atomic>
+#include <chrono>
 #include <cstddef>
 #include <cstring>
-#include <iostream>
-#include <chrono>
 #include <functional>
-#include <atomic>
-#include <vector>
-#include <map>
+#include <iostream>
 #include <iterator>
+#include <map>
+#include <string>
+#include <utility>
+#include <vector>
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace core {
-namespace repository {
+#include "minifi-cpp/utils/gsl.h"
+
+namespace org::apache::nifi::minifi::core::repository {
 
 /**
  * Purpose: Repo value represents an item that will support a move operation within an AtomicEntry
@@ -117,21 +100,10 @@ noexcept      : key_(std::move(other.key_)),
         buffer_.clear();
       }
 
-      /**
-       * Return the size of the memory within the key
-       * buffer, the size of timestamp, and the general
-       * system word size
-       */
-      size_t size() {
-        return buffer_.size();
-      }
+      [[nodiscard]] size_t size() const noexcept { return buffer_.size(); }
 
-      size_t getBufferSize() {
-        return buffer_.size();
-      }
-
-      const uint8_t *getBuffer() {
-        return buffer_.data();
+      [[nodiscard]] std::span<const std::byte> getBuffer() const {
+        return buffer_;
       }
 
       /**
@@ -143,11 +115,11 @@ noexcept      : key_(std::move(other.key_)),
       }
 
       /**
-       * Appends ptr to the end of buffer.
-       * @param ptr pointer containing data to add to buffer_
+       * Appends data to the end of buffer.
+       * @param data data to add to buffer_
        */
-      void append(uint8_t *ptr, size_t size) {
-        buffer_.insert(buffer_.end(), ptr, ptr + size);
+      void append(std::span<const std::byte> data) {
+        buffer_.insert(buffer_.end(), std::begin(data), std::end(data));
       }
 
       RepoValue<T> &operator=(RepoValue<T> &&other) noexcept {
@@ -159,7 +131,7 @@ noexcept      : key_(std::move(other.key_)),
  private:
       T key_;
       std::function<bool(T, T)> comparator_;
-      std::vector<uint8_t> buffer_;
+      std::vector<std::byte> buffer_;
 };
 
     /**
@@ -235,7 +207,7 @@ class AtomicEntry {
       if (releaseTest != nullptr && reclaimer != nullptr && releaseTest(value_.getKey())) {
         reclaimer(value_.getKey());
       } else if (free_required && ref_count_ == 0) {
-        size_t bufferSize = value_.getBufferSize();
+        size_t bufferSize = value_.getBuffer().size();
         value_.clearBuffer();
         has_value_ = false;
         if (accumulated_repo_size_ != nullptr) {
@@ -292,6 +264,24 @@ class AtomicEntry {
     return true;
   }
 
+  /**
+   * Calls @visitor with the key and the buffer of the contained value, without consuming it.
+   * The visitor is called while this entry is locked, so it should not block.
+   * @return false if this entry is empty
+   */
+  template<typename Visitor>
+  bool visitValue(Visitor&& visitor) {
+    try_lock();
+    if (!has_value_) {
+      try_unlock();
+      return false;
+    }
+    const T& key = value_.getKey();
+    std::forward<Visitor>(visitor)(key, value_.getBuffer());
+    try_unlock();
+    return true;
+  }
+
   void decrementOwnership() {
     try_lock();
     if (!has_value_) {
@@ -302,7 +292,7 @@ class AtomicEntry {
       ref_count_--;
     }
     if (ref_count_ == 0 && free_required) {
-      size_t bufferSize = value_.getBufferSize();
+      size_t bufferSize = value_.getBuffer().size();
       value_.clearBuffer();
       has_value_ = false;
       if (accumulated_repo_size_ != nullptr) {
@@ -366,7 +356,7 @@ class AtomicEntry {
   size_t getLength() {
     size_t size = 0;
     try_lock();
-    size = value_.getBufferSize();
+    size = value_.getBuffer().size();
     try_unlock();
     return size;
   }
@@ -390,7 +380,7 @@ class AtomicEntry {
       try_unlock();
       return true;
     }
-    size_t bufferSize = value_.getBufferSize();
+    size_t bufferSize = value_.getBuffer().size();
     value_.clearBuffer();
     has_value_ = false;
     if (accumulated_repo_size_ != nullptr) {
@@ -405,7 +395,7 @@ class AtomicEntry {
    * Appends buffer onto this atomic entry if key matches
    * the current RepoValue's key.
    */
-  bool insert(const T key, uint8_t *buffer, size_t size) {
+  bool insert(const T key, std::span<const std::byte> buffer) {
     try_lock();
 
     if (!has_value_) {
@@ -418,14 +408,14 @@ class AtomicEntry {
       return false;
     }
 
-    if ((accumulated_repo_size_ != nullptr && max_repo_size_ != nullptr) && (*accumulated_repo_size_ + size > *max_repo_size_)) {
+    if ((accumulated_repo_size_ != nullptr && max_repo_size_ != nullptr) && (*accumulated_repo_size_ + buffer.size() > *max_repo_size_)) {
       // can't support this write
       try_unlock();
       return false;
     }
 
-    value_.append(buffer, size);
-    (*accumulated_repo_size_) += size;
+    value_.append(buffer);
+    (*accumulated_repo_size_) += buffer.size();
     try_unlock();
     return true;
   }
@@ -467,11 +457,4 @@ class AtomicEntry {
   RepoValue<T> value_;
 };
 
-}  // namespace repository
-}  // namespace core
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // LIBMINIFI_INCLUDE_CORE_REPOSITORY_ATOMICREPOENTRIES_H_
+}  // namespace org::apache::nifi::minifi::core::repository

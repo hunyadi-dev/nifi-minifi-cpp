@@ -1,0 +1,135 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+extern crate self as minifi_native;
+
+mod api;
+pub mod c_ffi;
+pub mod mock;
+pub mod test_utils;
+
+pub use api::errors::{MinifiError, ProcessError, RouteError, RouteErrorExt};
+
+pub use api::component_definition_traits::{
+    ComponentIdentifier, ControllerServiceDefinition, ProcessorDefinition,
+};
+pub use api::controller_service::{ControllerService, EnableControllerService};
+pub use api::processor_wrappers::complex_processor::{ComplexProcessorType, MutTrigger, Trigger};
+pub use api::processor_wrappers::flow_file_source::{
+    FlowFileSource, FlowFileSourceProcessorType, GeneratedFlowFile,
+};
+pub use api::processor_wrappers::flow_file_stream_transform::{
+    FlowFileStreamTransform, FlowFileStreamTransformProcessorType, MutFlowFileStreamTransform,
+    TransformStreamResult,
+};
+pub use api::processor_wrappers::flow_file_transform::{
+    FlowFileAttribute, FlowFileTransform, FlowFileTransformProcessorType, TransformedFlowFile,
+};
+
+pub use api::processor_wrappers::utils::flow_file_content::Content;
+
+pub use api::processor::{Processor, Schedule};
+
+pub use api::raw_processor::{MultiThreaded, SingleThreaded};
+
+pub use api::logger::{LogLevel, Logger};
+
+pub use api::property::{
+    ControllerServiceValue, GetControllerService, GetProperty, Property, PropertyDefinition,
+    PropertySchema, PropertyValue,
+};
+
+pub use api::provided_interface::{ControllerServiceApi, ProvidedInterface};
+
+pub use api::process_session::IoState;
+
+pub use api::attribute::{GetAttribute, OutputAttribute};
+
+pub use api::{
+    DataSize, FlowFile, GetId, InputStream, NonBlankPath, OnTriggerResult, OutputStream,
+    ProcessContext, ProcessSession, ProcessorInputRequirement, PropertyConstraints, PropertyType,
+    Relationship, StandardPropertyValidator,
+};
+
+pub use minifi_native_macros as macros;
+pub use minifi_native_sys as sys;
+pub use mock::{
+    MockControllerServiceContext, MockFlowFile, MockLogger, MockProcessContext, MockProcessSession,
+    StdLogger,
+};
+pub use test_utils as test;
+
+#[unsafe(no_mangle)]
+#[allow(non_upper_case_globals)]
+#[cfg_attr(target_os = "linux", unsafe(link_section = ".rodata"))]
+#[cfg_attr(target_os = "macos", unsafe(link_section = "__DATA,__const"))]
+#[cfg_attr(target_os = "windows", unsafe(link_section = ".rdata"))]
+pub static minifi_api_version: u32 = minifi_native_sys::MINIFI_API_VERSION;
+
+/// Defines the required MinifiInitExtension C function to register the listed processors and controller services
+#[macro_export]
+macro_rules! declare_minifi_extension {
+    (
+        // Group name
+        group_name: $group:expr,
+        // Match a tuple of three types for each processor, WITH optional attributes
+        processors: [ $( $(#[$proc_meta:meta])* ($kind:ty, $thread:ty, $impl:ty) ),* $(,)? ],
+        // Match a single type for each controller service, WITH optional attributes
+        controllers: [ $( $(#[$ctrl_meta:meta])* $ctrl:ty ),* $(,)? ]
+    ) => {
+
+        #[unsafe(no_mangle)]
+        pub unsafe extern "C" fn minifi_init_extension(
+            extension_context: *mut minifi_native::sys::minifi_extension_context
+        ) {
+
+            use minifi_native::c_ffi::StaticStrAsMinifiCStr;
+            use minifi_native::c_ffi::RawRegisterableProcessor;
+            use minifi_native::c_ffi::RegisterableControllerService;
+            unsafe {
+                let extension_definition = minifi_native::sys::minifi_extension_definition {
+                    name: env!("CARGO_PKG_NAME").as_minifi_c_type(),
+                    version: env!("CARGO_PKG_VERSION").as_minifi_c_type(),
+                    group_name: $group.as_minifi_c_type(),
+                    deinit: None,
+                    user_data: std::ptr::null_mut(),
+                };
+
+                let extension = minifi_native::sys::minifi_register_extension(extension_context, &extension_definition);
+
+                $(
+                    // Re-apply the captured attributes (e.g., #[cfg(...)]) to this block
+                    $(#[$proc_meta])*
+                    {
+                        let processor_def = minifi_native::Processor::<
+                                $impl,
+                                $kind,
+                                $thread,
+                                minifi_native::c_ffi::CffiLogger
+                        >::get_definition();
+
+                        let proc_desc = processor_def.class_description();
+
+                        minifi_native::sys::minifi_register_processor(extension, &proc_desc.as_raw());
+                    }
+                )*
+
+                $(
+                    // Re-apply the captured attributes to this block
+                    $(#[$ctrl_meta])*
+                    {
+                        let controller_def =
+                            minifi_native::ControllerService::<
+                                $ctrl,
+                                minifi_native::c_ffi::CffiLogger
+                        >::get_definition();
+
+                        let controller_desc = controller_def.class_description();
+
+                        minifi_native::sys::minifi_register_controller_service(extension, &controller_desc.as_raw());
+                    }
+                )*
+            }
+        }
+    };
+}

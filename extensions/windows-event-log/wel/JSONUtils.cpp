@@ -1,43 +1,23 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include "JSONUtils.h"
 
-#include <vector>
+#include <algorithm>
 #include <string>
-#include <functional>
 
 #include <pugixml.hpp>
 
 #include "rapidjson/document.h"
 #include "rapidjson/writer.h"
 #include "rapidjson/stringbuffer.h"
-#include "rapidjson/prettywriter.h"
 
-#include "utils/gsl.h"
+#include "minifi-cpp/utils/gsl.h"
+#include "utils/StringUtils.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace wel {
-
+namespace org::apache::nifi::minifi::wel {
 namespace {
-
 rapidjson::Value xmlElementToJSON(const pugi::xml_node& node, rapidjson::Document& doc) {
   gsl_Expects(node.type() == pugi::xml_node_type::node_element);
   rapidjson::Value object(rapidjson::kObjectType);
@@ -65,6 +45,51 @@ rapidjson::Value xmlDocumentToJSON(const pugi::xml_node& node, rapidjson::Docume
     }
   }
   return children;
+}
+
+void simplifiedGenericXmlToJson(const pugi::xml_node& source_node,
+    rapidjson::Value& output_value,
+    rapidjson::Document::AllocatorType& allocator,
+    std::optional<std::string> prefix_for_flat_structure) {
+  gsl_Expects(source_node.type() == pugi::xml_node_type::node_element);
+  const bool is_flattened = prefix_for_flat_structure.has_value();
+  for (const auto& attr : source_node.attributes()) {
+    if (attr.name() == std::string_view{"xmlns"}) {
+      continue;  // skip xmlns attribute, because it's metadata
+    }
+    if (!is_flattened) {
+      output_value.AddMember(rapidjson::StringRef(attr.name()), rapidjson::StringRef(attr.value()), allocator);
+    } else {
+      output_value.AddMember(rapidjson::Value(*prefix_for_flat_structure + attr.name(), allocator).Move(), rapidjson::StringRef(attr.value()), allocator);
+    }
+  }
+  for (const auto& child: source_node.children()) {
+    if (child.type() == pugi::xml_node_type::node_element) {
+      const auto is_pcdata = [](const pugi::xml_node& node) { return node.type() == pugi::xml_node_type::node_pcdata; };
+      if (std::all_of(child.children().begin(), child.children().end(), is_pcdata)) {
+        // all children are pcdata (text): leaf node
+        if (!is_flattened) {
+          output_value.AddMember(rapidjson::StringRef(child.name()), rapidjson::StringRef(child.text().get()), allocator);
+        } else {
+          output_value.AddMember(rapidjson::Value(*prefix_for_flat_structure + child.name(), allocator).Move(), rapidjson::StringRef(child.text().get()), allocator);
+        }
+      } else {
+        // there are non-text children: recurse further
+        auto& child_val = is_flattened ? output_value : output_value.AddMember(rapidjson::StringRef(child.name()), rapidjson::kObjectType, allocator)[child.name()];
+        auto new_prefix = is_flattened ? std::optional(*prefix_for_flat_structure + child.name() + ".") : std::nullopt;
+        simplifiedGenericXmlToJson(child, child_val, allocator, new_prefix);
+      }
+    }
+  }
+}
+
+std::string createUniqueKey(const std::string& key, const rapidjson::Value& parent) {
+  auto proposed_key = key;
+  size_t postfix = 1;
+  while (parent.HasMember(proposed_key)) {
+    proposed_key = key + std::to_string(postfix++);
+  }
+  return proposed_key;
 }
 
 rapidjson::Document toJSONImpl(const pugi::xml_node& root, bool flatten) {
@@ -101,7 +126,10 @@ rapidjson::Document toJSONImpl(const pugi::xml_node& root, bool flatten) {
     {
       auto correlation_xml = system_xml.child("Correlation");
       auto& correlation = flatten ? doc : system.AddMember("Correlation", rapidjson::kObjectType, doc.GetAllocator())["Correlation"];
-      correlation.AddMember("ActivityID", rapidjson::StringRef(correlation_xml.attribute("ActivityID").value()), doc.GetAllocator());
+      const auto activity_id = correlation_xml.attribute("ActivityID");
+      if (!activity_id.empty()) {
+        correlation.AddMember("ActivityID", rapidjson::StringRef(activity_id.value()), doc.GetAllocator());
+      }
     }
 
     {
@@ -113,26 +141,43 @@ rapidjson::Document toJSONImpl(const pugi::xml_node& root, bool flatten) {
 
     system.AddMember("Channel", rapidjson::StringRef(system_xml.child("Channel").text().get()), doc.GetAllocator());
     system.AddMember("Computer", rapidjson::StringRef(system_xml.child("Computer").text().get()), doc.GetAllocator());
+
+    {
+      auto security_xml = system_xml.child("Security");
+      auto& security = flatten ? doc : system.AddMember("Security", rapidjson::kObjectType, doc.GetAllocator())["Security"];
+      security.AddMember("UserID", rapidjson::StringRef(security_xml.attribute("UserID").value()), doc.GetAllocator());
+    }
   }
 
   {
     auto eventData_xml = event_xml.child("EventData");
-    // create EventData subarray even if flatten requested
-    doc.AddMember("EventData", rapidjson::kArrayType, doc.GetAllocator());
-    for (const auto& data : eventData_xml.children()) {
-      auto name_attr = data.attribute("Name");
-      rapidjson::Value item(rapidjson::kObjectType);
-      item.AddMember("Name", rapidjson::StringRef(name_attr.value()), doc.GetAllocator());
-      item.AddMember("Content", rapidjson::StringRef(data.text().get()), doc.GetAllocator());
-      item.AddMember("Type", rapidjson::StringRef(data.name()), doc.GetAllocator());
-      // we need to query EventData because a reference to it wouldn't be stable, as we
-      // possibly add members to its parent which could result in reallocation
-      doc["EventData"].PushBack(item, doc.GetAllocator());
-      // check collision
-      if (flatten && !name_attr.empty() && !doc.HasMember(name_attr.value())) {
-        doc.AddMember(rapidjson::StringRef(name_attr.value()), rapidjson::StringRef(data.text().get()), doc.GetAllocator());
+    if (flatten) {
+      for (const auto& event_data_child : eventData_xml.children()) {
+        std::string key = "EventData";
+        if (auto name_attr = event_data_child.attribute("Name"); !name_attr.empty()) {
+          key = utils::string::join_pack(key, ".", name_attr.value());
+        }
+
+        doc.AddMember(rapidjson::Value(createUniqueKey(key, doc), doc.GetAllocator()).Move(), rapidjson::StringRef(event_data_child.text().get()), doc.GetAllocator());
+      }
+    } else {
+      doc.AddMember("EventData", rapidjson::kArrayType, doc.GetAllocator());
+      for (const auto& event_data_child : eventData_xml.children()) {
+        auto name_attr = event_data_child.attribute("Name");
+        rapidjson::Value item(rapidjson::kObjectType);
+        item.AddMember("Name", rapidjson::StringRef(name_attr.value()), doc.GetAllocator());
+        item.AddMember("Content", rapidjson::StringRef(event_data_child.text().get()), doc.GetAllocator());
+        item.AddMember("Type", rapidjson::StringRef(event_data_child.name()), doc.GetAllocator());
+        doc["EventData"].PushBack(item, doc.GetAllocator());  // we need to re-query EventData because a reference to it wouldn't be stable
       }
     }
+  }
+
+  const auto userdata_xml = event_xml.child("UserData");
+  if (!userdata_xml.empty()) {
+    auto& userdata = flatten ? doc : doc.AddMember("UserData", rapidjson::kObjectType, doc.GetAllocator())["UserData"];
+    auto prefix = flatten ? std::optional("UserData.") : std::nullopt;
+    simplifiedGenericXmlToJson(userdata_xml, userdata, doc.GetAllocator(), prefix);
   }
 
   return doc;
@@ -162,9 +207,4 @@ std::string jsonToString(const rapidjson::Document& doc) {
   doc.Accept(writer);
   return buffer.GetString();
 }
-
-}  // namespace wel
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+}  // namespace org::apache::nifi::minifi::wel

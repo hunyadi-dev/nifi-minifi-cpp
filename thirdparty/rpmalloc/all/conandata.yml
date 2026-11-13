@@ -1,0 +1,8 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+sources:
+  "1.4.5":
+    url: "https://github.com/mjansson/rpmalloc/archive/refs/tags/1.4.5.tar.gz"
+    sha256: "2513626697ef72a60957acc8caed17c39931a55c1a49202707de195742683d69"

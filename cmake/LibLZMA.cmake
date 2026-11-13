@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+include(FetchContent)
+
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+
+set(PATCH_FILE "${CMAKE_SOURCE_DIR}/thirdparty/liblzma/liblzma.patch")
+set(PC ${Bash_EXECUTABLE}  -c "set -x &&\
+        (\\\"${Patch_EXECUTABLE}\\\" -p1 -R -s -f --dry-run -i \\\"${PATCH_FILE}\\\" || \\\"${Patch_EXECUTABLE}\\\" -p1 -N -i \\\"${PATCH_FILE}\\\")")
+
+FetchContent_Declare(liblzma
+        URL https://github.com/tukaani-project/xz/archive/refs/tags/v5.8.3.tar.gz
+        URL_HASH SHA256=8ec1767fa517642ecb4cf08b891ce667ba6f143551e382b07c7ef437bda335e2
+        PATCH_COMMAND "${PC}"
+        SYSTEM)
+
+FetchContent_MakeAvailable(liblzma)
+
+if (NOT TARGET LibLZMA::LibLZMA)
+    add_library(LibLZMA::LibLZMA ALIAS liblzma)
+endif()
+
+# Set exported variables for FindPackage.cmake
+
+set(LIBLZMA_INCLUDE_DIR "${liblzma_SOURCE_DIR}/src/liblzma/api" CACHE STRING "" FORCE)
+set(PASSTHROUGH_VARIABLES ${PASSTHROUGH_VARIABLES} "-DEXPORTED_LIBLZMA_INCLUDE_DIR=${LIBLZMA_INCLUDE_DIR}" CACHE STRING "" FORCE)
+
+if (WIN32)
+    set(PASSTHROUGH_VARIABLES ${PASSTHROUGH_VARIABLES} "-DEXPORTED_LIBLZMA_LIB_DIR=${liblzma_BINARY_DIR}" CACHE STRING "" FORCE)
+else()
+    set(LIBLZMA_LIBRARY "${liblzma_BINARY_DIR}/liblzma.a" CACHE STRING "" FORCE)
+    set(PASSTHROUGH_VARIABLES ${PASSTHROUGH_VARIABLES} "-DEXPORTED_LIBLZMA_LIBRARY=${LIBLZMA_LIBRARY}" CACHE STRING "" FORCE)
+endif()
+
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/liblzma/dummy")

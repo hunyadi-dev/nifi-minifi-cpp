@@ -1,46 +1,27 @@
-/**
- * @file ResourceClaim.cpp
- * ResourceClaim class implementation
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #include "ResourceClaim.h"
 #include <map>
 #include <queue>
 #include <string>
 #include <vector>
 #include <memory>
-#include "core/StreamManager.h"
 #include "utils/Id.h"
-#include "core/logging/LoggerConfiguration.h"
+#include "core/logging/LoggerFactory.h"
+#include "core/ContentRepository.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
+namespace org::apache::nifi::minifi {
 
-utils::NonRepeatingStringGenerator ResourceClaim::non_repeating_string_generator_;
+utils::NonRepeatingStringGenerator ResourceClaimImpl::non_repeating_string_generator_;
 
-std::string default_directory_path = "";
+std::string default_directory_path;
 
 void setDefaultDirectory(std::string path) {
-  default_directory_path = path;
+  default_directory_path = std::move(path);
 }
 
-ResourceClaim::ResourceClaim(std::shared_ptr<core::StreamManager<ResourceClaim>> claim_manager)
+ResourceClaimImpl::ResourceClaimImpl(std::shared_ptr<core::StreamManager<ResourceClaim>> claim_manager)
     : _contentFullPath([&] {
         auto contentDirectory = claim_manager->getStoragePath();
         if (contentDirectory.empty())
@@ -50,22 +31,24 @@ ResourceClaim::ResourceClaim(std::shared_ptr<core::StreamManager<ResourceClaim>>
         return contentDirectory + "/" + non_repeating_string_generator_.generate();
       }()),
       claim_manager_(std::move(claim_manager)),
-      logger_(logging::LoggerFactory<ResourceClaim>::getLogger()) {
+      logger_(core::logging::LoggerFactory<ResourceClaim>::getLogger()) {
   if (claim_manager_) increaseFlowFileRecordOwnedCount();
-  logger_->log_debug("Resource Claim created %s", _contentFullPath);
+  logger_->log_debug("Resource Claim created {}", _contentFullPath);
 }
 
-ResourceClaim::ResourceClaim(const Path& path, std::shared_ptr<core::StreamManager<ResourceClaim>> claim_manager)
-    : _contentFullPath(path),
-      claim_manager_(std::move(claim_manager)) {
+ResourceClaimImpl::ResourceClaimImpl(Path path, std::shared_ptr<core::StreamManager<ResourceClaim>> claim_manager)
+    : _contentFullPath(std::move(path)),
+      claim_manager_(std::move(claim_manager)),
+      logger_(core::logging::LoggerFactory<ResourceClaim>::getLogger()) {
   if (claim_manager_) increaseFlowFileRecordOwnedCount();
 }
 
-ResourceClaim::~ResourceClaim() {
+ResourceClaimImpl::~ResourceClaimImpl() {
   if (claim_manager_) decreaseFlowFileRecordOwnedCount();
 }
 
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+std::shared_ptr<ResourceClaim> ResourceClaim::create(std::shared_ptr<core::ContentRepository> repository) {
+  return std::make_shared<ResourceClaimImpl>(std::move(repository));
+}
+
+}  // namespace org::apache::nifi::minifi

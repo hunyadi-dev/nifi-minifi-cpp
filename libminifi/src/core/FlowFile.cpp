@@ -1,61 +1,41 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include <memory>
 #include <string>
 #include <set>
 #include <cinttypes>
-#include "core/Repository.h"
-#include "core/logging/LoggerConfiguration.h"
 #include "utils/Id.h"
 #include "core/FlowFile.h"
 #include "utils/requirements/Container.h"
+#include "core/logging/LoggerFactory.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
+namespace org::apache::nifi::minifi {
 namespace core {
 
-std::shared_ptr<utils::IdGenerator> FlowFile::id_generator_ = utils::IdGenerator::getIdGenerator();
-std::shared_ptr<utils::NonRepeatingStringGenerator> FlowFile::numeric_id_generator_ = std::make_shared<utils::NonRepeatingStringGenerator>();
-std::shared_ptr<logging::Logger> FlowFile::logger_ = logging::LoggerFactory<FlowFile>::getLogger();
+std::shared_ptr<utils::IdGenerator> FlowFileImpl::id_generator_ = utils::IdGenerator::getIdGenerator();
+std::shared_ptr<utils::NonRepeatingStringGenerator> FlowFileImpl::numeric_id_generator_ = std::make_shared<utils::NonRepeatingStringGenerator>();
+std::shared_ptr<logging::Logger> FlowFileImpl::logger_ = logging::LoggerFactory<FlowFile>::getLogger();
 
-FlowFile::FlowFile()
-    : CoreComponent("FlowFile"),
+FlowFileImpl::FlowFileImpl()
+    : CoreComponentImpl("FlowFile"),
       stored(false),
       marked_delete_(false),
-      entry_date_(0),
-      event_time_(0),
-      lineage_start_date_(0),
+      entry_date_(std::chrono::system_clock::now()),
+      event_time_(entry_date_),
+      lineage_start_date_(entry_date_),
       last_queue_date_(0),
       size_(0),
-      id_(0),
+      id_(numeric_id_generator_->generateId()),
       offset_(0),
-      to_be_processed_after_(std::chrono::steady_clock::now()),
-      claim_(nullptr) {
-  id_ = numeric_id_generator_->generateId();
-  entry_date_ = utils::timeutils::getTimeMillis();
-  event_time_ = entry_date_;
-  lineage_start_date_ = entry_date_;
+      to_be_processed_after_(std::chrono::steady_clock::now()) {
 }
 
-FlowFile& FlowFile::operator=(const FlowFile& other) {
+FlowFileImpl& FlowFileImpl::operator=(const FlowFileImpl& other) {
+  if (this == &other) {
+    return *this;
+  }
   uuid_ = other.uuid_;
   stored = other.stored;
   marked_delete_ = other.marked_delete_;
@@ -76,7 +56,7 @@ FlowFile& FlowFile::operator=(const FlowFile& other) {
  * is marked as deleted.
  * @return marked deleted
  */
-bool FlowFile::isDeleted() const {
+bool FlowFileImpl::isDeleted() const {
   return marked_delete_;
 }
 
@@ -85,31 +65,31 @@ bool FlowFile::isDeleted() const {
  * as deleted
  * @param deleted deleted flag
  */
-void FlowFile::setDeleted(const bool deleted) {
+void FlowFileImpl::setDeleted(const bool deleted) {
   marked_delete_ = deleted;
   if (marked_delete_) {
     removeReferences();
   }
 }
 
-std::shared_ptr<ResourceClaim> FlowFile::getResourceClaim() {
+std::shared_ptr<ResourceClaim> FlowFileImpl::getResourceClaim() const {
   return claim_;
 }
 
-void FlowFile::clearResourceClaim() {
+void FlowFileImpl::clearResourceClaim() {
   claim_ = nullptr;
 }
-void FlowFile::setResourceClaim(const std::shared_ptr<ResourceClaim>& claim) {
+void FlowFileImpl::setResourceClaim(const std::shared_ptr<ResourceClaim>& claim) {
   claim_ = claim;
 }
 
-std::shared_ptr<ResourceClaim> FlowFile::getStashClaim(const std::string& key) {
+std::shared_ptr<ResourceClaim> FlowFileImpl::getStashClaim(const std::string& key) {
   return stashedContent_[key];
 }
 
-void FlowFile::setStashClaim(const std::string& key, const std::shared_ptr<ResourceClaim>& claim) {
+void FlowFileImpl::setStashClaim(const std::string& key, const std::shared_ptr<ResourceClaim>& claim) {
   if (hasStashClaim(key)) {
-    logger_->log_warn("Stashing content of record %s to existing key %s; "
+    logger_->log_warn("Stashing content of record {} to existing key {}; "
                       "existing content will be overwritten",
                       getUUIDStr(), key.c_str());
   }
@@ -117,7 +97,7 @@ void FlowFile::setStashClaim(const std::string& key, const std::shared_ptr<Resou
   stashedContent_[key] = claim;
 }
 
-void FlowFile::clearStashClaim(const std::string& key) {
+void FlowFileImpl::clearStashClaim(const std::string& key) {
   auto claimIt = stashedContent_.find(key);
   if (claimIt != stashedContent_.end()) {
     claimIt->second = nullptr;
@@ -125,27 +105,31 @@ void FlowFile::clearStashClaim(const std::string& key) {
   }
 }
 
-bool FlowFile::hasStashClaim(const std::string& key) {
+bool FlowFileImpl::hasStashClaim(const std::string& key) {
   return stashedContent_.find(key) != stashedContent_.end();
 }
 
 // ! Get Entry Date
-uint64_t FlowFile::getEntryDate() const {
+std::chrono::system_clock::time_point FlowFileImpl::getEntryDate() const {
   return entry_date_;
 }
-uint64_t FlowFile::getEventTime() const {
+std::chrono::system_clock::time_point FlowFileImpl::getEventTime() const {
   return event_time_;
 }
 // ! Get Lineage Start Date
-uint64_t FlowFile::getlineageStartDate() const {
+std::chrono::system_clock::time_point FlowFileImpl::getLineageStartDate() const {
   return lineage_start_date_;
 }
 
-std::vector<utils::Identifier> &FlowFile::getlineageIdentifiers() {
+const std::vector<utils::Identifier>& FlowFileImpl::getlineageIdentifiers() const {
   return lineage_Identifiers_;
 }
 
-bool FlowFile::getAttribute(const std::string& key, std::string& value) const {
+std::vector<utils::Identifier>& FlowFileImpl::getlineageIdentifiers() {
+  return lineage_Identifiers_;
+}
+
+bool FlowFileImpl::getAttribute(std::string_view key, std::string& value) const {
   const auto attribute = getAttribute(key);
   if (!attribute) {
     return false;
@@ -154,7 +138,7 @@ bool FlowFile::getAttribute(const std::string& key, std::string& value) const {
   return true;
 }
 
-std::optional<std::string> FlowFile::getAttribute(const std::string& key) const {
+std::optional<std::string> FlowFileImpl::getAttribute(std::string_view key) const {
   auto it = attributes_.find(key);
   if (it != attributes_.end()) {
     return it->second;
@@ -163,15 +147,15 @@ std::optional<std::string> FlowFile::getAttribute(const std::string& key) const 
 }
 
 // Get Size
-uint64_t FlowFile::getSize() const {
+uint64_t FlowFileImpl::getSize() const {
   return size_;
 }
 // ! Get Offset
-uint64_t FlowFile::getOffset() const {
+uint64_t FlowFileImpl::getOffset() const {
   return offset_;
 }
 
-bool FlowFile::removeAttribute(const std::string key) {
+bool FlowFileImpl::removeAttribute(std::string_view key) {
   auto it = attributes_.find(key);
   if (it != attributes_.end()) {
     attributes_.erase(it);
@@ -181,7 +165,7 @@ bool FlowFile::removeAttribute(const std::string key) {
   }
 }
 
-bool FlowFile::updateAttribute(const std::string key, const std::string value) {
+bool FlowFileImpl::updateAttribute(std::string_view key, const std::string& value) {
   auto it = attributes_.find(key);
   if (it != attributes_.end()) {
     it->second = value;
@@ -191,7 +175,7 @@ bool FlowFile::updateAttribute(const std::string key, const std::string value) {
   }
 }
 
-bool FlowFile::addAttribute(const std::string& key, const std::string& value) {
+bool FlowFileImpl::addAttribute(std::string_view key, const std::string& value) {
   auto it = attributes_.find(key);
   if (it != attributes_.end()) {
     // attribute already there in the map
@@ -202,7 +186,7 @@ bool FlowFile::addAttribute(const std::string& key, const std::string& value) {
   }
 }
 
-void FlowFile::setLineageStartDate(const uint64_t date) {
+void FlowFileImpl::setLineageStartDate(const std::chrono::system_clock::time_point date) {
   lineage_start_date_ = date;
 }
 
@@ -210,7 +194,7 @@ void FlowFile::setLineageStartDate(const uint64_t date) {
  * Sets the original connection with a shared pointer.
  * @param connection shared connection.
  */
-void FlowFile::setConnection(const std::shared_ptr<core::Connectable>& connection) {
+void FlowFileImpl::setConnection(core::Connectable* connection) {
   connection_ = connection;
 }
 
@@ -218,19 +202,9 @@ void FlowFile::setConnection(const std::shared_ptr<core::Connectable>& connectio
  * Returns the original connection referenced by this record.
  * @return shared original connection pointer.
  */
-std::shared_ptr<core::Connectable> FlowFile::getConnection() const {
+core::Connectable* FlowFileImpl::getConnection() const {
   return connection_;
 }
-
-const std::string SpecialFlowAttribute::PATH = "path";
-const std::string SpecialFlowAttribute::ABSOLUTE_PATH = "absolute.path";
-const std::string SpecialFlowAttribute::FILENAME = "filename";
-const std::string SpecialFlowAttribute::UUID = "uuid";
-const std::string SpecialFlowAttribute::priority = "priority";
-const std::string SpecialFlowAttribute::MIME_TYPE = "mime.type";
-const std::string SpecialFlowAttribute::DISCARD_REASON = "discard.reason";
-const std::string SpecialFlowAttribute::ALTERNATE_IDENTIFIER = "alternate.identifier";
-const std::string SpecialFlowAttribute::FLOW_ID = "flow.id";
 
 } /* namespace core */
 
@@ -238,7 +212,4 @@ namespace utils {
 template struct assert_container<core::FlowFile::AttributeMap>;
 } /* namespace utils */
 
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+}  // namespace org::apache::nifi::minifi

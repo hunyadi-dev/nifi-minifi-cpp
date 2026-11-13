@@ -1,0 +1,75 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+import logging
+import re
+from textwrap import dedent
+
+from docker.errors import ContainerError
+from minifi_behave.containers.container_linux import LinuxContainer
+from minifi_behave.containers.docker_image_builder import DockerImageBuilder
+from minifi_behave.core.helpers import wait_for_condition
+from minifi_behave.core.minifi_test_context import MinifiTestContext
+
+logger = logging.getLogger(__name__)
+
+
+class MqttBrokerContainer(LinuxContainer):
+    IMAGE = "eclipse-mosquitto:2.1.1-alpine"
+
+    def __init__(self, test_context: MinifiTestContext):
+        dockerfile = dedent(
+            f"""\
+            FROM {MqttBrokerContainer.IMAGE}
+            RUN echo 'log_dest stderr' >> /mosquitto-no-auth.conf
+            CMD ["/usr/sbin/mosquitto", "--verbose", "--config-file", "/mosquitto-no-auth.conf"]
+            """
+        )
+
+        builder = DockerImageBuilder(image_tag="minifi-mqtt-broker:latest", dockerfile_content=dockerfile)
+        builder.build()
+
+        super().__init__(
+            "minifi-mqtt-broker:latest",
+            f"mqtt-broker-{test_context.scenario_id}",
+            test_context.network,
+        )
+
+    def deploy(self, context: MinifiTestContext | None) -> bool:
+        super().deploy(context)
+        finished_str = "mosquitto version [0-9\\.]+ running"
+        return wait_for_condition(
+            condition=lambda: re.search(finished_str, self.get_logs()),
+            timeout_seconds=60,
+            bail_condition=lambda: self.exited,
+            context=context,
+        )
+
+    def publish_mqtt_message(self, topic: str, message: str):
+        try:
+            self.client.containers.run(
+                "minifi-mqtt-helper:latest",
+                [
+                    "python",
+                    "/scripts/publish_mqtt_message.py",
+                    self.container_name,
+                    topic,
+                    message,
+                ],
+                remove=True,
+                stdout=True,
+                stderr=True,
+                network=self.network.name,
+            )
+            return True
+        except ContainerError as e:
+            stdout = e.stdout.decode("utf-8", errors="replace") if hasattr(e, "stdout") and e.stdout else ""
+            stderr = e.stderr.decode("utf-8", errors="replace") if hasattr(e, "stderr") and e.stderr else ""
+            logger.error(
+                f"Failed to publish mqtt message in mqtt helper docker with error: '{e}', stdout: '{stdout}', stderr: '{stderr}'"
+            )
+            return False
+        except Exception as e:
+            logger.error(f"Unexpected error while publishing mqtt message in mqtt helper docker: '{e}'")
+            return False

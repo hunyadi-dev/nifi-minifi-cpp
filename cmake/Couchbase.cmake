@@ -1,0 +1,48 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+include(FetchContent)
+
+include(GetFmt)
+include(GetSpdlog)
+include(GetAsio)
+
+set(COUCHBASE_CXX_CLIENT_BUILD_STATIC ON CACHE BOOL "" FORCE)
+set(COUCHBASE_CXX_CLIENT_BUILD_SHARED OFF CACHE BOOL "" FORCE)
+set(COUCHBASE_CXX_CLIENT_BUILD_TESTS OFF CACHE BOOL "" FORCE)
+set(COUCHBASE_CXX_CLIENT_BUILD_DOCS OFF CACHE BOOL "" FORCE)
+set(COUCHBASE_CXX_CLIENT_BUILD_EXAMPLES OFF CACHE BOOL "" FORCE)
+set(COUCHBASE_CXX_CLIENT_BUILD_TOOLS OFF CACHE BOOL "" FORCE)
+set(COUCHBASE_CXX_CLIENT_POST_LINKED_OPENSSL ON CACHE BOOL "" FORCE)
+set(COUCHBASE_CXX_CLIENT_INSTALL OFF CACHE BOOL "" FORCE)
+
+# Fix for MSVC + ASIO C++20/23 concept evaluation bugs
+if(MSVC)
+    add_compile_definitions(ASIO_DISABLE_CONCEPTS)
+endif()
+
+set(PATCH_FILE_1 "${CMAKE_SOURCE_DIR}/thirdparty/couchbase/all/patches/remove-thirdparty.patch")
+set(PATCH_FILE_2 "${CMAKE_SOURCE_DIR}/thirdparty/couchbase/all/patches/c++23_fixes.patch")
+set(PATCH_FILE_3 "${CMAKE_SOURCE_DIR}/thirdparty/couchbase/all/patches/use_fmt_instead_of_spdlog_fmt.patch")
+
+set(PC ${Bash_EXECUTABLE}  -c "set -x &&\
+            (\\\"${Patch_EXECUTABLE}\\\" -p1 -R -s -f --dry-run -i \\\"${PATCH_FILE_1}\\\" || \\\"${Patch_EXECUTABLE}\\\" -p1 -N -i \\\"${PATCH_FILE_1}\\\") &&\
+            (\\\"${Patch_EXECUTABLE}\\\" -p1 -R -s -f --dry-run -i \\\"${PATCH_FILE_2}\\\" || \\\"${Patch_EXECUTABLE}\\\" -p1 -N -i \\\"${PATCH_FILE_2}\\\") &&\
+            (\\\"${Patch_EXECUTABLE}\\\" -p1 -R -s -f --dry-run -i \\\"${PATCH_FILE_3}\\\" || \\\"${Patch_EXECUTABLE}\\\" -p1 -N -i \\\"${PATCH_FILE_3}\\\")")
+
+FetchContent_Declare(couchbase-cxx-client
+    URL      https://github.com/couchbase/couchbase-cxx-client/archive/refs/tags/1.3.1.tar.gz
+    URL_HASH SHA256=9c497d8ba6f3e4a12376826ae1c172356e16190bb44584f087d7d1a81278dc0f
+    PATCH_COMMAND "${PC}"
+    SYSTEM
+)
+FetchContent_MakeAvailable(couchbase-cxx-client)
+
+if (WIN32)
+    target_compile_definitions(couchbase_cxx_client_static_intermediate PRIVATE _SILENCE_CXX20_OLD_SHARED_PTR_ATOMIC_SUPPORT_DEPRECATION_WARNING)
+endif()
+
+if (NOT TARGET couchbase_cxx_client::couchbase_cxx_client)
+    add_library(couchbase_cxx_client::couchbase_cxx_client ALIAS couchbase_cxx_client_static_intermediate)
+endif()

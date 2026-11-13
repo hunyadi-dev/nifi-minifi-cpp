@@ -1,0 +1,37 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "MetricsExposer.h"
+#include "minifi-cpp/controllers/SSLContextServiceInterface.h"
+#include "minifi-cpp/core/logging/Logger.h"
+#include "core/logging/LoggerFactory.h"
+#include "prometheus/exposer.h"
+
+namespace org::apache::nifi::minifi::extensions::prometheus {
+
+struct PrometheusExposerConfig {
+  uint32_t port;
+  std::optional<std::string> certificate;
+  std::optional<std::string> ca_certificate;
+};
+
+class PrometheusExposerWrapper : public MetricsExposer {
+ public:
+  explicit PrometheusExposerWrapper(const PrometheusExposerConfig& config);
+  void registerMetric(const std::shared_ptr<PublishedMetricGaugeCollection>& metric) override;
+  void removeMetric(const std::shared_ptr<PublishedMetricGaugeCollection>& metric) override;
+
+ private:
+  static std::vector<std::string> parseExposerConfig(const PrometheusExposerConfig& config);
+
+  ::prometheus::Exposer exposer_;
+  std::shared_ptr<core::logging::Logger> logger_{core::logging::LoggerFactory<PrometheusExposerWrapper>::getLogger()};
+};
+
+}  // namespace org::apache::nifi::minifi::extensions::prometheus

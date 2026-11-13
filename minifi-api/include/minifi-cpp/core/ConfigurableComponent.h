@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#pragma once
+
+#include <string>
+#include <string_view>
+#include <vector>
+
+#include "Core.h"
+#include "Property.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "utils/expected.h"
+
+namespace org::apache::nifi::minifi::core {
+
+class ConfigurableComponent : public virtual CoreComponent {
+ public:
+  virtual ~ConfigurableComponent() = default;
+
+  virtual void initialize() {};
+  virtual bool canEdit() = 0;
+
+  [[nodiscard]] virtual std::expected<std::string, std::error_code> getProperty(std::string_view name) const = 0;
+  virtual std::expected<void, std::error_code> setProperty(std::string_view name, std::string value) = 0;
+  virtual std::expected<void, std::error_code> appendProperty(std::string_view name, std::string value) = 0;
+  virtual std::expected<void, std::error_code> clearProperty(std::string_view name) = 0;
+  virtual std::expected<void, std::error_code> clearPropertyDefaultValue(std::string_view name) = 0;
+
+  [[nodiscard]] virtual std::expected<std::string, std::error_code> getDynamicProperty(std::string_view name) const = 0;
+  virtual std::expected<void, std::error_code> setDynamicProperty(std::string name, std::string value) = 0;
+  virtual std::expected<void, std::error_code> appendDynamicProperty(std::string_view name, std::string value) = 0;
+
+  [[nodiscard]] virtual std::vector<std::string> getDynamicPropertyKeys() const = 0;
+  [[nodiscard]] virtual std::map<std::string, std::string> getDynamicProperties() const = 0;
+
+  [[nodiscard]] virtual std::expected<std::vector<std::string>, std::error_code> getAllPropertyValues(std::string_view name) const = 0;
+  [[nodiscard]] virtual std::expected<std::vector<std::string>, std::error_code> getAllDynamicPropertyValues(std::string_view name) const = 0;
+
+  [[nodiscard]] virtual bool supportsDynamicProperties() const = 0;
+  [[nodiscard]] virtual bool supportsDynamicRelationships() const = 0;
+
+  [[nodiscard]] virtual std::map<std::string, Property, std::less<>> getSupportedProperties() const = 0;
+  [[nodiscard]] virtual std::expected<Property, std::error_code> getSupportedProperty(std::string_view name) const = 0;
+};
+
+}  // namespace org::apache::nifi::minifi::core

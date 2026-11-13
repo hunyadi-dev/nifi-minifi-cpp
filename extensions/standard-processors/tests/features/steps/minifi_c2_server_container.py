@@ -1,0 +1,115 @@
+#
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#
+
+import os
+from pathlib import Path
+
+import jks
+from cryptography import x509
+from cryptography.hazmat.primitives import serialization
+from cryptography.hazmat.primitives.serialization import (
+    BestAvailableEncryption,
+    load_pem_private_key,
+    pkcs12,
+)
+from minifi_behave.containers.container_linux import LinuxContainer
+from minifi_behave.containers.file import File
+from minifi_behave.containers.host_file import HostFile
+from minifi_behave.core.helpers import wait_for_condition
+from minifi_behave.core.minifi_test_context import MinifiTestContext
+from minifi_behave.core.ssl_utils import dump_cert, dump_key, make_server_cert
+
+
+class MinifiC2Server(LinuxContainer):
+    def __init__(self, test_context: MinifiTestContext, ssl: bool = False):
+        super().__init__(
+            "apache/nifi-minifi-c2:1.27.0",
+            f"minifi-c2-server-{test_context.scenario_id}",
+            test_context.network,
+        )
+        if ssl:
+            c2_cert, c2_key = make_server_cert(
+                f"minifi-c2-server-{test_context.scenario_id}",
+                test_context.root_ca_cert,
+                test_context.root_ca_key,
+            )
+            pke = jks.PrivateKeyEntry.new(
+                "c2-server-cert",
+                [dump_cert(c2_cert, encoding_type=serialization.Encoding.DER)],
+                dump_key(c2_key, encoding_type=serialization.Encoding.DER),
+                "rsa_raw",
+            )
+            server_keystore = jks.KeyStore.new("jks", [pke])
+            server_keystore_content = server_keystore.saves("abcdefgh")
+            self.files.append(
+                File(
+                    "/opt/minifi-c2/minifi-c2-current/certs/minifi-c2-server-keystore.jks",
+                    server_keystore_content,
+                    permissions=0o644,
+                )
+            )
+
+            private_key_pem = dump_key(test_context.root_ca_key)
+            private_key = load_pem_private_key(private_key_pem, password=None)
+            certificate_pem = dump_cert(test_context.root_ca_cert)
+            certificate = x509.load_pem_x509_certificate(certificate_pem)
+            pkcs12_data = pkcs12.serialize_key_and_certificates(
+                name=None,
+                key=private_key,
+                cert=certificate,
+                cas=None,
+                encryption_algorithm=BestAvailableEncryption(b"abcdefgh"),
+            )
+            self.files.append(
+                File(
+                    "/opt/minifi-c2/minifi-c2-current/certs/minifi-c2-server-truststore.p12",
+                    pkcs12_data,
+                    permissions=0o644,
+                )
+            )
+
+            authorities_file_content = f"""
+  CN=minifi-primary-{test_context.scenario_id}:
+  - CLASS_MINIFI_CPP
+  """
+            self.files.append(
+                File(
+                    "/opt/minifi-c2/minifi-c2-current/conf/authorities.yaml",
+                    authorities_file_content,
+                    permissions=0o644,
+                )
+            )
+
+        resource_dir = Path(__file__).resolve().parent / "resources" / "minifi-c2-server"
+        self.host_files.append(
+            HostFile(
+                "/opt/minifi-c2/minifi-c2-current/files/minifi-test-class/config.text.yml.v1",
+                os.path.join(resource_dir, "config.yml"),
+            )
+        )
+        if ssl:
+            self.host_files.append(
+                HostFile(
+                    "/opt/minifi-c2/minifi-c2-current/conf/authorizations.yaml",
+                    os.path.join(resource_dir, "authorizations.yaml"),
+                )
+            )
+            self.host_files.append(
+                HostFile(
+                    "/opt/minifi-c2/minifi-c2-current/conf/c2.properties",
+                    os.path.join(resource_dir, "c2.properties"),
+                )
+            )
+
+    def deploy(self, context: MinifiTestContext | None) -> bool:
+        super().deploy(context)
+        finished_str = "Server Started"
+        return wait_for_condition(
+            condition=lambda: finished_str in self.get_logs(),
+            timeout_seconds=60,
+            bail_condition=lambda: self.exited,
+            context=context,
+        )

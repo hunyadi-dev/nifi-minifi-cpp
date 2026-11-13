@@ -1,0 +1,107 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#include "io/InputStream.h"
+
+#include <cstdio>
+#include <string>
+#include <vector>
+
+#include "minifi-cpp/utils/gsl.h"
+
+namespace org::apache::nifi::minifi::io {
+
+size_t InputStream::read(bool &value) {
+  uint8_t buf = 0;
+
+  if (read(buf) != 1) {
+    return STREAM_ERROR;
+  }
+  value = buf;
+  return 1;
+}
+
+size_t InputStream::read(utils::Identifier &value) {
+  std::string uuidStr;
+  const auto ret = read(uuidStr, LengthPrefixSize::_16BIT, utils::Identifier::UUID_STR_LEN);
+  if (isError(ret)) {
+    return ret;
+  }
+  auto optional_uuid = utils::Identifier::parse(uuidStr);
+  if (!optional_uuid) {
+    return STREAM_ERROR;
+  }
+  value = optional_uuid.value();
+  return ret;
+}
+
+size_t InputStream::read(std::string &str, LengthPrefixSize prefix_size, size_t max_length) {
+  uint32_t string_length = 0;
+  size_t length_prefix_size_in_bytes = 0;
+  switch (prefix_size) {
+    case LengthPrefixSize::_16BIT: {
+      uint16_t out_16bit_length = 0;
+      length_prefix_size_in_bytes = read(out_16bit_length);
+      string_length = out_16bit_length;
+    } break;
+    case LengthPrefixSize::_32BIT: {
+      uint32_t out_32bit_length = 0;
+      length_prefix_size_in_bytes = read(out_32bit_length);
+      string_length = out_32bit_length;
+    } break;
+  }
+
+  // The zero case should be impossible, read(Integral&) returns the size of the integral type,
+  // or an error code, so this handles the error case and propagates the stream error
+  if (length_prefix_size_in_bytes == 0 || isError(length_prefix_size_in_bytes)) {
+    return length_prefix_size_in_bytes;
+  }
+
+  const auto limited_length = std::min(string_length, gsl::narrow<uint32_t>(max_length));
+  if (limited_length == 0) {
+    str.clear();
+    return length_prefix_size_in_bytes;
+  }
+
+  str.clear();
+  str.resize(limited_length);
+  std::span<std::byte> dst_buffer = as_writable_bytes(std::span{str});
+
+  auto zero_return_retry_count = 0;
+  while (!dst_buffer.empty()) {
+    const auto read_return = read(dst_buffer);
+    if (io::isError(read_return)) {
+      return read_return;
+    }
+    if (read_return == 0 && ++zero_return_retry_count > 3) {
+      return STREAM_ERROR;
+    }
+    dst_buffer = dst_buffer.subspan(read_return);
+  }
+
+  // if max_length truncated the string, consume the rest of it from the stream, and throw it away, to keep subsequent reads aligned
+  // ptrdiff_t because I want currently impossible math errors to flip the remainder negative and terminate minifi
+  for (std::ptrdiff_t remaining = string_length - limited_length; remaining != 0;) {
+    gsl_Assert(remaining > 0);
+    std::array<std::byte, 8192> throwaway_buf{};
+    std::span<std::byte> dst_span = throwaway_buf;
+    if (remaining < gsl::narrow<std::ptrdiff_t>(dst_span.size())) { dst_span = dst_span.subspan(0, remaining); }
+    const auto read_return = read(dst_span);
+    if (io::isError(read_return)) {
+      return read_return;
+    }
+    remaining -= gsl::narrow<std::ptrdiff_t>(read_return);
+  }
+
+  return length_prefix_size_in_bytes + string_length;
+}
+
+std::optional<std::byte> InputStream::readByte() {
+  std::array<std::byte, 1> buf{};
+  if (read(buf) != 1) {
+    return std::nullopt;
+  }
+  return buf[0];
+}
+
+}  // namespace org::apache::nifi::minifi::io

@@ -1,0 +1,58 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include "PushGrafanaLoki.h"
+
+#include "core/logging/LoggerFactory.h"
+#include "grafana-loki-push.grpc.pb.h"
+#include "grafana-loki-push.pb.h"
+#include "grpc/grpc.h"
+
+namespace org::apache::nifi::minifi::extensions::grafana::loki {
+
+class PushGrafanaLokiGrpc final : public PushGrafanaLoki {
+ public:
+  EXTENSIONAPI static constexpr const char* Description = "A Grafana Loki push processor that uses the Grafana Loki Grpc port. The processor expects each flow file to contain a single log line to be "
+                                                          "pushed to Grafana Loki, therefore it is usually used together with the TailFile processor.";
+
+  using PushGrafanaLoki::PushGrafanaLoki;
+  ~PushGrafanaLokiGrpc() override = default;
+
+  EXTENSIONAPI static constexpr auto KeepAliveTime = core::PropertyDefinitionBuilder<>::createProperty("Keep Alive Time")
+    .withDescription("The period after which a keepalive ping is sent on the transport. If not set, then the keep alive is disabled.")
+    .withValidator(core::StandardPropertyValidators::TIME_PERIOD_VALIDATOR)
+    .build();
+  EXTENSIONAPI static constexpr auto KeepAliveTimeout = core::PropertyDefinitionBuilder<>::createProperty("Keep Alive Timeout")
+    .withDescription("The amount of time the sender of the keepalive ping waits for an acknowledgement. If it does not receive an acknowledgment within this time, "
+                     "it will close the connection. If not set, then the default value 20 seconds is used.")
+    .withValidator(core::StandardPropertyValidators::TIME_PERIOD_VALIDATOR)
+    .build();
+  EXTENSIONAPI static constexpr auto MaxPingsWithoutData = core::PropertyDefinitionBuilder<>::createProperty("Max Pings Without Data")
+    .withDescription("The maximum number of pings that can be sent when there is no data/header frame to be sent. gRPC Core will not continue sending pings "
+                     "if we run over the limit. Setting it to 0 allows sending pings without such a restriction. If not set, then the default value 2 is used.")
+    .withValidator(core::StandardPropertyValidators::UNSIGNED_INTEGER_VALIDATOR)
+    .build();
+  EXTENSIONAPI static constexpr auto Properties = utils::array_cat(PushGrafanaLoki::Properties, std::to_array<core::PropertyReference>({
+      KeepAliveTime,
+      KeepAliveTimeout,
+      MaxPingsWithoutData,
+  }));
+
+  void initialize() override;
+  void onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& session_factory) override;
+
+ protected:
+  void setUpStreamLabels(core::ProcessContext& context) override;
+  std::expected<void, std::string> submitRequest(const std::vector<std::shared_ptr<core::FlowFile>>& batched_flow_files, core::ProcessSession& session) override;
+  void setUpGrpcChannel(const std::string& url, core::ProcessContext& context);
+
+  std::string stream_labels_;
+  std::chrono::milliseconds connection_timeout_ms_{};
+  std::optional<std::string> tenant_id_;
+  std::shared_ptr<::grpc::Channel> push_channel_;
+  std::unique_ptr<logproto::Pusher::Stub> push_stub_;
+};
+
+}  // namespace org::apache::nifi::minifi::extensions::grafana::loki

@@ -1,20 +1,6 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #include <memory>
 #include <string>
 #include <vector>
@@ -22,10 +8,11 @@
 #include <fstream>
 #include <functional>
 
-#include "TestBase.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
 #include "processors/PutFile.h"
 #include "utils/file/FileUtils.h"
-#include "utils/TestUtils.h"
+#include "unit/TestUtils.h"
 #include "PerformanceDataMonitor.h"
 #include "rapidjson/filereadstream.h"
 
@@ -41,11 +28,10 @@ class PerformanceDataMonitorTester {
     plan_ = test_controller_.createPlan();
     performance_monitor_ = plan_->addProcessor("PerformanceDataMonitor", "pdhsys");
     putfile_ = plan_->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
-    plan_->setProperty(putfile_, PutFile::Directory.getName(), dir_);
+    plan_->setProperty(putfile_, PutFile::Directory, dir_.string());
   }
 
   bool runWithRetries(std::function<bool()>&& assertions, uint32_t max_tries = 10) {
-    uint32_t tries = 0;
     for (uint32_t tries = 0; tries < max_tries; ++tries) {
       test_controller_.runSession(plan_);
       if (assertions()) {
@@ -58,15 +44,15 @@ class PerformanceDataMonitorTester {
     return false;
   }
 
-  void setPerformanceMonitorProperty(const core::Property& property, const std::string& value) {
-    plan_->setProperty(performance_monitor_, property.getName(), value);
+  void setPerformanceMonitorProperty(const core::PropertyReference& property, const std::string& value) {
+    plan_->setProperty(performance_monitor_, property, value);
   }
 
   TestController test_controller_;
-  std::string dir_;
+  std::filesystem::path dir_;
   std::shared_ptr<TestPlan> plan_;
-  std::shared_ptr<core::Processor> performance_monitor_;
-  std::shared_ptr<core::Processor> putfile_;
+  core::Processor* performance_monitor_;
+  core::Processor* putfile_;
 };
 
 
@@ -89,8 +75,8 @@ TEST_CASE("PerformanceDataMonitorPartiallyInvalidGroupPropertyTest", "[performan
 
     bool ff_contains_all_data = false;
 
-    const auto lambda = [&ff_contains_all_data](const std::string& path, const std::string& filename) -> bool {
-      FILE* fp = fopen((path + utils::file::FileUtils::get_separator() + filename).c_str(), "r");
+    const auto lambda = [&ff_contains_all_data](const std::filesystem::path& path, const std::filesystem::path& filename) -> bool {
+      FILE* fp = fopen((path / filename).string().c_str(), "r");
       REQUIRE(fp != nullptr);
       char readBuffer[500];
       rapidjson::FileReadStream is(fp, readBuffer, sizeof(readBuffer));
@@ -118,8 +104,8 @@ TEST_CASE("PerformanceDataMonitorCustomPDHCountersTest", "[performancedatamonito
 
   const auto assertions = [&tester]() {
     bool ff_contains_all_data = false;
-    const auto lambda = [&ff_contains_all_data](const std::string& path, const std::string& filename) -> bool {
-      FILE* fp = fopen((path + utils::file::FileUtils::get_separator() + filename).c_str(), "r");
+    const auto lambda = [&ff_contains_all_data](const std::filesystem::path& path, const std::filesystem::path& filename) -> bool {
+      FILE* fp = fopen((path / filename).string().c_str(), "r");
       REQUIRE(fp != nullptr);
       char readBuffer[50000];
       rapidjson::FileReadStream is(fp, readBuffer, sizeof(readBuffer));
@@ -152,8 +138,8 @@ TEST_CASE("PerformanceDataMonitorCustomPDHCountersTestOpenTelemetry", "[performa
 
   const auto assertions = [&tester]() {
     bool ff_contains_all_data = false;
-    const auto lambda = [&ff_contains_all_data](const std::string& path, const std::string& filename) -> bool {
-      FILE* fp = fopen((path + utils::file::FileUtils::get_separator() + filename).c_str(), "r");
+    const auto lambda = [&ff_contains_all_data](const std::filesystem::path& path, const std::filesystem::path& filename) -> bool {
+      FILE* fp = fopen((path / filename).string().c_str(), "r");
       REQUIRE(fp != nullptr);
       char readBuffer[50000];
       rapidjson::FileReadStream is(fp, readBuffer, sizeof(readBuffer));
@@ -188,8 +174,8 @@ TEST_CASE("PerformanceDataMonitorAllPredefinedGroups", "[performancedatamonitora
 
   const auto assertions = [&tester]() {
     bool ff_contains_all_data = false;
-    const auto lambda = [&ff_contains_all_data](const std::string& path, const std::string& filename) -> bool {
-      FILE* fp = fopen((path + utils::file::FileUtils::get_separator() + filename).c_str(), "r");
+    const auto lambda = [&ff_contains_all_data](const std::filesystem::path& path, const std::filesystem::path& filename) -> bool {
+      FILE* fp = fopen((path / filename).string().c_str(), "r");
       REQUIRE(fp != nullptr);
       char readBuffer[50000];
       rapidjson::FileReadStream is(fp, readBuffer, sizeof(readBuffer));
@@ -244,22 +230,4 @@ TEST_CASE("PerformanceDataMonitorAllPredefinedGroups", "[performancedatamonitora
   };
 
   REQUIRE(tester.runWithRetries(assertions));
-}
-
-TEST_CASE("PerformanceDataMonitorDecimalPlacesPropertyTest", "[performancedatamonitordecimalplacespropertytest]") {
-  {
-    PerformanceDataMonitorTester tester;
-    tester.setPerformanceMonitorProperty(PerformanceDataMonitor::DecimalPlaces, "asd");
-    REQUIRE_THROWS_WITH(tester.runWithRetries([]{ return true; }, 1), "General Operation: Invalid conversion to int64_t for asd");
-  }
-  {
-    PerformanceDataMonitorTester tester;
-    tester.setPerformanceMonitorProperty(PerformanceDataMonitor::DecimalPlaces, "1234586123");
-    REQUIRE_THROWS_WITH(tester.runWithRetries([]{ return true; }, 1), "Process Schedule Operation: PerformanceDataMonitor Decimal Places is out of range");
-  }
-  {
-    PerformanceDataMonitorTester tester;
-    tester.setPerformanceMonitorProperty(PerformanceDataMonitor::DecimalPlaces, "");
-    REQUIRE_NOTHROW(tester.runWithRetries([]{ return true; }, 1));
-  }
 }

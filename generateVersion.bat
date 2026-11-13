@@ -1,18 +1,7 @@
 @echo off &setlocal enabledelayedexpansion
-rem Licensed to the Apache Software Foundation (ASF) under one or more
-rem contributor license agreements.  See the NOTICE file distributed with
-rem this work for additional information regarding copyright ownership.
-rem The ASF licenses this file to You under the Apache License, Version 2.0
-rem (the "License"); you may not use this file except in compliance with
-rem the License.  You may obtain a copy of the License at
-rem
-rem     http://www.apache.org/licenses/LICENSE-2.0
-rem
-rem Unless required by applicable law or agreed to in writing, software
-rem distributed under the License is distributed on an "AS IS" BASIS,
-rem WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-rem See the License for the specific language governing permissions and
-rem limitations under the License.
+rem SPDX-License-Identifier: Apache-2.0
+rem SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+rem SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 set version=%1
 set version=%version:"=%
@@ -26,12 +15,9 @@ set compiler_version=%5
 set compiler_version=%compiler_version:"=%
 set flags=%6
 set flags=%flags:"=%
-set extensions=%7
-set extensions=%extensions:"=%
-set extensions=%extensions:\=%
-set buildident=%8
+set buildident=%7
 set buildident=%buildident:"=%
-set buildrev=%9
+set buildrev=%8
 set buildrev=%buildrev:"=%
 
 
@@ -39,20 +25,11 @@ call :GetUnixTime builddate
 
 
 set /a count=0
-for %%i in (%extensions%) do (
-    set /a count+=1
-    set "extension!count!=%%i"
-)
 
 (
-    echo #include ^<string^>
-	echo #include ^<vector^>
-	echo #include "agent/agent_version.h"
+	echo #include "minifi-cpp/agent/agent_version.h"
 
-	echo namespace org {
-	echo namespace apache {
-	echo namespace nifi {
-	echo namespace minifi {
+	echo namespace org::apache::nifi::minifi {
 
 	echo const char* const AgentBuild::VERSION = "%version%";
 	echo const char* const AgentBuild::BUILD_IDENTIFIER = "%buildident%";
@@ -60,34 +37,15 @@ for %%i in (%extensions%) do (
 	echo const char* const AgentBuild::BUILD_DATE = "%builddate%";
 	echo const char* const AgentBuild::COMPILER = "%compiler%";
 	echo const char* const AgentBuild::COMPILER_VERSION = "%compiler_version%";
-	echo const char* const AgentBuild::COMPILER_FLAGS = "%flags%";
-	echo std^:^:vector^<std^:^:string^> AgentBuild::getExtensions^(^) {
-  	echo 	static std^:^:vector^<std^:^:string^> extensions;
-  	echo 	if ^(extensions.empty^(^)^){
-	) > "%out_dir%/agent_version.cpp"
+	echo const char* const AgentBuild::COMPILER_FLAGS = R"(%flags%)";
 
-	for /l %%i in (1,1,%count%) do (
-	   (
-				echo extensions.push_back^("!extension%%i!"^);
-		)>> "%out_dir%/agent_version.cpp"
-	)
+	echo }  // namespace org::apache::nifi::minifi
 
-	
-(
-	echo 	 extensions.push_back^("minifi-system"^);
-	echo   }
-  	echo   return extensions;
-	echo }
-
-	echo } /* namespace minifi */
-	echo } /* namespace nifi */
-	echo } /* namespace apache */
-	echo } /* namespace org */
-) >> "%out_dir%/agent_version.cpp"
+) > "%out_dir%/agent_version.cpp"
 
  goto :EOF
 
- rem see license regarding the following snippet of code taken from 
+ rem see license regarding the following snippet of code taken from
  rem https://github.com/ritchielawrence/batchfunctionlibrary
 
 :GetUnixTime

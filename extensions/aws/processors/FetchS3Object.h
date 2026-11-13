@@ -1,22 +1,6 @@
-/**
- * @file FetchS3Object.h
- * FetchS3Object class declaration
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #pragma once
 
@@ -27,90 +11,98 @@
 #include <utility>
 #include <vector>
 
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "minifi-cpp/core/PropertyValidator.h"
+#include "io/StreamPipe.h"
 #include "S3Processor.h"
+#include "utils/ArrayUtils.h"
 #include "utils/GeneralUtils.h"
 
 template<typename T>
-class S3TestsFixture;
+class FlowProcessorS3TestsFixture;
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace aws {
-namespace processors {
+namespace org::apache::nifi::minifi::aws::processors {
 
-class FetchS3Object : public S3Processor {
+class FetchS3Object : public S3Processor {  // NOLINT(cppcoreguidelines-special-member-functions)
  public:
-  static constexpr char const* ProcessorName = "FetchS3Object";
+  EXTENSIONAPI static constexpr const char* Description = "This Processor retrieves the contents of an S3 Object and writes it to the content of a FlowFile.";
 
-  // Supported Properties
-  static const core::Property ObjectKey;
-  static const core::Property Version;
-  static const core::Property RequesterPays;
+  EXTENSIONAPI static constexpr auto ObjectKey = core::PropertyDefinitionBuilder<>::createProperty("Object Key")
+      .withDescription("The key of the S3 object. If none is given the filename attribute will be used by default.")
+      .supportsExpressionLanguage(true)
+      .build();
+  EXTENSIONAPI static constexpr auto Version = core::PropertyDefinitionBuilder<>::createProperty("Version")
+      .withDescription("The Version of the Object to download")
+      .supportsExpressionLanguage(true)
+      .build();
+  EXTENSIONAPI static constexpr auto RequesterPays = core::PropertyDefinitionBuilder<>::createProperty("Requester Pays")
+      .isRequired(true)
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("false")
+      .withDescription("If true, indicates that the requester consents to pay any charges associated with retrieving "
+          "objects from the S3 bucket. This sets the 'x-amz-request-payer' header to 'requester'.")
+      .build();
+  EXTENSIONAPI static constexpr auto Properties = minifi::utils::array_cat(S3Processor::Properties, std::to_array<core::PropertyReference>({
+      ObjectKey,
+      Version,
+      RequesterPays
+  }));
 
-  // Supported Relationships
-  static const core::Relationship Failure;
-  static const core::Relationship Success;
 
-  explicit FetchS3Object(const std::string& name, const minifi::utils::Identifier& uuid = minifi::utils::Identifier())
-    : S3Processor(name, uuid, logging::LoggerFactory<FetchS3Object>::getLogger()) {
-  }
+  EXTENSIONAPI static constexpr auto Success = core::RelationshipDefinition{"success", "FlowFiles are routed to success relationship"};
+  EXTENSIONAPI static constexpr auto Failure = core::RelationshipDefinition{"failure", "FlowFiles are routed to failure relationship"};
+  EXTENSIONAPI static constexpr auto Relationships = std::array{Success, Failure};
+
+  EXTENSIONAPI static constexpr auto S3Etag = core::OutputAttributeDefinition<>{
+      "s3.etag", {Success}, "The ETag that can be used to see if the file has changed"};
+  EXTENSIONAPI static constexpr auto S3ExpirationTime = core::OutputAttributeDefinition<>{
+      "s3.expirationTime", {Success}, "The expiration time of the S3 object"};
+  EXTENSIONAPI static constexpr auto S3ExpirationTimeRuleId = core::OutputAttributeDefinition<>{
+      "s3.expirationTimeRuleId", {Success}, "The ID of the rule that dictates this object's expiration time"};
+  EXTENSIONAPI static constexpr auto S3SseAlgorithm = core::OutputAttributeDefinition<>{
+      "s3.sseAlgorithm", {Success}, "The server side encryption algorithm of the object"};
+  EXTENSIONAPI static constexpr auto S3Version = core::OutputAttributeDefinition<>{
+      "s3.version", {Success}, "The version of the S3 Object that was put to S3"};
+  EXTENSIONAPI static constexpr auto S3Exception = core::OutputAttributeDefinition<>{
+      S3_EXCEPTION, {Failure}, "Exception name of the S3 request failure"};
+  EXTENSIONAPI static constexpr auto S3ErrorMessage = core::OutputAttributeDefinition<>{
+      S3_ERROR_MESSAGE, {Failure}, "Error message of the S3 request failure"};
+  EXTENSIONAPI static constexpr auto S3ErrorRetryable = core::OutputAttributeDefinition<>{
+      S3_ERROR_RETRYABLE, {Failure}, "Is the S3 request error retryable"};
+  EXTENSIONAPI static constexpr auto S3StatusCode = core::OutputAttributeDefinition<>{
+      S3_STATUS_CODE, {Failure}, "HTTP code of the S3 request failure. -1 indicates no HTTP request was made."};
+  EXTENSIONAPI static constexpr auto OutputAttributes =
+      std::to_array<core::OutputAttributeReference>({S3Etag, S3ExpirationTime, S3ExpirationTimeRuleId, S3SseAlgorithm, S3Version, S3Exception, S3ErrorMessage, S3ErrorRetryable, S3StatusCode});
+
+  EXTENSIONAPI static constexpr bool SupportsDynamicProperties = true;
+  EXTENSIONAPI static constexpr bool SupportsDynamicRelationships = false;
+  EXTENSIONAPI static constexpr core::annotation::Input InputRequirement = core::annotation::Input::INPUT_REQUIRED;
+  EXTENSIONAPI static constexpr bool IsSingleThreaded = false;
+
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_PROCESSORS
+
+  using S3Processor::S3Processor;
 
   ~FetchS3Object() override = default;
 
   void initialize() override;
-  void onSchedule(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSessionFactory> &sessionFactory) override;
-  void onTrigger(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSession> &session) override;
-
-  class WriteCallback : public OutputStreamCallback {
-   public:
-    WriteCallback(uint64_t flow_size, const minifi::aws::s3::GetObjectRequestParameters& get_object_params, aws::s3::S3Wrapper& s3_wrapper)
-      : flow_size_(flow_size)
-      , get_object_params_(get_object_params)
-      , s3_wrapper_(s3_wrapper) {
-    }
-
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
-      std::vector<uint8_t> buffer;
-      result_ = s3_wrapper_.getObject(get_object_params_, *stream);
-      if (!result_) {
-        return 0;
-      }
-
-      return result_->write_size;
-    }
-
-    uint64_t flow_size_;
-
-    const minifi::aws::s3::GetObjectRequestParameters& get_object_params_;
-    aws::s3::S3Wrapper& s3_wrapper_;
-    uint64_t write_size_ = 0;
-    std::optional<minifi::aws::s3::GetObjectResult> result_;
-  };
+  void onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& session_factory) override;
+  void onTrigger(core::ProcessContext& context, core::ProcessSession& session) override;
 
  private:
-  core::annotation::Input getInputRequirement() const override {
-    return core::annotation::Input::INPUT_REQUIRED;
-  }
+  friend class ::FlowProcessorS3TestsFixture<FetchS3Object>;
 
-  friend class ::S3TestsFixture<FetchS3Object>;
-
-  explicit FetchS3Object(const std::string& name, const minifi::utils::Identifier& uuid, std::unique_ptr<aws::s3::S3RequestSender> s3_request_sender)
-    : S3Processor(name, uuid, logging::LoggerFactory<FetchS3Object>::getLogger(), std::move(s3_request_sender)) {
+  FetchS3Object(core::ProcessorMetadata metadata, S3WrapperFactory s3_wrapper_factory)
+      : S3Processor(std::move(metadata), std::move(s3_wrapper_factory)) {
   }
 
   std::optional<aws::s3::GetObjectRequestParameters> buildFetchS3RequestParams(
-    const std::shared_ptr<core::ProcessContext> &context,
-    const std::shared_ptr<core::FlowFile> &flow_file,
-    const CommonProperties &common_properties) const;
+    const core::ProcessContext& context,
+    const core::FlowFile& flow_file,
+    std::string_view bucket) const;
 
   bool requester_pays_ = false;
 };
 
-}  // namespace processors
-}  // namespace aws
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+}  // namespace org::apache::nifi::minifi::aws::processors

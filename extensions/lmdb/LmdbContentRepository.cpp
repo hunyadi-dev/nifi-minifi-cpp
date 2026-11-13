@@ -1,0 +1,151 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#include "LmdbContentRepository.h"
+
+#include <filesystem>
+#include <iterator>
+#include <memory>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "LmdbStream.h"
+#include "core/Resource.h"
+#include "lmdb.h"
+#include "minifi-cpp/Exception.h"
+#include "minifi-cpp/utils/gsl.h"
+#include "utils/Locations.h"
+#include "minifi-cpp/utils/Literals.h"
+#include "utils/file/FileUtils.h"
+
+namespace org::apache::nifi::minifi::extensions::lmdb {
+
+LmdbContentRepository::Session::Session(std::shared_ptr<LmdbContentRepository> repository) : BufferedContentSession(std::move(repository)) {}
+
+void LmdbContentRepository::Session::commit() {
+  auto lmdb_content_repository = std::dynamic_pointer_cast<LmdbContentRepository>(repository_);
+  if (!lmdb_content_repository) {
+    throw Exception(REPOSITORY_EXCEPTION, "Session's repository is not an LmdbContentRepository");
+  }
+
+  const auto writeResource = [&lmdb_content_repository](const std::shared_ptr<ResourceClaim>& resource_claim, const std::shared_ptr<io::BaseStream>& stream, bool is_append) {
+    auto outStream = lmdb_content_repository->write(*resource_claim, is_append);
+    if (outStream == nullptr) {
+      throw Exception(REPOSITORY_EXCEPTION, "Couldn't open the underlying resource for write: " + resource_claim->getContentFullPath());
+    }
+    const auto size = stream->size();
+    auto lmdb_out_stream = std::dynamic_pointer_cast<LmdbStream>(outStream);
+    if (lmdb_out_stream == nullptr) {
+      throw Exception(REPOSITORY_EXCEPTION, "Couldn't cast output stream to LmdbStream for commit: " + resource_claim->getContentFullPath());
+    }
+    if (outStream->write(stream->getBuffer()) != size) {
+      throw Exception(REPOSITORY_EXCEPTION, "Failed to write " + std::string(is_append ? "appended" : "new") + " resource: " + resource_claim->getContentFullPath());
+    }
+    if (!lmdb_out_stream->commit()) {
+      throw Exception(REPOSITORY_EXCEPTION, "Failed to commit " + std::string(is_append ? "appended" : "new") + " resource: " + resource_claim->getContentFullPath());
+    }
+  };
+
+  for (const auto& resource : managed_resources_) {
+    writeResource(resource.first, resource.second, false);
+  }
+
+  for (const auto& resource : append_state_) {
+    writeResource(resource.first, resource.second.stream, true);
+  }
+
+  managed_resources_.clear();
+  append_state_.clear();
+}
+
+bool LmdbContentRepository::initialize(const std::shared_ptr<minifi::Configure>& configuration) {
+  // Reserve virtual address space for the DB file (max size it can grow to)
+  std::expected<uint64_t, std::error_code> max_db_size;
+  auto max_db_size_str_opt = configuration->get(Configure::nifi_content_repository_lmdb_max_db_size);
+  if (!max_db_size_str_opt || max_db_size_str_opt->empty()) {
+    max_db_size = 10_GiB;
+  } else {
+    max_db_size = parsing::parseDataSize(*max_db_size_str_opt);
+  }
+
+  if (!max_db_size) {
+    logger_->log_error("Invalid max DB size configuration for LMDB Content Repository: {}", *max_db_size_str_opt);
+    return false;
+  }
+
+  const auto working_dir = utils::getMinifiDir();
+
+  std::string value;
+  if (configuration->get(Configure::nifi_dbcontent_repository_directory_default, value) && !value.empty()) {
+    directory_ = value;
+  } else {
+    directory_ = (working_dir / "lmdbcontentrepository").string();
+  }
+  logger_->log_info("Using LMDB Content Repository directory '{}'", directory_);
+
+  return lmdb_wrapper_.initialize(directory_, *max_db_size);
+}
+
+std::shared_ptr<core::ContentSession> LmdbContentRepository::createSession() {
+  return std::make_shared<Session>(sharedFromThis<LmdbContentRepository>());
+}
+
+std::shared_ptr<io::BaseStream> LmdbContentRepository::write(const minifi::ResourceClaim& claim, bool append) {
+  return std::make_shared<LmdbStream>(claim.getContentFullPath(), lmdb_wrapper_, true, append);
+}
+
+std::shared_ptr<io::BaseStream> LmdbContentRepository::read(const minifi::ResourceClaim& claim) {
+  return std::make_shared<LmdbStream>(claim.getContentFullPath(), lmdb_wrapper_, false);
+}
+
+bool LmdbContentRepository::exists(const minifi::ResourceClaim& streamId) {
+  const auto path = streamId.getContentFullPath();
+  return lmdb_wrapper_.exists(path);
+}
+
+bool LmdbContentRepository::removeKey(const std::string& content_path) {
+  return lmdb_wrapper_.removeKey(content_path);
+}
+
+void LmdbContentRepository::clearOrphans() {
+  std::vector<std::string> keys_to_be_deleted;
+
+  {
+    std::lock_guard<std::mutex> lock(count_map_mutex_);
+    lmdb_wrapper_.forEach([this, &keys_to_be_deleted](const MDB_val& key, const MDB_val&) {
+      std::string key_string = std::string(static_cast<char*>(key.mv_data), key.mv_size);
+
+      auto claim_it = count_map_.find(key_string);
+      if (claim_it == count_map_.end() || claim_it->second == 0) {
+        logger_->log_debug("Deleting orphan resource {}", key_string);
+        keys_to_be_deleted.push_back(key_string);
+      }
+    });
+  }
+
+  std::vector<std::string> failed_deletions;
+  for (const auto& key : keys_to_be_deleted) {
+    auto delete_result = removeKey(key);
+    if (!delete_result) {
+      logger_->log_warn("Failed to delete orphan resource {} from LMDB database", key);
+      failed_deletions.push_back(key);
+    }
+  }
+
+  std::lock_guard<std::mutex> lock(purge_list_mutex_);
+  purge_list_.insert(purge_list_.end(), std::make_move_iterator(failed_deletions.begin()), std::make_move_iterator(failed_deletions.end()));
+}
+
+uint64_t LmdbContentRepository::getRepositorySize() const {
+  return utils::file::path_size(directory_);
+}
+
+uint64_t LmdbContentRepository::getRepositoryEntryCount() const {
+  return lmdb_wrapper_.getDbStat().ms_entries;
+}
+
+REGISTER_RESOURCE_AS(LmdbContentRepository, InternalResource, ("LmdbContentRepository", "lmdbcontentrepository"));
+
+}  // namespace org::apache::nifi::minifi::extensions::lmdb

@@ -1,0 +1,72 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#pragma once
+
+#include <mutex>
+#include <utility>
+#include <string>
+#include <memory>
+#include <vector>
+
+#include "sol/sol.hpp"
+#include "core/ProcessSession.h"
+
+#include "LuaScriptEngine.h"
+#include "LuaScriptProcessContext.h"
+#include "LuaScriptException.h"
+#include "LuaLogger.h"
+
+#include "LuaProcessSession.h"
+
+namespace org::apache::nifi::minifi::extensions::lua {
+
+class LuaScriptEngine {
+ public:
+  LuaScriptEngine();
+
+  void eval(const std::string& script);
+  void evalFile(const std::filesystem::path& file_name);
+  void onTrigger(core::ProcessContext& context, core::ProcessSession& session);
+  void initialize(const core::Relationship& success, const core::Relationship& failure, const std::shared_ptr<core::logging::Logger>& logger);
+
+  void setModulePaths(std::vector<std::filesystem::path> module_paths) {
+    module_paths_ = std::move(module_paths);
+  }
+
+  template<typename... Args>
+  void call(const std::string& fn_name, Args&& ...args) {
+    sol::protected_function_result function_result{};
+    try {
+      if (sol::protected_function fn = lua_[fn_name.c_str()]) {
+        function_result = fn(convert(args)...);
+      }
+    } catch (const std::exception& e) {
+      throw LuaScriptException(e.what());
+    }
+    if (!function_result.valid()) {
+      sol::error err = function_result;
+      throw LuaScriptException(err.what());
+    }
+  }
+
+  template<typename T>
+  void bind(const std::string& name, const T& value) {
+    lua_[name.c_str()] = convert(value);
+  }
+
+  template<typename T>
+  T convert(const T& value) {
+    return value;
+  }
+
+ private:
+  void executeScriptWithAppendedModulePaths(std::string& script);
+
+  std::unique_ptr<LuaLogger> lua_logger_;
+  std::vector<std::filesystem::path> module_paths_;
+  sol::state lua_;
+};
+
+}  // namespace org::apache::nifi::minifi::extensions::lua

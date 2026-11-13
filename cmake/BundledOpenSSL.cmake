@@ -1,0 +1,148 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+function(use_openssl SOURCE_DIR BINARY_DIR)
+    message("Using bundled OpenSSL")
+
+    if(APPLE OR WIN32 OR CMAKE_SIZEOF_VOID_P EQUAL 4 OR CMAKE_SYSTEM_PROCESSOR MATCHES "(arm64)|(ARM64)|(aarch64)|(armv8)")
+        set(LIBDIR "lib")
+    else()
+        set(LIBDIR "lib64")
+    endif()
+
+    # Define byproducts
+    set(BYPRODUCT_PREFIX "lib" CACHE STRING "" FORCE)
+    set(OPENSSL_BUILD_SHARED "NO" CACHE STRING "" FORCE)
+
+    if (WIN32)
+        set(BYPRODUCT_SUFFIX ".lib" CACHE STRING "" FORCE)
+    # Due to OpenSSL 3's static linking issue on x86 MacOS platform we make an exception to build a shared library instead
+    elseif (APPLE AND (CMAKE_SYSTEM_PROCESSOR MATCHES "x86_64|amd64|AMD64"))
+        set(BYPRODUCT_SUFFIX ".dylib" CACHE STRING "" FORCE)
+        set(OPENSSL_BUILD_SHARED "YES" CACHE STRING "" FORCE)
+    else()
+        set(BYPRODUCT_SUFFIX ".a" CACHE STRING "" FORCE)
+    endif()
+
+    set(BYPRODUCTS
+            "${LIBDIR}/${BYPRODUCT_PREFIX}ssl${BYPRODUCT_SUFFIX}"
+            "${LIBDIR}/${BYPRODUCT_PREFIX}crypto${BYPRODUCT_SUFFIX}"
+            )
+
+    if (OPENSSL_BUILD_SHARED)
+        set(OPENSSL_SHARED_FLAG "" CACHE STRING "" FORCE)
+    else()
+        set(OPENSSL_SHARED_FLAG "no-shared" CACHE STRING "" FORCE)
+    endif()
+
+    set(OPENSSL_EXTRA_FLAGS
+            no-tests            # Disable tests
+            no-capieng          # disable CAPI engine (legacy)
+            no-docs             # disable docs and manpages
+            no-legacy           # disable legacy modules
+            enable-tfo          # Enable TCP Fast Open
+            no-ssl              # disable SSLv3
+            no-engine)          # disable Engine API as it is deprecated since OpenSSL 3.0 and not FIPS compatible
+
+    set(OPENSSL_BIN_DIR "${BINARY_DIR}/thirdparty/openssl-install" CACHE STRING "" FORCE)
+
+    FOREACH(BYPRODUCT ${BYPRODUCTS})
+        LIST(APPEND OPENSSL_LIBRARIES_LIST "${OPENSSL_BIN_DIR}/${BYPRODUCT}")
+    ENDFOREACH(BYPRODUCT)
+
+    if (OPENSSL_BUILD_SHARED)
+        install(FILES ${OPENSSL_LIBRARIES_LIST} DESTINATION bin COMPONENT bin)
+    endif()
+
+    set(OPENSSL_VERSION "3.6.5" CACHE STRING "" FORCE)
+
+    if (WIN32)
+        find_program(JOM_EXECUTABLE_PATH
+            NAMES jom.exe
+            PATHS ENV PATH
+            NO_DEFAULT_PATH)
+        if(JOM_EXECUTABLE_PATH)
+            include(ProcessorCount)
+            processorcount(jobs)
+            set(OPENSSL_BUILD_COMMAND ${JOM_EXECUTABLE_PATH} -j${jobs})
+            set(OPENSSL_WINDOWS_COMPILE_FLAGS /FS)
+        else()
+            message("Using nmake for OpenSSL build")
+            set(OPENSSL_BUILD_COMMAND nmake)
+            set(OPENSSL_WINDOWS_COMPILE_FLAGS "")
+        endif()
+        ExternalProject_Add(
+                openssl-external
+                URL "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
+                URL_HASH "SHA256=a2157c2830efdec3788939b00c9b0638306d3f0bbb76dc4832ee503bb397df98"
+                SOURCE_DIR "${BINARY_DIR}/thirdparty/openssl-src"
+                BUILD_IN_SOURCE true
+                CONFIGURE_COMMAND perl Configure "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}" "CFLAGS=${PASSTHROUGH_CMAKE_C_FLAGS} ${OPENSSL_WINDOWS_COMPILE_FLAGS}" "CXXFLAGS=${PASSTHROUGH_CMAKE_CXX_FLAGS} ${OPENSSL_WINDOWS_COMPILE_FLAGS}" ${OPENSSL_SHARED_FLAG} ${OPENSSL_EXTRA_FLAGS} "--prefix=${OPENSSL_BIN_DIR}" "--openssldir=${OPENSSL_BIN_DIR}"
+                BUILD_BYPRODUCTS ${OPENSSL_LIBRARIES_LIST}
+                EXCLUDE_FROM_ALL TRUE
+                BUILD_COMMAND ${OPENSSL_BUILD_COMMAND}
+                INSTALL_COMMAND nmake install
+                DOWNLOAD_NO_PROGRESS TRUE
+                TLS_VERIFY TRUE
+            )
+    else()
+        ExternalProject_Add(
+                openssl-external
+                URL "https://github.com/openssl/openssl/releases/download/openssl-${OPENSSL_VERSION}/openssl-${OPENSSL_VERSION}.tar.gz"
+                URL_HASH "SHA256=a2157c2830efdec3788939b00c9b0638306d3f0bbb76dc4832ee503bb397df98"
+                SOURCE_DIR "${BINARY_DIR}/thirdparty/openssl-src"
+                BUILD_IN_SOURCE true
+                CONFIGURE_COMMAND ./Configure "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}" "CFLAGS=${PASSTHROUGH_CMAKE_C_FLAGS} -fPIC" "CXXFLAGS=${PASSTHROUGH_CMAKE_CXX_FLAGS} -fPIC" ${OPENSSL_SHARED_FLAG} ${OPENSSL_EXTRA_FLAGS} "--prefix=${OPENSSL_BIN_DIR}" "--openssldir=${OPENSSL_BIN_DIR}"
+                BUILD_BYPRODUCTS ${OPENSSL_LIBRARIES_LIST}
+                EXCLUDE_FROM_ALL TRUE
+                DOWNLOAD_NO_PROGRESS TRUE
+                TLS_VERIFY TRUE
+        )
+    endif()
+
+    # Set variables
+    set(OPENSSL_FOUND "YES" CACHE STRING "" FORCE)
+    set(OPENSSL_INCLUDE_DIR "${OPENSSL_BIN_DIR}/include" CACHE STRING "" FORCE)
+    set(OPENSSL_LIBRARIES "${OPENSSL_LIBRARIES_LIST};${CMAKE_DL_LIBS}"  CACHE STRING "" FORCE)
+    set(OPENSSL_CRYPTO_LIBRARY "${OPENSSL_BIN_DIR}/${LIBDIR}/${BYPRODUCT_PREFIX}crypto${BYPRODUCT_SUFFIX}" CACHE STRING "" FORCE)
+    set(OPENSSL_SSL_LIBRARY "${OPENSSL_BIN_DIR}/${LIBDIR}/${BYPRODUCT_PREFIX}ssl${BYPRODUCT_SUFFIX}" CACHE STRING "" FORCE)
+
+    # Set exported variables for FindPackage.cmake
+    set(PASSTHROUGH_VARIABLES ${PASSTHROUGH_VARIABLES} "-DEXPORTED_OPENSSL_INCLUDE_DIR=${OPENSSL_INCLUDE_DIR}" CACHE STRING "" FORCE)
+    string(REPLACE ";" "%" OPENSSL_LIBRARIES_EXPORT "${OPENSSL_LIBRARIES}")
+    set(PASSTHROUGH_VARIABLES ${PASSTHROUGH_VARIABLES} "-DEXPORTED_OPENSSL_LIBRARIES=${OPENSSL_LIBRARIES_EXPORT}" CACHE STRING "" FORCE)
+    set(PASSTHROUGH_VARIABLES ${PASSTHROUGH_VARIABLES} "-DEXPORTED_OPENSSL_CRYPTO_LIBRARY=${OPENSSL_CRYPTO_LIBRARY}" CACHE STRING "" FORCE)
+    set(PASSTHROUGH_VARIABLES ${PASSTHROUGH_VARIABLES} "-DEXPORTED_OPENSSL_SSL_LIBRARY=${OPENSSL_SSL_LIBRARY}" CACHE STRING "" FORCE)
+    set(PASSTHROUGH_VARIABLES ${PASSTHROUGH_VARIABLES} "-DEXPORTED_OPENSSL_VERSION=${OPENSSL_VERSION}" CACHE STRING "" FORCE)
+
+    # Create imported targets
+    file(MAKE_DIRECTORY ${OPENSSL_INCLUDE_DIR})
+
+    add_library(OpenSSL::Crypto STATIC IMPORTED)
+    set_target_properties(OpenSSL::Crypto PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${OPENSSL_INCLUDE_DIR}")
+    set_target_properties(OpenSSL::Crypto PROPERTIES
+            IMPORTED_LINK_INTERFACE_LANGUAGES "C"
+            IMPORTED_LOCATION "${OPENSSL_BIN_DIR}/${LIBDIR}/${BYPRODUCT_PREFIX}crypto${BYPRODUCT_SUFFIX}")
+    add_dependencies(OpenSSL::Crypto openssl-external)
+
+    add_library(OpenSSL::SSL STATIC IMPORTED)
+    set_target_properties(OpenSSL::SSL PROPERTIES
+            INTERFACE_INCLUDE_DIRECTORIES "${OPENSSL_INCLUDE_DIR}")
+    set_target_properties(OpenSSL::SSL PROPERTIES
+            IMPORTED_LINK_INTERFACE_LANGUAGES "C"
+            IMPORTED_LOCATION "${OPENSSL_BIN_DIR}/${LIBDIR}/${BYPRODUCT_PREFIX}ssl${BYPRODUCT_SUFFIX}")
+    add_dependencies(OpenSSL::SSL openssl-external)
+    set_property(TARGET OpenSSL::SSL APPEND PROPERTY INTERFACE_LINK_LIBRARIES OpenSSL::Crypto)
+
+    if(WIN32)
+        set_property(TARGET OpenSSL::Crypto APPEND PROPERTY INTERFACE_LINK_LIBRARIES crypt32.lib )
+        set_property(TARGET OpenSSL::SSL APPEND PROPERTY INTERFACE_LINK_LIBRARIES crypt32.lib)
+    endif()
+
+    include(BundledOpenSSLFips)
+    set(FIND_OPENSSL_PATH "${CMAKE_SOURCE_DIR}/cmake/ssl/FindOpenSSL.cmake" CACHE INTERNAL "Location of the FindOpenSSL file, for other dependencies")
+    set(FIND_CRYPTO_PATH "${CMAKE_SOURCE_DIR}/cmake/ssl/FindCrypto.cmake" CACHE INTERNAL "Location of the FindCrypto file, for other dependencies")
+
+endfunction(use_openssl)

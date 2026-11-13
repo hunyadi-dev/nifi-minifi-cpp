@@ -1,22 +1,6 @@
-/**
- * @file AttributesToJSON.cpp
- * AttributesToJSON class implementation
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #include "AttributesToJSON.h"
 
 #include <unordered_set>
@@ -25,74 +9,34 @@
 #include "utils/StringUtils.h"
 #include "utils/ProcessorConfigUtils.h"
 #include "range/v3/algorithm/find.hpp"
+#include "core/ProcessSession.h"
+#include "minifi-cpp/core/ProcessContext.h"
 #include "core/Resource.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace processors {
-
-const core::Property AttributesToJSON::AttributesList(
-  core::PropertyBuilder::createProperty("Attributes List")
-    ->withDescription("Comma separated list of attributes to be included in the resulting JSON. "
-                      "If this value is left empty then all existing Attributes will be included. This list of attributes is case sensitive. "
-                      "If an attribute specified in the list is not found it will be be emitted to the resulting JSON with an empty string or NULL value.")
-    ->build());
-
-const core::Property AttributesToJSON::AttributesRegularExpression(
-  core::PropertyBuilder::createProperty("Attributes Regular Expression")
-    ->withDescription("Regular expression that will be evaluated against the flow file attributes to select the matching attributes. "
-                      "Both the matching attributes and the selected attributes from the Attributes List property will be written in the resulting JSON.")
-    ->build());
-
-const core::Property AttributesToJSON::Destination(
-  core::PropertyBuilder::createProperty("Destination")
-    ->withDescription("Control if JSON value is written as a new flowfile attribute 'JSONAttributes' or written in the flowfile content. "
-                      "Writing to flowfile content will overwrite any existing flowfile content.")
-    ->isRequired(true)
-    ->withDefaultValue<std::string>(toString(WriteDestination::FLOWFILE_ATTRIBUTE))
-    ->withAllowableValues<std::string>(WriteDestination::values())
-    ->build());
-
-const core::Property AttributesToJSON::IncludeCoreAttributes(
-  core::PropertyBuilder::createProperty("Include Core Attributes")
-    ->withDescription("Determines if the FlowFile core attributes which are contained in every FlowFile should be included in the final JSON value generated.")
-    ->isRequired(true)
-    ->withDefaultValue<bool>(true)
-    ->build());
-
-const core::Property AttributesToJSON::NullValue(
-  core::PropertyBuilder::createProperty("Null Value")
-    ->withDescription("If true a non existing selected attribute will be NULL in the resulting JSON. If false an empty string will be placed in the JSON.")
-    ->isRequired(true)
-    ->withDefaultValue<bool>(false)
-    ->build());
-
-const core::Relationship AttributesToJSON::Success("success", "All FlowFiles received are routed to success");
+namespace org::apache::nifi::minifi::processors {
 
 void AttributesToJSON::initialize() {
-  setSupportedProperties({
-    AttributesList,
-    AttributesRegularExpression,
-    Destination,
-    IncludeCoreAttributes,
-    NullValue
-  });
-  setSupportedRelationships({Success});
+  setSupportedProperties(Properties);
+  setSupportedRelationships(Relationships);
 }
 
-void AttributesToJSON::onSchedule(core::ProcessContext* context, core::ProcessSessionFactory* /*sessionFactory*/) {
-  std::string value;
-  if (context->getProperty(AttributesList.getName(), value) && !value.empty()) {
-    attribute_list_ = utils::StringUtils::splitAndTrimRemovingEmpty(value, ",");
-  }
-  if (context->getProperty(AttributesRegularExpression.getName(), value) && !value.empty()) {
-    attributes_regular_expression_ = std::regex(value);
-  }
-  write_destination_ = WriteDestination::parse(utils::parsePropertyWithAllowableValuesOrThrow(*context, Destination.getName(), WriteDestination::values()).c_str());
-  context->getProperty(IncludeCoreAttributes.getName(), include_core_attributes_);
-  context->getProperty(NullValue.getName(), null_value_);
+void AttributesToJSON::onSchedule(core::ProcessContext& context, core::ProcessSessionFactory&) {
+  attribute_list_ = context.getProperty(AttributesList)
+      | utils::transform([](const auto& attributes_list_str) { return utils::string::splitAndTrimRemovingEmpty(attributes_list_str, ","); })
+      | utils::valueOrElse([] { return std::vector<std::string>{}; });
+
+  attributes_regular_expression_ = context.getProperty(AttributesRegularExpression)
+      | utils::transform([](auto s) { return utils::Regex{std::move(s)}; })
+      | utils::toOptional();
+
+  write_destination_ = utils::parseEnumProperty<attributes_to_json::WriteDestination>(context, Destination);
+
+  include_core_attributes_ = context.getProperty(IncludeCoreAttributes)
+      | utils::andThen(parsing::parseBool)
+      | utils::orThrow("AttributesToJSON::IncludeCoreAttributes should be available in onSchedule");
+  null_value_ = context.getProperty(NullValue)
+      | utils::andThen(parsing::parseBool)
+      | utils::orThrow("AttributesToJSON::NullValue should be available in onSchedule");
 }
 
 bool AttributesToJSON::isCoreAttributeToBeFiltered(const std::string& attribute) const {
@@ -113,7 +57,7 @@ std::optional<std::unordered_set<std::string>> AttributesToJSON::getAttributesTo
 
   if (attributes_regular_expression_) {
     for (const auto& [key, value] : flowfile_attributes) {
-      if (std::regex_match(key, attributes_regular_expression_.value())) {
+      if (utils::regexMatch(key, attributes_regular_expression_.value())) {
         attributes.insert(key);
       }
     }
@@ -122,7 +66,7 @@ std::optional<std::unordered_set<std::string>> AttributesToJSON::getAttributesTo
   return attributes;
 }
 
-void AttributesToJSON::addAttributeToJson(rapidjson::Document& document, const std::string& key, const std::optional<std::string>& value) {
+void AttributesToJSON::addAttributeToJson(rapidjson::Document& document, const std::string& key, const std::optional<std::string>& value) const {
   rapidjson::Value json_key(key.c_str(), document.GetAllocator());
   rapidjson::Value json_val;
   if (value || !null_value_) {
@@ -153,30 +97,24 @@ std::string AttributesToJSON::buildAttributeJsonData(const core::FlowFile::Attri
   return buffer.GetString();
 }
 
-void AttributesToJSON::onTrigger(core::ProcessContext* /*context*/, core::ProcessSession* session) {
-  auto flow_file = session->get();
+void AttributesToJSON::onTrigger(core::ProcessContext&, core::ProcessSession& session) {
+  auto flow_file = session.get();
   if (!flow_file) {
     return;
   }
 
   auto json_data = buildAttributeJsonData(*flow_file->getAttributesPtr());
-  if (write_destination_ == WriteDestination::FLOWFILE_ATTRIBUTE) {
-    logger_->log_debug("Writing the following attribute data to JSONAttributes attribute: %s", json_data);
-    session->putAttribute(flow_file, "JSONAttributes", json_data);
-    session->transfer(flow_file, Success);
+  if (write_destination_ == attributes_to_json::WriteDestination::FLOWFILE_ATTRIBUTE) {
+    logger_->log_debug("Writing the following attribute data to JSONAttributes attribute: {}", json_data);
+    session.putAttribute(*flow_file, "JSONAttributes", json_data);
+    session.transfer(flow_file, Success);
   } else {
-    logger_->log_debug("Writing the following attribute data to flowfile: %s", json_data);
-    AttributesToJSON::WriteCallback callback(json_data);
-    session->write(flow_file, &callback);
-    session->transfer(flow_file, Success);
+    logger_->log_debug("Writing the following attribute data to flowfile: {}", json_data);
+    session.writeBuffer(flow_file, json_data);
+    session.transfer(flow_file, Success);
   }
 }
 
-REGISTER_RESOURCE(AttributesToJSON, "Generates a JSON representation of the input FlowFile Attributes. "
-  "The resulting JSON can be written to either a new Attribute 'JSONAttributes' or written to the FlowFile as content.");
+REGISTER_RESOURCE(AttributesToJSON, Processor);
 
-}  // namespace processors
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+}  // namespace org::apache::nifi::minifi::processors

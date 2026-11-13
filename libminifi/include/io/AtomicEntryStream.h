@@ -1,22 +1,7 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef LIBMINIFI_INCLUDE_IO_ATOMICENTRYSTREAM_H_
-#define LIBMINIFI_INCLUDE_IO_ATOMICENTRYSTREAM_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
 
 #include <memory>
 #include <vector>
@@ -24,30 +9,25 @@
 #include <cstring>
 #include <algorithm>
 
-#include "BaseStream.h"
+#include "io/BaseStream.h"
 #include "core/repository/AtomicRepoEntries.h"
-#include "Exception.h"
-#include "core/logging/LoggerConfiguration.h"
-#include "utils/gsl.h"
+#include "minifi-cpp/Exception.h"
+#include "core/logging/LoggerFactory.h"
+#include "minifi-cpp/utils/gsl.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace io {
+namespace org::apache::nifi::minifi::io {
 
 template<typename T>
-class AtomicEntryStream : public BaseStream {
+class AtomicEntryStream : public BaseStreamImpl {
  public:
   AtomicEntryStream(const T key, core::repository::AtomicEntry<T> *entry)
       : length_(0),
         offset_(0),
         key_(key),
-        entry_(entry),
-        logger_(logging::LoggerFactory<AtomicEntryStream()>::getLogger()) {
+        entry_(entry) {
     core::repository::RepoValue<T> *value;
     if (entry_->getValue(key, &value)) {
-      length_ = value->getBufferSize();
+      length_ = value->getBuffer().size();
       entry_->decrementOwnership();
       invalid_stream_ = false;
     } else {
@@ -81,7 +61,7 @@ class AtomicEntryStream : public BaseStream {
    * @param buf buffer in which we extract data
    * @param buflen
    */
-  size_t read(uint8_t *buf, size_t buflen) override;
+  size_t read(std::span<std::byte> buf) override;
 
   /**
    * writes value to stream
@@ -99,7 +79,7 @@ class AtomicEntryStream : public BaseStream {
   std::recursive_mutex entry_lock_;
 
   // Logger
-  std::shared_ptr<logging::Logger> logger_;
+  std::shared_ptr<core::logging::Logger> logger_ = core::logging::LoggerFactory<AtomicEntryStream>::getLogger();
 };
 
 template<typename T>
@@ -120,8 +100,9 @@ template<typename T>
 size_t AtomicEntryStream<T>::write(const uint8_t *value, size_t size) {
   if (size == 0) return 0;
   if (!value || invalid_stream_) return STREAM_ERROR;
+  const auto out_span = std::as_bytes(std::span(value, size));
   std::lock_guard<std::recursive_mutex> lock(entry_lock_);
-  if (entry_->insert(key_, const_cast<uint8_t*>(value), size)) {
+  if (entry_->insert(key_, out_span)) {
     offset_ += size;
     if (offset_ > length_) {
       length_ = offset_;
@@ -132,23 +113,24 @@ size_t AtomicEntryStream<T>::write(const uint8_t *value, size_t size) {
 }
 
 template<typename T>
-size_t AtomicEntryStream<T>::read(uint8_t *buf, size_t buflen) {
-  if (buflen == 0) {
+size_t AtomicEntryStream<T>::read(std::span<std::byte> buf) {
+  if (buf.empty()) {
     return 0;
   }
-  if (nullptr != buf && !invalid_stream_) {
+  if (!invalid_stream_) {
     std::lock_guard<std::recursive_mutex> lock(entry_lock_);
-    auto len = buflen;
+    auto len = buf.size();
     core::repository::RepoValue<T> *value;
     if (entry_->getValue(key_, &value)) {
-      if (offset_ + len > value->getBufferSize()) {
-        len = gsl::narrow<int>(value->getBufferSize()) - gsl::narrow<int>(offset_);
+      if (offset_ + len > value->getBuffer().size()) {
+        len = value->getBuffer().size() - offset_;
         if (len <= 0) {
           entry_->decrementOwnership();
           return 0;
         }
       }
-      std::memcpy(buf, reinterpret_cast<uint8_t*>(const_cast<uint8_t*>(value->getBuffer()) + offset_), len);
+      const auto src_buffer = value->getBuffer().subspan(offset_, len);
+      std::memcpy(buf.data(), src_buffer.data(), src_buffer.size());
       offset_ += len;
       entry_->decrementOwnership();
       return len;
@@ -157,10 +139,4 @@ size_t AtomicEntryStream<T>::read(uint8_t *buf, size_t buflen) {
   return STREAM_ERROR;
 }
 
-}  // namespace io
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // LIBMINIFI_INCLUDE_IO_ATOMICENTRYSTREAM_H_
+}  // namespace org::apache::nifi::minifi::io

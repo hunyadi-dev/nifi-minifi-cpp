@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#include <mutex>
+
+#include "unit/TestBase.h"
+#include "c2/C2Agent.h"
+#include "protocols/RESTProtocol.h"
+#include "protocols/RESTSender.h"
+#include "integration/HTTPIntegrationBase.h"
+#include "integration/HTTPHandlers.h"
+#include "unit/TestUtils.h"
+#include "properties/Configuration.h"
+#include "unit/Catch.h"
+
+namespace org::apache::nifi::minifi::test {
+
+class LightWeightC2Handler : public StoppingHeartbeatHandler {
+ public:
+  explicit LightWeightC2Handler(std::shared_ptr<minifi::Configure> configuration)
+    : StoppingHeartbeatHandler(std::move(configuration)) {
+  }
+
+  void handleHeartbeat(const rapidjson::Document& root, struct mg_connection *conn) override {
+    std::lock_guard<std::mutex> lock(call_mutex_);
+    if (calls_ == 0) {
+      verifyJsonHasAgentManifest(root);
+    } else {
+      REQUIRE(root.HasMember("agentInfo"));
+      REQUIRE(!root["agentInfo"].HasMember("agentManifest"));
+    }
+    calls_++;
+    sendStartStopOperation(conn);
+  }
+
+ private:
+  std::mutex call_mutex_;
+  std::size_t calls_{0};
+};
+
+class VerifyLightWeightC2Heartbeat : public VerifyC2Base {
+ public:
+  using VerifyC2Base::VerifyC2Base;
+  void testSetup() override {
+    LogTestController::getInstance().setTrace<minifi::c2::C2Agent>();
+    LogTestController::getInstance().setDebug<minifi::c2::RESTSender>();
+    LogTestController::getInstance().setDebug<minifi::c2::RESTProtocol>();
+    VerifyC2Base::testSetup();
+  }
+
+  void runAssertions() override {
+    REQUIRE(utils::verifyLogLinePresenceInPollTime(20s,
+        "Received Ack from Server",
+        "C2Agent] [debug] Stopping processor 2438e3c8-015a-1000-79ca-83af40ec1991",
+        "C2Agent] [debug] Stopping all processors",
+        "C2Agent] [debug] Starting processor 2438e3c8-015a-1000-79ca-83af40ec1991",
+        "C2Agent] [debug] Starting all processors",
+        "C2Agent] [debug] Stopping processor 2438e3c8-015a-1000-79ca-83af40ec1992",
+        "C2Agent] [debug] Starting processor 2438e3c8-015a-1000-79ca-83af40ec1992",
+        "[error] Could not get execute requested callback for component \"9998e3c8-015a-1000-79ca-83af40ec1999\", because component was not found",
+        "[warning] Processor start/stop request missing 'processorId' argument"));
+    CHECK(utils::countLogOccurrencesUntil("C2Agent] [debug] Stopping all processors", 2, 10s, 100ms));
+    CHECK(utils::countLogOccurrencesUntil("C2Agent] [debug] Starting all processors", 2, 10s, 100ms));
+  }
+
+  void configureFullHeartbeat() override {
+    configuration->set(minifi::Configuration::nifi_c2_full_heartbeat, "false");
+    configuration->set(minifi::Configuration::nifi_c2_agent_heartbeat_period, "100");
+  }
+};
+
+TEST_CASE("Verify C2 lightweight heartbeat and stop operation", "[c2test]") {
+  VerifyLightWeightC2Heartbeat harness(std::filesystem::path(TEST_RESOURCES) / "C2VerifyHeartbeatAndStopSecure.yml");
+  LightWeightC2Handler responder(harness.getConfiguration());
+  SECTION("Secure") {
+    harness.setKeyDir(TEST_RESOURCES);
+    harness.setUrl("https://localhost:0/heartbeat", &responder);
+  }
+  SECTION("Insecure") {
+    harness.setUrl("http://localhost:0/heartbeat", &responder);
+  }
+  harness.run();
+}
+
+}  // namespace org::apache::nifi::minifi::test

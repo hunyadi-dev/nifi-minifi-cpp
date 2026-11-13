@@ -1,19 +1,6 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include "properties/PropertiesFile.h"
 
@@ -22,27 +9,24 @@
 #include <utility>
 #include "utils/StringUtils.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
+namespace org::apache::nifi::minifi {
 
 PropertiesFile::Line::Line(std::string line) : line_(line) {
-  line = utils::StringUtils::trim(line);
+  line = utils::string::trim(line);
   if (line.empty() || line[0] == '#') { return; }
 
   size_t index_of_first_equals_sign = line.find('=');
   if (index_of_first_equals_sign == std::string::npos) { return; }
 
-  std::string key = utils::StringUtils::trim(line.substr(0, index_of_first_equals_sign));
+  std::string key = utils::string::trim(line.substr(0, index_of_first_equals_sign));
   if (key.empty()) { return; }
 
   key_ = key;
-  value_ = utils::StringUtils::trim(line.substr(index_of_first_equals_sign + 1));
+  value_ = utils::string::trim(line.substr(index_of_first_equals_sign + 1));
 }
 
 PropertiesFile::Line::Line(std::string key, std::string value)
-  : line_{utils::StringUtils::join_pack(key, "=", value)}, key_{std::move(key)}, value_{std::move(value)} {
+  : line_{utils::string::join_pack(key, "=", value)}, key_{std::move(key)}, value_{std::move(value)} {
 }
 
 bool PropertiesFile::Line::isValidKey(const std::string &key) {
@@ -131,7 +115,7 @@ int PropertiesFile::erase(const std::string& key) {
   return gsl::narrow<int>(num_removed);
 }
 
-void PropertiesFile::writeTo(const std::string& file_path) const {
+void PropertiesFile::writeTo(const std::filesystem::path& file_path) const {
   try {
     std::ofstream file{file_path};
     file.exceptions(std::ios::failbit | std::ios::badbit);
@@ -140,7 +124,7 @@ void PropertiesFile::writeTo(const std::string& file_path) const {
       file << line.getLine() << '\n';
     }
   } catch (const std::exception&) {
-    throw std::runtime_error{"Could not write to file " + file_path};
+    throw std::runtime_error{"Could not write to file " + file_path.string()};
   }
 }
 
@@ -152,7 +136,4 @@ PropertiesFile::Lines::const_iterator PropertiesFile::end() const {
   return lines_.end();
 }
 
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+}  // namespace org::apache::nifi::minifi

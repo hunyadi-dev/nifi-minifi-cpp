@@ -1,19 +1,6 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 function(use_bundled_libsodium SOURCE_DIR BINARY_DIR)
     message("Using bundled libsodium")
@@ -40,15 +27,15 @@ function(use_bundled_libsodium SOURCE_DIR BINARY_DIR)
     endif()
 
     # Build project
-    set(LIBSODIUM_OFFICIAL_MIRROR_URL https://download.libsodium.org/libsodium/releases/libsodium-1.0.18.tar.gz)
-    set(LIBSODIUM_GITHUB_MIRROR_URL https://github.com/jedisct1/libsodium/releases/download/1.0.18-RELEASE/libsodium-1.0.18.tar.gz)
-    set(LIBSODIUM_GENTOO_MIRROR_URL https://gentoo.osuosl.org/distfiles/libsodium-1.0.18.tar.gz)
-    set(LIBSODIUM_URL_HASH "SHA256=6f504490b342a4f8a4c4a02fc9b866cbef8622d5df4e5452b46be121e46636c1")
+    set(LIBSODIUM_OFFICIAL_MIRROR_URL https://download.libsodium.org/libsodium/releases/libsodium-1.0.22.tar.gz)
+    set(LIBSODIUM_GITHUB_MIRROR_URL https://github.com/jedisct1/libsodium/releases/download/1.0.22-RELEASE/libsodium-1.0.22.tar.gz)
+    set(LIBSODIUM_GENTOO_MIRROR_URL https://gentoo.osuosl.org/distfiles/libsodium-1.0.22.tar.gz)
+    set(LIBSODIUM_URL_HASH "SHA256=adbdd8f16149e81ac6078a03aca6fc03b592b89ef7b5ed83841c086191be3349")
 
     if (WIN32)
         ExternalProject_Add(
                 libsodium-external
-                URL "${LIBSODIUM_OFFICIAL_MIRROR_URL} ${LIBSODIUM_GITHUB_MIRROR_URL} ${LIBSODIUM_GENTOO_MIRROR_URL}"
+                URL "${LIBSODIUM_OFFICIAL_MIRROR_URL}" "${LIBSODIUM_GITHUB_MIRROR_URL}" "${LIBSODIUM_GENTOO_MIRROR_URL}"
                 URL_HASH ${LIBSODIUM_URL_HASH}
                 SOURCE_DIR "${BINARY_DIR}/thirdparty/libsodium-src"
                 LIST_SEPARATOR % # This is needed for passing semicolon-separated lists
@@ -56,13 +43,15 @@ function(use_bundled_libsodium SOURCE_DIR BINARY_DIR)
                 PATCH_COMMAND ${PC}
                 BUILD_BYPRODUCTS "${LIBSODIUM_BIN_DIR}/${BYPRODUCT}"
                 EXCLUDE_FROM_ALL TRUE
+                DOWNLOAD_NO_PROGRESS TRUE
+                TLS_VERIFY TRUE
         )
     else()
         set(CONFIGURE_COMMAND ./configure --disable-pie --enable-minimal "--prefix=${LIBSODIUM_BIN_DIR}")
 
         ExternalProject_Add(
                 libsodium-external
-                URL "${LIBSODIUM_OFFICIAL_MIRROR_URL} ${LIBSODIUM_GITHUB_MIRROR_URL} ${LIBSODIUM_GENTOO_MIRROR_URL}"
+                URL "${LIBSODIUM_OFFICIAL_MIRROR_URL}" "${LIBSODIUM_GITHUB_MIRROR_URL}" "${LIBSODIUM_GENTOO_MIRROR_URL}"
                 URL_HASH ${LIBSODIUM_URL_HASH}
                 BUILD_IN_SOURCE true
                 SOURCE_DIR "${BINARY_DIR}/thirdparty/libsodium-src"
@@ -75,6 +64,8 @@ function(use_bundled_libsodium SOURCE_DIR BINARY_DIR)
                 PATCH_COMMAND ""
                 STEP_TARGETS build
                 EXCLUDE_FROM_ALL TRUE
+                DOWNLOAD_NO_PROGRESS TRUE
+                TLS_VERIFY TRUE
         )
     endif()
 
@@ -90,8 +81,8 @@ function(use_bundled_libsodium SOURCE_DIR BINARY_DIR)
     # Create imported targets
     file(MAKE_DIRECTORY ${LIBSODIUM_INCLUDE_DIRS})
 
-    add_library(libsodium STATIC IMPORTED)
-    set_target_properties(libsodium PROPERTIES IMPORTED_LOCATION "${LIBSODIUM_LIBRARIES}")
-    add_dependencies(libsodium libsodium-external)
-    set_property(TARGET libsodium APPEND PROPERTY INTERFACE_INCLUDE_DIRECTORIES "${LIBSODIUM_INCLUDE_DIRS}")
+    add_library(libsodium::libsodium STATIC IMPORTED)
+    set_target_properties(libsodium::libsodium PROPERTIES IMPORTED_LOCATION "${LIBSODIUM_LIBRARIES}")
+    add_dependencies(libsodium::libsodium libsodium-external)
+    set_property(TARGET libsodium::libsodium APPEND PROPERTY INTERFACE_INCLUDE_DIRECTORIES "${LIBSODIUM_INCLUDE_DIRS}")
 endfunction(use_bundled_libsodium)

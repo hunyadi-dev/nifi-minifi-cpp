@@ -1,22 +1,6 @@
-/**
- * @file ProcessSession.cpp
- * ProcessSession class implementation
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #include "core/ProcessSession.h"
 
 #include <algorithm>
@@ -31,8 +15,11 @@
 #include <vector>
 
 #include "core/ProcessSessionReadCallback.h"
+#include "core/Processor.h"
+#include "io/StreamPipe.h"
 #include "io/StreamSlice.h"
-#include "utils/gsl.h"
+#include "minifi-api.h"
+#include "minifi-cpp/utils/gsl.h"
 
 /* This implementation is only for native Windows systems.  */
 #if (defined _WIN32 || defined __WIN32__) && !defined __CYGWIN__
@@ -52,38 +39,57 @@ int getpagesize(void) {
   // GetSystemInfo(&system_info);
   // return system_info.dwPageSize;
 }
+#else
+#include <unistd.h>
 #endif
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace core {
+namespace org::apache::nifi::minifi::core {
 
-std::shared_ptr<utils::IdGenerator> ProcessSession::id_generator_ = utils::IdGenerator::getIdGenerator();
+std::shared_ptr<utils::IdGenerator> ProcessSessionImpl::id_generator_ = utils::IdGenerator::getIdGenerator();
 
-ProcessSession::~ProcessSession() {
+ProcessSessionImpl::ProcessSessionImpl(std::shared_ptr<ProcessContext> processContext)
+        : process_context_(std::move(processContext)),
+          logger_(logging::LoggerFactory<ProcessSession>::getLogger()),
+          stateManager_(process_context_->getStateManager()) {
+  logger_->log_trace("ProcessSession created for {}", process_context_->getProcessor().getName());
+  auto repo = process_context_->getProvenanceRepository();
+  provenance_report_ = std::make_shared<provenance::ProvenanceReporterImpl>(repo, process_context_->getProcessor().getUUID(), process_context_->getProcessor().getName());
+  content_session_ = process_context_->getContentRepository()->createSession();
+
+  if (stateManager_ && !stateManager_->beginTransaction()) {
+    throw Exception(PROCESS_SESSION_EXCEPTION, "State manager transaction could not be initiated.");
+  }
+}
+
+ProcessSessionImpl::~ProcessSessionImpl() {
+  if (stateManager_ && stateManager_->isTransactionInProgress()) {
+    logger_->log_critical("Session has ended without decision on state (commit or rollback).");
+    std::terminate();
+  }
+  if (stateManager_) {
+    process_context_->setSessionStateManager(nullptr);
+    stateManager_ = nullptr;
+  }
   removeReferences();
 }
 
-void ProcessSession::add(const std::shared_ptr<core::FlowFile> &record) {
+void ProcessSessionImpl::add(const std::shared_ptr<core::FlowFile> &record) {
   utils::Identifier uuid = record->getUUID();
-  if (_updatedFlowFiles.find(uuid) != _updatedFlowFiles.end()) {
+  if (updated_flowfiles_.contains(uuid)) {
     throw Exception(ExceptionType::PROCESSOR_EXCEPTION, "Mustn't add file that was provided by this session");
   }
-  _addedFlowFiles[uuid] = record;
+  added_flowfiles_[uuid].flow_file = record;
   record->setDeleted(false);
 }
 
-std::shared_ptr<core::FlowFile> ProcessSession::create(const std::shared_ptr<core::FlowFile> &parent) {
-  auto record = std::make_shared<FlowFileRecord>();
-  auto flow_version = process_context_->getProcessorNode()->getFlowIdentifier();
+std::shared_ptr<core::FlowFile> ProcessSessionImpl::create(const core::FlowFile* const parent) {
+  auto record = std::make_shared<FlowFileRecordImpl>();
+  auto flow_version = process_context_->getProcessor().getFlowIdentifier();
   if (flow_version != nullptr) {
     record->setAttribute(SpecialFlowAttribute::FLOW_ID, flow_version->getFlowId());
   }
 
   if (parent) {
-    // Copy attributes
     for (const auto& attribute : parent->getAttributes()) {
       if (attribute.first == SpecialFlowAttribute::ALTERNATE_IDENTIFIER || attribute.first == SpecialFlowAttribute::DISCARD_REASON || attribute.first == SpecialFlowAttribute::UUID) {
         // Do not copy special attributes from parent
@@ -91,48 +97,48 @@ std::shared_ptr<core::FlowFile> ProcessSession::create(const std::shared_ptr<cor
       }
       record->setAttribute(attribute.first, attribute.second);
     }
-    record->setLineageStartDate(parent->getlineageStartDate());
+    record->setLineageStartDate(parent->getLineageStartDate());
     record->setLineageIdentifiers(parent->getlineageIdentifiers());
-    parent->getlineageIdentifiers().push_back(parent->getUUID());
+    record->getlineageIdentifiers().push_back(parent->getUUID());
   }
 
   utils::Identifier uuid = record->getUUID();
-  _addedFlowFiles[uuid] = record;
-  logger_->log_debug("Create FlowFile with UUID %s", record->getUUIDStr());
+  added_flowfiles_[uuid].flow_file = record;
+  logger_->log_debug("Create FlowFile with UUID {}", record->getUUIDStr());
   std::stringstream details;
-  details << process_context_->getProcessorNode()->getName() << " creates flow record " << record->getUUIDStr();
-  provenance_report_->create(record, details.str());
+  details << process_context_->getProcessor().getName() << " creates flow record " << record->getUUIDStr();
+  provenance_report_->create(*record, details.str());
 
   return record;
 }
 
-std::shared_ptr<core::FlowFile> ProcessSession::clone(const std::shared_ptr<core::FlowFile> &parent) {
-  std::shared_ptr<core::FlowFile> record = this->create(parent);
+std::shared_ptr<core::FlowFile> ProcessSessionImpl::clone(const core::FlowFile& parent) {
+  std::shared_ptr<core::FlowFile> record = this->create(&parent);
   if (record) {
-    logger_->log_debug("Cloned parent flow files %s to %s", parent->getUUIDStr(), record->getUUIDStr());
+    logger_->log_debug("Cloned parent flow files {} to {}", parent.getUUIDStr(), record->getUUIDStr());
     // Copy Resource Claim
-    std::shared_ptr<ResourceClaim> parent_claim = parent->getResourceClaim();
+    std::shared_ptr<ResourceClaim> parent_claim = parent.getResourceClaim();
     record->setResourceClaim(parent_claim);
     if (parent_claim) {
-      record->setOffset(parent->getOffset());
-      record->setSize(parent->getSize());
+      record->setOffset(parent.getOffset());
+      record->setSize(parent.getSize());
     }
-    provenance_report_->clone(parent, record);
+    provenance_report_->clone(parent, *record);
   }
   return record;
 }
 
-std::shared_ptr<core::FlowFile> ProcessSession::cloneDuringTransfer(const std::shared_ptr<core::FlowFile> &parent) {
-  auto record = std::make_shared<FlowFileRecord>();
+std::shared_ptr<core::FlowFile> ProcessSessionImpl::cloneDuringTransfer(const core::FlowFile& parent) {
+  auto record = std::make_shared<FlowFileRecordImpl>();
 
-  auto flow_version = process_context_->getProcessorNode()->getFlowIdentifier();
+  auto flow_version = process_context_->getProcessor().getFlowIdentifier();
   if (flow_version != nullptr) {
     record->setAttribute(SpecialFlowAttribute::FLOW_ID, flow_version->getFlowId());
   }
-  this->_clonedFlowFiles.push_back(record);
-  logger_->log_debug("Clone FlowFile with UUID %s during transfer", record->getUUIDStr());
+  this->cloned_flowfiles_.push_back(record);
+  logger_->log_debug("Clone FlowFile with UUID {} during transfer", record->getUUIDStr());
   // Copy attributes
-  for (const auto& attribute : parent->getAttributes()) {
+  for (const auto& attribute : parent.getAttributes()) {
     if (attribute.first == SpecialFlowAttribute::ALTERNATE_IDENTIFIER
         || attribute.first == SpecialFlowAttribute::DISCARD_REASON
         || attribute.first == SpecialFlowAttribute::UUID) {
@@ -141,129 +147,164 @@ std::shared_ptr<core::FlowFile> ProcessSession::cloneDuringTransfer(const std::s
     }
     record->setAttribute(attribute.first, attribute.second);
   }
-  record->setLineageStartDate(parent->getlineageStartDate());
-  record->setLineageIdentifiers(parent->getlineageIdentifiers());
-  record->getlineageIdentifiers().push_back(parent->getUUID());
+  record->setLineageStartDate(parent.getLineageStartDate());
+  record->setLineageIdentifiers(parent.getlineageIdentifiers());
+  record->getlineageIdentifiers().push_back(parent.getUUID());
 
   // Copy Resource Claim
-  std::shared_ptr<ResourceClaim> parent_claim = parent->getResourceClaim();
+  std::shared_ptr<ResourceClaim> parent_claim = parent.getResourceClaim();
   record->setResourceClaim(parent_claim);
   if (parent_claim != nullptr) {
-    record->setOffset(parent->getOffset());
-    record->setSize(parent->getSize());
+    record->setOffset(parent.getOffset());
+    record->setSize(parent.getSize());
   }
-  provenance_report_->clone(parent, record);
+  provenance_report_->clone(parent, *record);
 
   return record;
 }
 
-std::shared_ptr<core::FlowFile> ProcessSession::clone(const std::shared_ptr<core::FlowFile> &parent, int64_t offset, int64_t size) {
-  if ((uint64_t) (offset + size) > parent->getSize()) {
+std::shared_ptr<core::FlowFile> ProcessSessionImpl::clone(const FlowFile& parent, int64_t offset, int64_t size) {
+  if (gsl::narrow<uint64_t>(offset + size) > parent.getSize()) {
     // Set offset and size
-    logger_->log_error("clone offset %" PRId64 " and size %" PRId64 " exceed parent size %" PRIu64, offset, size, parent->getSize());
+    logger_->log_error("clone offset {} and size {} exceed parent size {}", offset, size, parent.getSize());
     return nullptr;
   }
-  std::shared_ptr<core::FlowFile> record = this->create(parent);
+  std::shared_ptr<core::FlowFile> record = this->create(&parent);
   if (record) {
-    logger_->log_debug("Cloned parent flow files %s to %s, with %u:%u", parent->getUUIDStr(), record->getUUIDStr(), offset, size);
-    if (parent->getResourceClaim()) {
-      record->setOffset(parent->getOffset() + offset);
-      record->setSize(size);
-      // Copy Resource Claim
-      record->setResourceClaim(parent->getResourceClaim());
+    logger_->log_debug("Cloned parent flow files {} to {}, with {}:{}", parent.getUUIDStr(), record->getUUIDStr(), offset, size);
+    if (parent.getResourceClaim()) {
+      write(record, [&] (const std::shared_ptr<io::OutputStream>& output) -> io::IoResult {
+        return io::IoResult::from(read(parent, [&] (const std::shared_ptr<io::InputStream>& input) -> io::IoResult {
+          io::StreamSlice slice(input, offset, size);
+          return internal::pipe(slice, *output);
+        }));
+      });
     }
-    provenance_report_->clone(parent, record);
+    provenance_report_->clone(parent, *record);
   }
   return record;
 }
 
-void ProcessSession::remove(const std::shared_ptr<core::FlowFile> &flow) {
+void ProcessSessionImpl::remove(const std::shared_ptr<core::FlowFile> &flow) {
+  logger_->log_debug("Removing flow file with UUID: {}", flow->getUUIDStr());
   flow->setDeleted(true);
-  _deletedFlowFiles.push_back(flow);
-  std::string reason = process_context_->getProcessorNode()->getName() + " drop flow record " + flow->getUUIDStr();
-  provenance_report_->drop(flow, reason);
+  deleted_flowfiles_.push_back(flow);
+  std::string reason = process_context_->getProcessor().getName() + " drop flow record " + flow->getUUIDStr();
+  provenance_report_->drop(*flow, reason);
 }
 
-void ProcessSession::putAttribute(const std::shared_ptr<core::FlowFile> &flow, std::string key, std::string value) {
-  flow->setAttribute(key, value);
-  std::stringstream details;
-  details << process_context_->getProcessorNode()->getName() << " modify flow record " << flow->getUUIDStr() << " attribute " << key << ":" << value;
-  provenance_report_->modifyAttributes(flow, details.str());
+void ProcessSessionImpl::putAttribute(core::FlowFile& flow_file, std::string_view key, const std::string& value) {
+  flow_file.setAttribute(key, value);
+  std::string details = fmt::format("{} modify flow record {} attribute {}:{}", process_context_->getProcessor().getName(), flow_file.getUUIDStr(), key, value);
+  provenance_report_->modifyAttributes(flow_file, details);
 }
 
-void ProcessSession::removeAttribute(const std::shared_ptr<core::FlowFile> &flow, std::string key) {
-  flow->removeAttribute(key);
-  std::stringstream details;
-  details << process_context_->getProcessorNode()->getName() << " remove flow record " << flow->getUUIDStr() << " attribute " + key;
-  provenance_report_->modifyAttributes(flow, details.str());
+void ProcessSessionImpl::removeAttribute(core::FlowFile& flow_file, std::string_view key) {
+  flow_file.removeAttribute(key);
+  std::string details = fmt::format("{} remove flow record {} attribute {}", process_context_->getProcessor().getName(), flow_file.getUUIDStr(), key);
+  provenance_report_->modifyAttributes(flow_file, details);
 }
 
-void ProcessSession::penalize(const std::shared_ptr<core::FlowFile> &flow) {
-  const std::chrono::milliseconds penalization_period = process_context_->getProcessorNode()->getPenalizationPeriod();
-  logging::LOG_INFO(logger_) << "Penalizing " << flow->getUUIDStr() << " for " << penalization_period.count() << "ms at " << process_context_->getProcessorNode()->getName();
-  flow->penalize(penalization_period);
+void ProcessSessionImpl::penalize(const std::shared_ptr<core::FlowFile> &flow) {
+  const std::chrono::milliseconds penalization_period = process_context_->getProcessor().getPenalizationPeriod();
+  logger_->log_info("Penalizing {} for {} at {}", flow->getUUIDStr(), penalization_period, process_context_->getProcessor().getName());
+  std::dynamic_pointer_cast<FlowFileImpl>(flow)->penalize(penalization_period);
 }
 
-void ProcessSession::transfer(const std::shared_ptr<core::FlowFile> &flow, Relationship relationship) {
-  logging::LOG_INFO(logger_) << "Transferring " << flow->getUUIDStr() << " from " << process_context_->getProcessorNode()->getName() << " to relationship " << relationship.getName();
+void ProcessSessionImpl::transfer(const std::shared_ptr<core::FlowFile>& flow, const Relationship& relationship) {
+  gsl_Expects(flow);
+  logger_->log_debug("Transferring {} from {} to relationship {}", flow->getUUIDStr(), process_context_->getProcessor().getName(), relationship.getName());
   utils::Identifier uuid = flow->getUUID();
-  _transferRelationship[uuid] = relationship;
+  if (auto it = added_flowfiles_.find(uuid); it != added_flowfiles_.end()) {
+    it->second.rel = &*relationships_.insert(relationship).first;
+  } else {
+    updated_relationships_[uuid] = &*relationships_.insert(relationship).first;
+  }
   flow->setDeleted(false);
 }
 
-void ProcessSession::write(const std::shared_ptr<core::FlowFile> &flow, OutputStreamCallback *callback) {
+void ProcessSessionImpl::transferToCustomRelationship(const std::shared_ptr<core::FlowFile>& flow, const std::string& relationship_name) {
+  transfer(flow, Relationship{relationship_name, relationship_name});
+}
+
+void ProcessSessionImpl::write(const std::shared_ptr<core::FlowFile> &flow, const io::OutputStreamCallback& callback) {
+  write(*flow, callback);
+}
+
+void ProcessSessionImpl::write(core::FlowFile &flow, const io::OutputStreamCallback& callback) {
+  gsl_ExpectsAudit(updated_flowfiles_.contains(flow.getUUID())
+      || added_flowfiles_.contains(flow.getUUID())
+      || std::any_of(cloned_flowfiles_.begin(), cloned_flowfiles_.end(), [&flow](const auto& flow_file) { return &flow == flow_file.get(); }));
+
   std::shared_ptr<ResourceClaim> claim = content_session_->create();
 
   try {
-    uint64_t startTime = utils::timeutils::getTimeMillis();
+    auto start_time = std::chrono::steady_clock::now();
     std::shared_ptr<io::BaseStream> stream = content_session_->write(claim);
     // Call the callback to write the content
     if (nullptr == stream) {
       throw Exception(FILE_OPERATION_EXCEPTION, "Failed to open flowfile content for write");
     }
-    if (callback->process(stream) < 0) {
+    const auto callback_result = callback(stream);
+
+    if (callback_result.is_cancelled()) {
+      stream->close();
+      content_session_->remove(claim);
+      claim.reset();
+      return;
+    }
+
+    if (!callback_result) {
       throw Exception(FILE_OPERATION_EXCEPTION, "Failed to process flowfile content");
     }
 
-    flow->setSize(stream->size());
-    flow->setOffset(0);
-    flow->setResourceClaim(claim);
+    flow.setSize(stream->size());
+    flow.setOffset(0);
+    flow.setResourceClaim(claim);
 
     stream->close();
-    std::string details = process_context_->getProcessorNode()->getName() + " modify flow record content " + flow->getUUIDStr();
-    uint64_t endTime = utils::timeutils::getTimeMillis();
-    provenance_report_->modifyContent(flow, details, endTime - startTime);
-  } catch (std::exception &exception) {
-    logger_->log_debug("Caught Exception %s", exception.what());
+    std::string details = process_context_->getProcessor().getName() + " modify flow record content " + flow.getUUIDStr();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time);
+    provenance_report_->modifyContent(flow, details, duration);
+    if (metrics_) {
+      metrics_->bytesWritten() += stream->size();
+    }
+  } catch (const std::exception& exception) {
+    logger_->log_debug("Caught Exception during process session write, type: {}, what: {}", typeid(exception).name(), exception.what());
     throw;
   } catch (...) {
-    logger_->log_debug("Caught Exception during process session write");
+    logger_->log_debug("Caught Exception during process session write, type: {}", getCurrentExceptionTypeName());
     throw;
   }
 }
 
-void ProcessSession::writeBuffer(const std::shared_ptr<core::FlowFile>& flow_file, gsl::span<const char> buffer) {
-  struct BufferOutputStreamCallback : OutputStreamCallback {
-    explicit BufferOutputStreamCallback(gsl::span<const char> buffer) :buffer{buffer} {}
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) final {
-      return stream->write(reinterpret_cast<const uint8_t*>(buffer.data()), buffer.size());
-    }
-    gsl::span<const char> buffer;
-  };
-  BufferOutputStreamCallback cb{ buffer };
-  write(flow_file, &cb);
+void ProcessSessionImpl::writeBuffer(const std::shared_ptr<core::FlowFile>& flow_file, std::span<const char> buffer) {
+  writeBuffer(flow_file, as_bytes(buffer));
 }
 
-void ProcessSession::append(const std::shared_ptr<core::FlowFile> &flow, OutputStreamCallback *callback) {
+void ProcessSessionImpl::writeBuffer(const std::shared_ptr<core::FlowFile>& flow_file, std::span<const std::byte> buffer) {
+  write(flow_file, [buffer](const std::shared_ptr<io::OutputStream>& output_stream) {
+    const auto write_status = output_stream->write(buffer);
+    return io::IoResult::from(write_status);
+  });
+}
+
+void ProcessSessionImpl::append(const std::shared_ptr<core::FlowFile> &flow, const io::OutputStreamCallback& callback) {
+  gsl_ExpectsAudit(updated_flowfiles_.contains(flow->getUUID())
+      || added_flowfiles_.contains(flow->getUUID())
+      || std::any_of(cloned_flowfiles_.begin(), cloned_flowfiles_.end(), [&flow](const auto& flow_file) { return flow == flow_file; }));
+
   std::shared_ptr<ResourceClaim> claim = flow->getResourceClaim();
   if (!claim) {
     // No existed claim for append, we need to create new claim
-    return write(flow, callback);
+    write(flow, callback);
+    return;
   }
 
   try {
-    uint64_t startTime = utils::timeutils::getTimeMillis();
-    std::shared_ptr<io::BaseStream> stream = content_session_->write(claim, ContentSession::WriteMode::APPEND);
+    auto start_time = std::chrono::steady_clock::now();
+    size_t end_offset = flow->getOffset() + flow->getSize();
+    std::shared_ptr<io::BaseStream> stream = content_session_->append(claim, end_offset, [&] (const auto& new_claim) {flow->setResourceClaim(new_claim);});
     if (nullptr == stream) {
       throw Exception(FILE_OPERATION_EXCEPTION, "Failed to open flowfile content for append");
     }
@@ -273,54 +314,77 @@ void ProcessSession::append(const std::shared_ptr<core::FlowFile> &flow, OutputS
     size_t stream_size_before_callback = stream->size();
     // this prevents an issue if we write, above, with zero length.
     if (stream_size_before_callback > 0)
-      stream->seek(stream_size_before_callback + 1);
-    if (callback->process(stream) < 0) {
+      stream->seek(stream_size_before_callback);
+    if (!callback(stream)) {
       throw Exception(FILE_OPERATION_EXCEPTION, "Failed to process flowfile content");
     }
     flow->setSize(flow_file_size + (stream->size() - stream_size_before_callback));
+    if (metrics_) {
+      metrics_->bytesWritten() += stream->size() - stream_size_before_callback;
+    }
 
     std::stringstream details;
-    details << process_context_->getProcessorNode()->getName() << " modify flow record content " << flow->getUUIDStr();
-    uint64_t endTime = utils::timeutils::getTimeMillis();
-    provenance_report_->modifyContent(flow, details.str(), endTime - startTime);
-  } catch (std::exception &exception) {
-    logger_->log_debug("Caught Exception %s", exception.what());
+    details << process_context_->getProcessor().getName() << " modify flow record content " << flow->getUUIDStr();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time);
+    provenance_report_->modifyContent(*flow, details.str(), duration);
+  } catch (const std::exception& exception) {
+    logger_->log_debug("Caught Exception during process session append, type: {}, what: {}", typeid(exception).name(), exception.what());
     throw;
   } catch (...) {
-    logger_->log_debug("Caught Exception during process session append");
+    logger_->log_debug("Caught Exception during process session append, type: {}", getCurrentExceptionTypeName());
     throw;
   }
 }
+void ProcessSessionImpl::appendBuffer(const std::shared_ptr<core::FlowFile>& flow_file, std::span<const char> buffer) {
+  appendBuffer(flow_file, as_bytes(buffer));
+}
+void ProcessSessionImpl::appendBuffer(const std::shared_ptr<core::FlowFile>& flow_file, std::span<const std::byte> buffer) {
+  if (buffer.empty()) { return; }
+  append(flow_file, [buffer](const std::shared_ptr<io::OutputStream>& output_stream) {
+    const auto write_status = output_stream->write(buffer);
+    return io::IoResult::from(write_status);
+  });
+}
 
-int64_t ProcessSession::read(const std::shared_ptr<core::FlowFile> &flow, InputStreamCallback *callback) {
+std::shared_ptr<io::InputStream> ProcessSessionImpl::getFlowFileContentStream(const core::FlowFile& flow_file) {
+  if (flow_file.getResourceClaim() == nullptr) {
+    logger_->log_debug("For {}, no resource claim but size is {}", flow_file.getUUIDStr(), flow_file.getSize());
+    if (flow_file.getSize() == 0) {
+      return {};
+    }
+    throw Exception(FILE_OPERATION_EXCEPTION, "No Content Claim existed for read");
+  }
+
+  std::shared_ptr<ResourceClaim> claim = flow_file.getResourceClaim();
+  std::shared_ptr<io::InputStream> stream = content_session_->read(claim);
+  if (nullptr == stream) {
+    throw Exception(FILE_OPERATION_EXCEPTION, "Failed to open flowfile content for read");
+  }
+
+  return std::make_shared<io::StreamSlice>(stream, flow_file.getOffset(), flow_file.getSize());
+}
+
+int64_t ProcessSessionImpl::read(const std::shared_ptr<core::FlowFile>& flow_file, const io::InputStreamCallback& callback) {
+  return read(*flow_file, callback);
+}
+
+int64_t ProcessSessionImpl::read(const core::FlowFile& flow_file, const io::InputStreamCallback& callback) {
   try {
-    std::shared_ptr<ResourceClaim> claim = nullptr;
-
-    if (flow->getResourceClaim() == nullptr) {
-      // No existed claim for read, we throw exception
-      logger_->log_debug("For %s, no resource claim but size is %d", flow->getUUIDStr(), flow->getSize());
-      if (flow->getSize() == 0) {
-        return 0;
-      }
-      throw Exception(FILE_OPERATION_EXCEPTION, "No Content Claim existed for read");
+    auto flow_file_stream = getFlowFileContentStream(flow_file);
+    if (!flow_file_stream) {
+      return 0;
     }
 
-    claim = flow->getResourceClaim();
-
-    std::shared_ptr<io::BaseStream> stream = content_session_->read(claim);
-
-    if (nullptr == stream) {
-      throw Exception(FILE_OPERATION_EXCEPTION, "Failed to open flowfile content for read");
-    }
-
-    auto flow_file_stream = std::make_shared<io::StreamSlice>(stream, flow->getOffset(), flow->getSize());
-    auto ret = callback->process(flow_file_stream);
-    if (ret < 0) {
+    const auto callback_result = callback(flow_file_stream);
+    if (!callback_result) {
       throw Exception(FILE_OPERATION_EXCEPTION, "Failed to process flowfile content");
     }
-    return ret;
-  } catch (std::exception &exception) {
-    logger_->log_debug("Caught Exception %s", exception.what());
+    if (metrics_) {
+      metrics_->bytesRead() += *callback_result;
+    }
+    return callback_result.toI64();
+  } catch (const std::exception& exception) {
+    logger_->log_debug("Caught Exception {}", exception.what());
     throw;
   } catch (...) {
     logger_->log_debug("Caught Exception during process session read");
@@ -328,7 +392,72 @@ int64_t ProcessSession::read(const std::shared_ptr<core::FlowFile> &flow, InputS
   }
 }
 
-void ProcessSession::importFrom(io::InputStream&& stream, const std::shared_ptr<core::FlowFile> &flow) {
+int64_t ProcessSessionImpl::readWrite(const std::shared_ptr<core::FlowFile> &flow, const io::InputOutputStreamCallback& callback) {
+  gsl_Expects(callback);
+
+  try {
+    if (flow->getResourceClaim() == nullptr) {
+      logger_->log_debug("For {}, no resource claim but size is {}", flow->getUUIDStr(), flow->getSize());
+      if (flow->getSize() == 0) {
+        return 0;
+      }
+      throw Exception(FILE_OPERATION_EXCEPTION, "No Content Claim existed for read");
+    }
+
+    std::shared_ptr<ResourceClaim> input_claim = flow->getResourceClaim();
+    std::shared_ptr<io::BaseStream> input_stream = content_session_->read(input_claim);
+    if (!input_stream) {
+      throw Exception(FILE_OPERATION_EXCEPTION, "Failed to open flowfile content for read");
+    }
+    input_stream->seek(flow->getOffset());
+
+    std::shared_ptr<ResourceClaim> output_claim = content_session_->create();
+    std::shared_ptr<io::BaseStream> output_stream = content_session_->write(output_claim);
+    if (!output_stream) {
+      throw Exception(FILE_OPERATION_EXCEPTION, "Failed to open flowfile content for write");
+    }
+
+    const auto read_write_result = callback(input_stream, output_stream);
+    if (!read_write_result) {
+      throw Exception(FILE_OPERATION_EXCEPTION, "Failed to process flowfile content");
+    }
+
+    input_stream->close();
+    output_stream->close();
+
+    flow->setSize(gsl::narrow<uint64_t>(read_write_result.bytesWritten()));
+    flow->setOffset(0);
+    flow->setResourceClaim(output_claim);
+    if (metrics_) {
+      metrics_->bytesWritten() += read_write_result.bytesWritten();
+      metrics_->bytesRead() += read_write_result.bytesRead();
+    }
+
+    return gsl::narrow<int64_t>(read_write_result.bytesWritten());
+  } catch (const std::exception& exception) {
+    logger_->log_debug("Caught exception during process session readWrite, type: {}, what: {}", typeid(exception).name(), exception.what());
+    throw;
+  } catch (...) {
+    logger_->log_debug("Caught unknown exception during process session readWrite, type: {}", getCurrentExceptionTypeName());
+    throw;
+  }
+}
+
+detail::ReadBufferResult ProcessSessionImpl::readBuffer(const std::shared_ptr<core::FlowFile>& flow) {
+  detail::ReadBufferResult result;
+  result.status = read(flow, [&result, this](const std::shared_ptr<io::InputStream>& input_stream) -> io::IoResult {
+    result.buffer.resize(input_stream->size());
+    const auto read_status = input_stream->read(result.buffer);
+    if (read_status != result.buffer.size()) {
+      logger_->log_error("readBuffer: {} bytes were requested from the stream but {} bytes were read. Rolling back.", result.buffer.size(), read_status);
+      throw Exception(PROCESSOR_EXCEPTION, "Failed to read the entire FlowFile.");
+    }
+    return io::IoResult::from(read_status);
+  });
+  return result;
+}
+
+void ProcessSessionImpl::importFrom(io::InputStream&& stream, const std::shared_ptr<core::FlowFile> &flow) {  // NOLINT(cppcoreguidelines-rvalue-reference-param-not-moved)
   importFrom(stream, flow);
 }
 /**
@@ -337,13 +466,13 @@ void ProcessSession::importFrom(io::InputStream&& stream, const std::shared_ptr<
  * @param flow flow file
  *
  */
-void ProcessSession::importFrom(io::InputStream &stream, const std::shared_ptr<core::FlowFile> &flow) {
+void ProcessSessionImpl::importFrom(io::InputStream &stream, const std::shared_ptr<core::FlowFile> &flow) {
   const std::shared_ptr<ResourceClaim> claim = content_session_->create();
   const auto max_read = gsl::narrow_cast<size_t>(getpagesize());
-  std::vector<uint8_t> charBuffer(max_read);
+  std::vector<std::byte> buffer(max_read);
 
   try {
-    auto startTime = utils::timeutils::getTimeMillis();
+    auto start_time = std::chrono::steady_clock::now();
     std::shared_ptr<io::BaseStream> content_stream = content_session_->write(claim);
 
     if (nullptr == content_stream) {
@@ -353,9 +482,10 @@ void ProcessSession::importFrom(io::InputStream &stream, const std::shared_ptr<c
     const auto max_size = stream.size();
     while (position < max_size) {
       const auto read_size = std::min(max_read, max_size - position);
-      stream.read(charBuffer, read_size);
+      const auto subbuffer = std::span(buffer).subspan(0, read_size);
+      stream.read(subbuffer);
 
-      content_stream->write(charBuffer.data(), read_size);
+      content_stream->write(subbuffer);
       position += read_size;
     }
     // Open the source file and stream to the flow file
@@ -364,30 +494,33 @@ void ProcessSession::importFrom(io::InputStream &stream, const std::shared_ptr<c
     flow->setOffset(0);
     flow->setResourceClaim(claim);
 
-    logger_->log_debug("Import offset %" PRIu64 " length %" PRIu64 " into content %s for FlowFile UUID %s",
+    logger_->log_debug("Import offset {} length {} into content {} for FlowFile UUID {}",
         flow->getOffset(), flow->getSize(), flow->getResourceClaim()->getContentFullPath(), flow->getUUIDStr());
 
     content_stream->close();
+    if (metrics_) {
+      metrics_->bytesWritten() += content_stream->size();
+    }
     std::stringstream details;
-    details << process_context_->getProcessorNode()->getName() << " modify flow record content " << flow->getUUIDStr();
-    auto endTime = utils::timeutils::getTimeMillis();
-    provenance_report_->modifyContent(flow, details.str(), endTime - startTime);
-  } catch (std::exception &exception) {
-    logger_->log_debug("Caught Exception %s", exception.what());
+    details << process_context_->getProcessor().getName() << " modify flow record content " << flow->getUUIDStr();
+    auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time);
+    provenance_report_->modifyContent(*flow, details.str(), duration);
+  } catch (const std::exception& exception) {
+    logger_->log_debug("Caught Exception during ProcessSession::importFrom, type: {}, what: {}", typeid(exception).name(), exception.what());
     throw;
   } catch (...) {
-    logger_->log_debug("Caught Exception during process session write");
+    logger_->log_debug("Caught Exception during ProcessSession::importFrom, type: {}", getCurrentExceptionTypeName());
     throw;
   }
 }
 
-void ProcessSession::import(std::string source, const std::shared_ptr<FlowFile> &flow, bool keepSource, uint64_t offset) {
+void ProcessSessionImpl::import(const std::string& source, const std::shared_ptr<FlowFile> &flow, bool keepSource, uint64_t offset) {
   std::shared_ptr<ResourceClaim> claim = content_session_->create();
   size_t size = getpagesize();
   std::vector<uint8_t> charBuffer(size);
 
   try {
-    auto startTime = utils::timeutils::getTimeMillis();
+    auto start_time = std::chrono::steady_clock::now();
     std::ifstream input;
     input.open(source.c_str(), std::fstream::in | std::fstream::binary);
     std::shared_ptr<io::BaseStream> stream = content_session_->write(claim);
@@ -399,14 +532,14 @@ void ProcessSession::import(std::string source, const std::shared_ptr<FlowFile> 
       bool invalidWrite = false;
       // Open the source file and stream to the flow file
       if (offset != 0) {
-        input.seekg(offset);
+        input.seekg(gsl::narrow<std::streamoff>(offset));
         if (!input.good()) {
-          logger_->log_error("Seeking to %d failed for file %s (does file/filesystem support seeking?)", offset, source);
+          logger_->log_error("Seeking to {} failed for file {} (does file/filesystem support seeking?)", offset, source);
           invalidWrite = true;
         }
       }
       while (input.good()) {
-        input.read(reinterpret_cast<char*>(charBuffer.data()), size);
+        input.read(reinterpret_cast<char*>(charBuffer.data()), gsl::narrow<std::streamsize>(size));
         if (input) {
           if (io::isError(stream->write(charBuffer.data(), size))) {
             invalidWrite = true;
@@ -425,17 +558,21 @@ void ProcessSession::import(std::string source, const std::shared_ptr<FlowFile> 
         flow->setOffset(0);
         flow->setResourceClaim(claim);
 
-        logger_->log_debug("Import offset %" PRIu64 " length %" PRIu64 " into content %s for FlowFile UUID %s", flow->getOffset(), flow->getSize(), flow->getResourceClaim()->getContentFullPath(),
+        logger_->log_debug("Import offset {} length {} into content {} for FlowFile UUID {}", flow->getOffset(), flow->getSize(), flow->getResourceClaim()->getContentFullPath(),
                            flow->getUUIDStr());
 
         stream->close();
+        if (metrics_) {
+          metrics_->bytesWritten() += stream->size();
+        }
         input.close();
-        if (!keepSource)
-          std::remove(source.c_str());
+        if (!keepSource) {
+          (void)std::remove(source.c_str());
+        }
         std::stringstream details;
-        details << process_context_->getProcessorNode()->getName() << " modify flow record content " << flow->getUUIDStr();
-        auto endTime = utils::timeutils::getTimeMillis();
-        provenance_report_->modifyContent(flow, details.str(), endTime - startTime);
+        details << process_context_->getProcessor().getName() << " modify flow record content " << flow->getUUIDStr();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time);
+        provenance_report_->modifyContent(*flow, details.str(), duration);
       } else {
         stream->close();
         input.close();
@@ -444,16 +581,16 @@ void ProcessSession::import(std::string source, const std::shared_ptr<FlowFile> 
     } else {
       throw Exception(FILE_OPERATION_EXCEPTION, "File Import Error");
     }
-  } catch (std::exception &exception) {
-    logger_->log_debug("Caught Exception %s", exception.what());
+  } catch (const std::exception& exception) {
+    logger_->log_debug("Caught Exception during ProcessSession::import, type: {}, what: {}", typeid(exception).name(), exception.what());
     throw;
   } catch (...) {
-    logger_->log_debug("Caught Exception during process session write");
+    logger_->log_debug("Caught Exception during ProcessSession::import, type: {}", getCurrentExceptionTypeName());
     throw;
   }
 }
 
-void ProcessSession::import(const std::string& source, std::vector<std::shared_ptr<FlowFile>> &flows, uint64_t offset, char inputDelimiter) {
+void ProcessSessionImpl::import(const std::string& source, std::vector<std::shared_ptr<FlowFile>> &flows, uint64_t offset, char inputDelimiter) {
   std::shared_ptr<ResourceClaim> claim;
   std::shared_ptr<io::BaseStream> stream;
   std::shared_ptr<core::FlowFile> flowFile;
@@ -461,38 +598,37 @@ void ProcessSession::import(const std::string& source, std::vector<std::shared_p
   std::vector<uint8_t> buffer(getpagesize());
   try {
     std::ifstream input{source, std::ios::in | std::ios::binary};
-    logger_->log_debug("Opening %s", source);
+    logger_->log_debug("Opening {}", source);
     if (!input.is_open() || !input.good()) {
-      throw Exception(FILE_OPERATION_EXCEPTION, utils::StringUtils::join_pack("File Import Error: failed to open file \'", source, "\'"));
+      throw Exception(FILE_OPERATION_EXCEPTION, utils::string::join_pack("File Import Error: failed to open file \'", source, "\'"));
     }
     if (offset != 0U) {
-      input.seekg(offset, std::ifstream::beg);
+      input.seekg(gsl::narrow<std::streamoff>(offset), std::ifstream::beg);
       if (!input.good()) {
-        logger_->log_error("Seeking to %lu failed for file %s (does file/filesystem support seeking?)", offset, source);
-        throw Exception(FILE_OPERATION_EXCEPTION, utils::StringUtils::join_pack("File Import Error: Couldn't seek to offset ", std::to_string(offset)));
+        logger_->log_error("Seeking to {} failed for file {} (does file/filesystem support seeking?)", offset, source);
+        throw Exception(FILE_OPERATION_EXCEPTION, utils::string::join_pack("File Import Error: Couldn't seek to offset ", std::to_string(offset)));
       }
     }
-    uint64_t startTime = 0U;
     while (input.good()) {
-      input.read(reinterpret_cast<char*>(buffer.data()), buffer.size());
+      input.read(reinterpret_cast<char*>(buffer.data()), gsl::narrow<std::streamsize>(buffer.size()));
       std::streamsize read = input.gcount();
       if (read < 0) {
         throw Exception(FILE_OPERATION_EXCEPTION, "std::ifstream::gcount returned negative value");
       }
       if (read == 0) {
-        logger_->log_trace("Finished reading input %s", source);
+        logger_->log_trace("Finished reading input {}", source);
         break;
       } else {
-        logging::LOG_TRACE(logger_) << "Read input of " << read;
+        logger_->log_trace("Read input of {}", read);
       }
       uint8_t* begin = buffer.data();
       uint8_t* end = begin + read;
       while (true) {
-        startTime = utils::timeutils::getTimeMillis();
+        auto start_time = std::chrono::steady_clock::now();
         uint8_t* delimiterPos = std::find(begin, end, static_cast<uint8_t>(inputDelimiter));
         const auto len = gsl::narrow<size_t>(delimiterPos - begin);
 
-        logging::LOG_TRACE(logger_) << "Read input of " << read << " length is " << len << " is at end?" << (delimiterPos == end);
+        logger_->log_trace("Read input of {} length is {} is at end? {}", read, len, delimiterPos == end);
         /*
          * We do not want to process the rest of the buffer after the last delimiter if
          *  - we have reached EOF in the file (we would discard it anyway)
@@ -504,7 +640,7 @@ void ProcessSession::import(const std::string& source, std::vector<std::shared_p
 
         /* Create claim and stream if needed and append data */
         if (claim == nullptr) {
-          startTime = utils::timeutils::getTimeMillis();
+          start_time = std::chrono::steady_clock::now();
           claim = content_session_->create();
         }
         if (stream == nullptr) {
@@ -528,12 +664,15 @@ void ProcessSession::import(const std::string& source, std::vector<std::shared_p
         flowFile->setSize(stream->size());
         flowFile->setOffset(0);
         flowFile->setResourceClaim(claim);
-        logging::LOG_DEBUG(logger_) << "Import offset " << flowFile->getOffset() << " length " << flowFile->getSize() << " content " << flowFile->getResourceClaim()->getContentFullPath()
-                                    << ", FlowFile UUID " << flowFile->getUUIDStr();
+        logger_->log_debug("Import offset {} length {} into content {}, FlowFile UUID {}",
+            flowFile->getOffset(), flowFile->getSize(), flowFile->getResourceClaim()->getContentFullPath(), flowFile->getUUIDStr());
         stream->close();
-        std::string details = process_context_->getProcessorNode()->getName() + " modify flow record content " + flowFile->getUUIDStr();
-        uint64_t endTime = utils::timeutils::getTimeMillis();
-        provenance_report_->modifyContent(flowFile, details, endTime - startTime);
+        if (metrics_) {
+          metrics_->bytesWritten() += stream->size();
+        }
+        std::string details = process_context_->getProcessor().getName() + " modify flow record content " + flowFile->getUUIDStr();
+        auto duration = std::chrono::duration_cast<std::chrono::milliseconds>(std::chrono::steady_clock::now() - start_time);
+        provenance_report_->modifyContent(*flowFile, details, duration);
         flows.push_back(flowFile);
 
         /* Reset these to start processing the next FlowFile with a clean slate */
@@ -545,16 +684,16 @@ void ProcessSession::import(const std::string& source, std::vector<std::shared_p
         begin = delimiterPos + 1;
       }
     }
-  } catch (std::exception &exception) {
-    logger_->log_debug("Caught Exception %s", exception.what());
+  } catch (const std::exception& exception) {
+    logger_->log_debug("Caught Exception during ProcessSession::import, type: {}, what: {}", typeid(exception).name(), exception.what());
     throw;
   } catch (...) {
-    logger_->log_debug("Caught Exception during process session write");
+    logger_->log_debug("Caught Exception during ProcessSession::import, type: {}", getCurrentExceptionTypeName());
     throw;
   }
 }
 
-void ProcessSession::import(std::string source, std::vector<std::shared_ptr<FlowFile>> &flows, bool keepSource, uint64_t offset, char inputDelimiter) {
+void ProcessSessionImpl::import(const std::string& source, std::vector<std::shared_ptr<FlowFile>> &flows, bool keepSource, uint64_t offset, char inputDelimiter) {
 // this function calls a deprecated function, but it is itself deprecated, so suppress warnings
 #if defined(__clang__)
 #pragma clang diagnostic push
@@ -574,30 +713,30 @@ void ProcessSession::import(std::string source, std::vector<std::shared_ptr<Flow
 #elif defined(WIN32)
 #pragma warning(pop)
 #endif
-  logger_->log_trace("Closed input %s, keeping source ? %i", source, keepSource);
+  logger_->log_trace("Closed input {}, keeping source ? {}", source, keepSource);
   if (!keepSource) {
-    std::remove(source.c_str());
+    (void)std::remove(source.c_str());
   }
 }
 
-bool ProcessSession::exportContent(const std::string &destination, const std::string &tmpFile, const std::shared_ptr<core::FlowFile> &flow, bool /*keepContent*/) {
-  logger_->log_debug("Exporting content of %s to %s", flow->getUUIDStr(), destination);
+bool ProcessSessionImpl::exportContent(const std::string &destination, const std::string &tmpFile, const std::shared_ptr<core::FlowFile> &flow, bool /*keepContent*/) {
+  logger_->log_debug("Exporting content of {} to {}", flow->getUUIDStr(), destination);
 
   ProcessSessionReadCallback cb(tmpFile, destination, logger_);
-  read(flow, &cb);
+  read(flow, std::ref(cb));
 
-  logger_->log_info("Committing %s", destination);
+  logger_->log_info("Committing {}", destination);
   bool commit_ok = cb.commit();
 
   if (commit_ok) {
     logger_->log_info("Commit OK.");
   } else {
-    logger_->log_error("Commit of %s to %s failed!", flow->getUUIDStr(), destination);
+    logger_->log_error("Commit of {} to {} failed!", flow->getUUIDStr(), destination);
   }
   return commit_ok;
 }
 
-bool ProcessSession::exportContent(const std::string &destination, const std::shared_ptr<core::FlowFile> &flow, bool keepContent) {
+bool ProcessSessionImpl::exportContent(const std::string &destination, const std::shared_ptr<core::FlowFile> &flow, bool keepContent) {
   utils::Identifier tmpFileUuid = id_generator_->generate();
   std::stringstream tmpFileSs;
   tmpFileSs << destination << "." << tmpFileUuid.to_string();
@@ -606,12 +745,12 @@ bool ProcessSession::exportContent(const std::string &destination, const std::sh
   return exportContent(destination, tmpFileName, flow, keepContent);
 }
 
-void ProcessSession::stash(const std::string &key, const std::shared_ptr<core::FlowFile> &flow) {
-  logger_->log_debug("Stashing content from %s to key %s", flow->getUUIDStr(), key);
+void ProcessSessionImpl::stash(const std::string &key, const std::shared_ptr<core::FlowFile> &flow) {
+  logger_->log_debug("Stashing content from {} to key {}", flow->getUUIDStr(), key);
 
   auto claim = flow->getResourceClaim();
   if (!claim) {
-    logger_->log_warn("Attempted to stash content of record %s when "
+    logger_->log_warn("Attempted to stash content of record {} when "
                       "there is no resource claim",
                       flow->getUUIDStr());
     return;
@@ -624,18 +763,18 @@ void ProcessSession::stash(const std::string &key, const std::shared_ptr<core::F
   flow->clearResourceClaim();
 }
 
-void ProcessSession::restore(const std::string &key, const std::shared_ptr<core::FlowFile> &flow) {
-  logger_->log_info("Restoring content to %s from key %s", flow->getUUIDStr(), key);
+void ProcessSessionImpl::restore(const std::string &key, const std::shared_ptr<core::FlowFile> &flow) {
+  logger_->log_info("Restoring content to {} from key {}", flow->getUUIDStr(), key);
 
   // Restore the claim
   if (!flow->hasStashClaim(key)) {
-    logger_->log_warn("Requested restore to record %s from unknown key %s", flow->getUUIDStr(), key);
+    logger_->log_warn("Requested restore to record {} from unknown key {}", flow->getUUIDStr(), key);
     return;
   }
 
   // Disown current claim if existing
   if (flow->getResourceClaim()) {
-    logger_->log_warn("Restoring stashed content of record %s from key %s when there is "
+    logger_->log_warn("Restoring stashed content of record {} from key {} when there is "
                       "existing content; existing content will be overwritten",
                       flow->getUUIDStr(), key);
   }
@@ -646,75 +785,90 @@ void ProcessSession::restore(const std::string &key, const std::shared_ptr<core:
   flow->clearStashClaim(key);
 }
 
-ProcessSession::RouteResult ProcessSession::routeFlowFile(const std::shared_ptr<FlowFile> &record) {
+ProcessSessionImpl::RouteResult ProcessSessionImpl::routeFlowFile(const std::shared_ptr<FlowFile> &record, const std::function<void(const FlowFile&, const Relationship&)>& transfer_callback) {
   if (record->isDeleted()) {
     return RouteResult::Ok_Deleted;
   }
   utils::Identifier uuid = record->getUUID();
-  auto itRelationship = _transferRelationship.find(uuid);
-  if (itRelationship == _transferRelationship.end()) {
+  Relationship relationship;
+  if (auto it = updated_relationships_.find(uuid); it != updated_relationships_.end()) {
+    gsl_Expects(it->second);
+    relationship = *it->second;
+  } else if (auto new_it = added_flowfiles_.find(uuid); new_it != added_flowfiles_.end() && new_it->second.rel) {
+    relationship = *new_it->second.rel;
+  } else {
     return RouteResult::Error_NoRelationship;
   }
-  Relationship relationship = itRelationship->second;
   // Find the relationship, we need to find the connections for that relationship
-  std::set<std::shared_ptr<Connectable>> connections = process_context_->getProcessorNode()->getOutGoingConnections(relationship.getName());
+  const auto connections = process_context_->getProcessor().getOutGoingConnections(relationship.getName());
   if (connections.empty()) {
     // No connection
-    if (!process_context_->getProcessorNode()->isAutoTerminated(relationship)) {
+    if (!process_context_->getProcessor().isAutoTerminated(relationship)) {
       // Not autoterminate, we should have the connect
       std::string message = "Connect empty for non auto terminated relationship " + relationship.getName();
       throw Exception(PROCESS_SESSION_EXCEPTION, message);
     } else {
       // Autoterminated
       remove(record);
+      transfer_callback(*record, relationship);
+      return RouteResult::Ok_AutoTerminated;
     }
   } else {
     // We connections, clone the flow and assign the connection accordingly
     for (auto itConnection = connections.begin(); itConnection != connections.end(); ++itConnection) {
-      std::shared_ptr<Connectable> connection = *itConnection;
+      auto connection = *itConnection;
       if (itConnection == connections.begin()) {
         // First connection which the flow need be routed to
         record->setConnection(connection);
+        transfer_callback(*record, relationship);
       } else {
         // Clone the flow file and route to the connection
-        std::shared_ptr<core::FlowFile> cloneRecord = this->cloneDuringTransfer(record);
-        if (cloneRecord)
+        std::shared_ptr<core::FlowFile> cloneRecord = this->cloneDuringTransfer(*record);
+        if (cloneRecord) {
           cloneRecord->setConnection(connection);
-        else
+          transfer_callback(*cloneRecord, relationship);
+        } else {
           throw Exception(PROCESS_SESSION_EXCEPTION, "Can not clone the flow for transfer " + record->getUUIDStr());
+        }
       }
     }
   }
   return RouteResult::Ok_Routed;
 }
 
-void ProcessSession::commit() {
+void ProcessSessionImpl::commit() {
+  const auto commit_start_time = std::chrono::steady_clock::now();
   try {
+    std::unordered_map<std::string, TransferMetrics> transfers;
+    auto increaseTransferMetrics = [&](const FlowFile& record, const Relationship& relationship) {
+      ++transfers[relationship.getName()].transfer_count;
+      transfers[relationship.getName()].transfer_size += record.getSize();
+    };
     // First we clone the flow record based on the transferred relationship for updated flow record
-    for (auto && it : _updatedFlowFiles) {
+    for (auto && it : updated_flowfiles_) {
       auto record = it.second.modified;
-      if (routeFlowFile(record) == RouteResult::Error_NoRelationship) {
+      if (routeFlowFile(record, increaseTransferMetrics) == RouteResult::Error_NoRelationship) {
         // Can not find relationship for the flow
         throw Exception(PROCESS_SESSION_EXCEPTION, "Can not find the transfer relationship for the updated flow " + record->getUUIDStr());
       }
     }
 
     // Do the same thing for added flow file
-    for (const auto& it : _addedFlowFiles) {
-      auto record = it.second;
-      if (routeFlowFile(record) == RouteResult::Error_NoRelationship) {
+    for (const auto& it : added_flowfiles_) {
+      auto record = it.second.flow_file;
+      if (routeFlowFile(record, increaseTransferMetrics) == RouteResult::Error_NoRelationship) {
         // Can not find relationship for the flow
         throw Exception(PROCESS_SESSION_EXCEPTION, "Can not find the transfer relationship for the added flow " + record->getUUIDStr());
       }
     }
 
-    std::map<std::shared_ptr<Connectable>, std::vector<std::shared_ptr<FlowFile>>> connectionQueues;
+    std::map<Connectable*, std::vector<std::shared_ptr<FlowFile>>> connectionQueues;
 
-    std::shared_ptr<Connectable> connection = nullptr;
+    Connectable* connection = nullptr;
     // Complete process the added and update flow files for the session, send the flow file to its queue
-    for (const auto &it : _updatedFlowFiles) {
+    for (const auto &it : updated_flowfiles_) {
       auto record = it.second.modified;
-      logger_->log_trace("See %s in %s", record->getUUIDStr(), "_updatedFlowFiles");
+      logger_->log_trace("See {} in {}", record->getUUIDStr(), "updated_flowfiles_");
       if (record->isDeleted()) {
         continue;
       }
@@ -724,9 +878,9 @@ void ProcessSession::commit() {
         connectionQueues[connection].push_back(record);
       }
     }
-    for (const auto &it : _addedFlowFiles) {
-      auto record = it.second;
-      logger_->log_trace("See %s in %s", record->getUUIDStr(), "_addedFlowFiles");
+    for (const auto &it : added_flowfiles_) {
+      auto record = it.second.flow_file;
+      logger_->log_trace("See {} in {}", record->getUUIDStr(), "added_flowfiles_");
       if (record->isDeleted()) {
         continue;
       }
@@ -736,8 +890,8 @@ void ProcessSession::commit() {
       }
     }
     // Process the clone flow files
-    for (const auto &record : _clonedFlowFiles) {
-      logger_->log_trace("See %s in %s", record->getUUIDStr(), "_clonedFlowFiles");
+    for (const auto &record : cloned_flowfiles_) {
+      logger_->log_trace("See {} in {}", record->getUUIDStr(), "cloned_flowfiles_");
       if (record->isDeleted()) {
         continue;
       }
@@ -747,26 +901,32 @@ void ProcessSession::commit() {
       }
     }
 
-    for (const auto& record : _deletedFlowFiles) {
-        if (!record->isDeleted()) {
-          continue;
-        }
-        if (record->isStored() && process_context_->getFlowFileRepository()->Delete(record->getUUIDStr())) {
-          // mark for deletion in the flowFileRepository
-          record->setStoredToRepository(false);
-        }
+    for (const auto& record : deleted_flowfiles_) {
+      if (!record->isDeleted()) {
+        continue;
+      }
+      if (record->isStored() && process_context_->getFlowFileRepository()->Delete(record->getUUIDStr())) {
+        // mark for deletion in the flowFileRepository
+        record->setStoredToRepository(false);
+      }
     }
 
     ensureNonNullResourceClaim(connectionQueues);
 
     content_session_->commit();
 
-    persistFlowFilesBeforeTransfer(connectionQueues, _updatedFlowFiles);
+    if (stateManager_ && !stateManager_->commit()) {
+      throw Exception(PROCESS_SESSION_EXCEPTION, "State manager commit failed.");
+    }
+    stateManager_ = nullptr;
+    process_context_->setSessionStateManager(nullptr);
+
+    persistFlowFilesBeforeTransfer(connectionQueues, updated_flowfiles_);
 
     for (auto& cq : connectionQueues) {
-      auto connection = std::dynamic_pointer_cast<Connection>(cq.first);
-      if (connection) {
-        connection->multiPut(cq.second);
+      auto connection_from_queue = dynamic_cast<Connection*>(cq.first);
+      if (connection_from_queue) {
+        connection_from_queue->multiPut(cq.second);
       } else {
         for (auto& file : cq.second) {
           cq.first->put(file);
@@ -774,51 +934,65 @@ void ProcessSession::commit() {
       }
     }
 
-    // All done
-    _updatedFlowFiles.clear();
-    _addedFlowFiles.clear();
-    _clonedFlowFiles.clear();
-    _deletedFlowFiles.clear();
+    if (metrics_) {
+      for (const auto& [relationship_name, transfer_metrics] : transfers) {
+        metrics_->transferredBytes() += transfer_metrics.transfer_size;
+        metrics_->transferredFlowFiles() += transfer_metrics.transfer_count;
+        metrics_->increaseRelationshipTransferCount(relationship_name, transfer_metrics.transfer_count);
+      }
+    }
 
-    _transferRelationship.clear();
+    // All done
+    updated_flowfiles_.clear();
+    added_flowfiles_.clear();
+    cloned_flowfiles_.clear();
+    deleted_flowfiles_.clear();
+
+    updated_relationships_.clear();
+    relationships_.clear();
     // persistent the provenance report
     this->provenance_report_->commit();
-    logger_->log_trace("ProcessSession committed for %s", process_context_->getProcessorNode()->getName());
-  } catch (std::exception &exception) {
-    logger_->log_debug("Caught Exception %s", exception.what());
+    logger_->log_debug("ProcessSession committed for {}", process_context_->getProcessor().getName());
+    if (metrics_) {
+      auto time_delta = std::chrono::steady_clock::now() - commit_start_time;
+      metrics_->addLastSessionCommitRuntime(std::chrono::duration_cast<std::chrono::milliseconds>(time_delta));
+      metrics_->processingNanos() += std::chrono::duration_cast<std::chrono::nanoseconds>(time_delta).count();
+    }
+  } catch (const std::exception& exception) {
+    logger_->log_debug("Caught Exception during process session commit, type: {}, what: {}", typeid(exception).name(), exception.what());
     throw;
   } catch (...) {
-    logger_->log_debug("Caught Exception during process session commit");
+    logger_->log_debug("Caught Exception during process session commit, type: {}", getCurrentExceptionTypeName());
     throw;
   }
 }
 
-void ProcessSession::rollback() {
+void ProcessSessionImpl::rollback() {
   // new FlowFiles are only persisted during commit
   // no need to delete them here
-  std::map<std::shared_ptr<Connectable>, std::vector<std::shared_ptr<FlowFile>>> connectionQueues;
+  std::map<Connectable*, std::vector<std::shared_ptr<FlowFile>>> connectionQueues;
 
   try {
     // Requeue the snapshot of the flowfile back
-    for (const auto &it : _updatedFlowFiles) {
+    for (const auto &it : updated_flowfiles_) {
       auto flowFile = it.second.modified;
       // restore flowFile to original state
-      *flowFile = *it.second.snapshot;
+      flowFile->copy(*it.second.snapshot);
       penalize(flowFile);
-      logger_->log_debug("ProcessSession rollback for %s, record %s, to connection %s",
-          process_context_->getProcessorNode()->getName(),
+      logger_->log_debug("ProcessSession rollback for {}, record {}, to connection {}",
+          process_context_->getProcessor().getName(),
           flowFile->getUUIDStr(),
           flowFile->getConnection()->getName());
       connectionQueues[flowFile->getConnection()].push_back(flowFile);
     }
 
-    for (const auto& record : _deletedFlowFiles) {
+    for (const auto& record : deleted_flowfiles_) {
       record->setDeleted(false);
     }
 
     // put everything back where it came from
     for (auto& cq : connectionQueues) {
-      auto connection = std::dynamic_pointer_cast<Connection>(cq.first);
+      auto connection = dynamic_cast<Connection*>(cq.first);
       if (connection) {
         connection->multiPut(cq.second);
       } else {
@@ -830,108 +1004,151 @@ void ProcessSession::rollback() {
 
     content_session_->rollback();
 
-    _clonedFlowFiles.clear();
-    _addedFlowFiles.clear();
-    _updatedFlowFiles.clear();
-    _deletedFlowFiles.clear();
-    logger_->log_warn("ProcessSession rollback for %s executed", process_context_->getProcessorNode()->getName());
-  } catch (std::exception &exception) {
-    logger_->log_warn("Caught Exception during process session rollback: %s", exception.what());
+    if (stateManager_ && !stateManager_->rollback()) {
+      throw Exception(PROCESS_SESSION_EXCEPTION, "State manager rollback failed.");
+    }
+    stateManager_ = nullptr;
+    process_context_->setSessionStateManager(nullptr);
+
+    cloned_flowfiles_.clear();
+    added_flowfiles_.clear();
+    updated_flowfiles_.clear();
+    deleted_flowfiles_.clear();
+    relationships_.clear();
+    logger_->log_warn("ProcessSession rollback for {} executed", process_context_->getProcessor().getName());
+  } catch (const std::exception& exception) {
+    logger_->log_warn("Caught Exception during process session rollback, type: {}, what: {}", typeid(exception).name(), exception.what());
     throw;
   } catch (...) {
-    logger_->log_warn("Caught Exception during process session rollback");
+    logger_->log_warn("Caught Exception during process session rollback, type: {}", getCurrentExceptionTypeName());
     throw;
   }
 }
 
-void ProcessSession::persistFlowFilesBeforeTransfer(
-    std::map<std::shared_ptr<Connectable>, std::vector<std::shared_ptr<core::FlowFile> > >& transactionMap,
+std::expected<void, std::string> ProcessSessionImpl::rollbackNoThrow() noexcept {
+  try {
+    rollback();
+    return {};
+  } catch(const std::exception& exception) {
+    return std::unexpected{exception.what()};
+  } catch(...) {
+    logger_->log_critical("Caught unknown exception during rollback, type: {}, terminating", getCurrentExceptionTypeName());
+    std::terminate();
+  }
+}
+
+void ProcessSessionImpl::persistFlowFilesBeforeTransfer(
+    std::map<Connectable*, std::vector<std::shared_ptr<core::FlowFile> > >& transactionMap,
     const std::map<utils::Identifier, FlowFileUpdate>& modifiedFlowFiles) {
 
-  std::vector<std::pair<std::string, std::unique_ptr<io::BufferStream>>> flowData;
-
   auto flowFileRepo = process_context_->getFlowFileRepository();
-  auto contentRepo = process_context_->getContentRepository();
 
-  for (auto& transaction : transactionMap) {
-    const std::shared_ptr<Connectable>& target = transaction.first;
-    std::shared_ptr<Connection> connection = std::dynamic_pointer_cast<Connection>(target);
-    const bool shouldDropEmptyFiles = connection ? connection->getDropEmptyFlowFiles() : false;
-    auto& flows = transaction.second;
-    for (auto &ff : flows) {
-      if (shouldDropEmptyFiles && ff->getSize() == 0) {
-        // the receiver will drop this FF
-        continue;
-      }
-
-      std::unique_ptr<io::BufferStream> stream(new io::BufferStream());
-      std::static_pointer_cast<FlowFileRecord>(ff)->Serialize(*stream);
-
-      flowData.emplace_back(ff->getUUIDStr(), std::move(stream));
-    }
+  // In case of a noop repository we do not persist anything, flow files are only stored in memory, so we do not need to adjust the owned count
+  // Otherwise the increase of the owned count would result in memory leaks, as the count is not decreased later in the noop repository
+  if (flowFileRepo->isNoop()) {
+    return;
   }
+
+  Repository::EntryStreams flowData;
+
+  enum class Type {
+    Dropped, Transferred
+  };
+
+  auto forEachFlowFile = [&] (Type type, auto fn) {
+    for (auto& [target, flows] : transactionMap) {
+      const auto connection = dynamic_cast<Connection*>(target);
+      const bool shouldDropEmptyFiles = connection && connection->getDropEmptyFlowFiles();
+      for (auto &ff : flows) {
+        auto snapshotIt = modifiedFlowFiles.find(ff->getUUID());
+        auto original = snapshotIt != modifiedFlowFiles.end() ? snapshotIt->second.snapshot : nullptr;
+        if (shouldDropEmptyFiles && ff->getSize() == 0) {
+          // the receiver will drop this FF
+          if (type == Type::Dropped) {
+            fn(ff, original);
+          }
+        } else {
+          if (type == Type::Transferred) {
+            fn(ff, original);
+          }
+        }
+      }
+    }
+  };
+
+  // collect serialized flowfiles
+  forEachFlowFile(Type::Transferred, [&] (auto& ff, auto& /*original*/) {
+    auto stream = std::make_unique<io::BufferStream>();
+    std::dynamic_pointer_cast<FlowFileRecord>(ff)->Serialize(*stream);
+
+    flowData.emplace_back(ff->getUUIDStr(), std::move(stream));
+  });
+
+  // increment on behalf of the to be persisted instance
+  forEachFlowFile(Type::Transferred, [&] (auto& ff, auto& /*original*/) {
+    if (auto claim = ff->getResourceClaim())
+      claim->increaseFlowFileRecordOwnedCount();
+  });
 
   if (!flowFileRepo->MultiPut(flowData)) {
     logger_->log_error("Failed execute multiput on FF repo!");
+    // decrement on behalf of the failed persisted instance
+    forEachFlowFile(Type::Transferred, [&] (auto& ff, auto& /*original*/) {
+      if (auto claim = ff->getResourceClaim())
+        claim->decreaseFlowFileRecordOwnedCount();
+    });
     throw Exception(PROCESS_SESSION_EXCEPTION, "Failed to put flowfiles to repository");
   }
 
-  for (auto& transaction : transactionMap) {
-    const std::shared_ptr<Connectable>& target = transaction.first;
-    std::shared_ptr<Connection> connection = std::dynamic_pointer_cast<Connection>(target);
-    const bool shouldDropEmptyFiles = connection ? connection->getDropEmptyFlowFiles() : false;
-    auto& flows = transaction.second;
-    for (auto &ff : flows) {
-      utils::Identifier uuid = ff->getUUID();
-      auto snapshotIt = modifiedFlowFiles.find(uuid);
-      auto original = snapshotIt != modifiedFlowFiles.end() ? snapshotIt->second.snapshot : nullptr;
-      if (shouldDropEmptyFiles && ff->getSize() == 0) {
-        // the receiver promised to drop this FF, no need for it anymore
-        if (ff->isStored() && flowFileRepo->Delete(ff->getUUIDStr())) {
-          // original must be non-null since this flowFile is already stored in the repos ->
-          // must have come from a session->get()
-          assert(original);
-          ff->setStoredToRepository(false);
-        }
-        continue;
-      }
-      auto claim = ff->getResourceClaim();
-      // increment on behalf of the persisted instance
-      if (claim) claim->increaseFlowFileRecordOwnedCount();
-      auto originalClaim = original ? original->getResourceClaim() : nullptr;
-      // decrement on behalf of the overridden instance if any
-      if (originalClaim) originalClaim->decreaseFlowFileRecordOwnedCount();
-
-      ff->setStoredToRepository(true);
+  // decrement on behalf of the overridden instance if any
+  forEachFlowFile(Type::Transferred, [&] (auto& ff, auto& original) {
+    if (auto original_claim = original ? original->getResourceClaim() : nullptr) {
+      original_claim->decreaseFlowFileRecordOwnedCount();
     }
-  }
+    ff->setStoredToRepository(true);
+  });
+
+  forEachFlowFile(Type::Dropped, [&] (auto& ff, auto& original) {
+    // the receiver promised to drop this FF, no need for it anymore
+    if (ff->isStored() && flowFileRepo->Delete(ff->getUUIDStr())) {
+      // original must be non-null since this flowFile is already stored in the repos ->
+      // must have come from a session->get()
+      gsl_Assert(original);
+      ff->setStoredToRepository(false);
+    }
+  });
 }
 
-void ProcessSession::ensureNonNullResourceClaim(
-    const std::map<std::shared_ptr<Connectable>, std::vector<std::shared_ptr<core::FlowFile>>> &transactionMap) {
+void ProcessSessionImpl::ensureNonNullResourceClaim(
+    const std::map<Connectable*, std::vector<std::shared_ptr<core::FlowFile>>> &transactionMap) {
   for (auto& transaction : transactionMap) {
     for (auto& flowFile : transaction.second) {
       auto claim = flowFile->getResourceClaim();
       if (!claim) {
-        logger_->log_debug("Processor %s (%s) did not create a ResourceClaim, creating an empty one",
-                           process_context_->getProcessorNode()->getUUIDStr(),
-                           process_context_->getProcessorNode()->getName());
-        OutputStreamPipe emptyStreamCallback(std::make_shared<io::BufferStream>());
-        write(flowFile, &emptyStreamCallback);
+        logger_->log_debug("Processor {} ({}) did not create a ResourceClaim, creating an empty one",
+                           process_context_->getProcessor().getUUIDStr(),
+                           process_context_->getProcessor().getName());
+        io::BufferStream emptyBufferStream;
+        write(flowFile, OutputStreamPipe{emptyBufferStream});
       }
     }
   }
 }
 
-std::shared_ptr<core::FlowFile> ProcessSession::get() {
-  std::shared_ptr<Connectable> first = process_context_->getProcessorNode()->pickIncomingConnection();
+std::shared_ptr<core::FlowFile> ProcessSessionImpl::get() {
+  const auto first = process_context_->getProcessor().pickIncomingConnection();
 
   if (first == nullptr) {
-    logger_->log_trace("Get is null for %s", process_context_->getProcessorNode()->getName());
+    logger_->log_trace("Get is null for {}", process_context_->getProcessor().getName());
     return nullptr;
   }
 
-  std::shared_ptr<Connection> current = std::static_pointer_cast<Connection>(first);
+  auto current = dynamic_cast<Connection*>(first);
+  if (!current) {
+    logger_->log_error("The incoming connection [{}] of the processor [{}] \"{}\" is not actually a Connection.",
+                       first->getUUIDStr(), process_context_->getProcessor().getUUIDStr(), process_context_->getProcessor().getName());
+    return {};
+  }
 
   do {
     std::set<std::shared_ptr<core::FlowFile> > expired;
@@ -940,8 +1157,8 @@ std::shared_ptr<core::FlowFile> ProcessSession::get() {
       // Remove expired flow record
       for (const auto& record : expired) {
         std::stringstream details;
-        details << process_context_->getProcessorNode()->getName() << " expire flow record " << record->getUUIDStr();
-        provenance_report_->expire(record, details.str());
+        details << process_context_->getProcessor().getName() << " expire flow record " << record->getUUIDStr();
+        provenance_report_->expire(*record, details.str());
         // there is no rolling back expired FlowFiles
         if (record->isStored() && process_context_->getFlowFileRepository()->Delete(record->getUUIDStr())) {
           record->setStoredToRepository(false);
@@ -951,48 +1168,56 @@ std::shared_ptr<core::FlowFile> ProcessSession::get() {
     if (ret) {
       // add the flow record to the current process session update map
       ret->setDeleted(false);
-      std::shared_ptr<FlowFile> snapshot = std::make_shared<FlowFileRecord>();
-      *snapshot = *ret;
-      logger_->log_debug("Create Snapshot FlowFile with UUID %s", snapshot->getUUIDStr());
+      std::shared_ptr<FlowFile> snapshot = std::make_shared<FlowFileRecordImpl>();
+      snapshot->copy(*ret);
+      logger_->log_debug("Create Snapshot FlowFile with UUID {}", snapshot->getUUIDStr());
       utils::Identifier uuid = ret->getUUID();
-      _updatedFlowFiles[uuid] = {ret, snapshot};
-      auto flow_version = process_context_->getProcessorNode()->getFlowIdentifier();
+      updated_flowfiles_[uuid] = {ret, snapshot};
+      auto flow_version = process_context_->getProcessor().getFlowIdentifier();
       if (flow_version != nullptr) {
         ret->setAttribute(SpecialFlowAttribute::FLOW_ID, flow_version->getFlowId());
       }
+      if (metrics_) {
+        metrics_->incomingBytes() += ret->getSize();
+        ++metrics_->incomingFlowFiles();
+      }
       return ret;
     }
-    current = std::static_pointer_cast<Connection>(process_context_->getProcessorNode()->pickIncomingConnection());
+    current = dynamic_cast<Connection*>(process_context_->getProcessor().pickIncomingConnection());
   } while (current != nullptr && current != first);
 
   return nullptr;
 }
 
-void ProcessSession::flushContent() {
+void ProcessSessionImpl::flushContent() {
   content_session_->commit();
 }
 
-bool ProcessSession::outgoingConnectionsFull(const std::string& relationship) {
-  std::set<std::shared_ptr<Connectable>> connections = process_context_->getProcessorNode()->getOutGoingConnections(relationship);
+bool ProcessSessionImpl::outgoingConnectionsFull(const std::string& relationship) {
+  std::set<Connectable*> connections = process_context_->getProcessor().getOutGoingConnections(relationship);
   Connection * connection = nullptr;
-  for (const auto& conn : connections) {
-    connection = dynamic_cast<Connection*>(conn.get());
-    if (connection && connection->isFull()) {
+  for (const auto conn : connections) {
+    connection = dynamic_cast<Connection*>(conn);
+    if (connection && connection->backpressureThresholdReached()) {
       return true;
     }
   }
   return false;
 }
 
-bool ProcessSession::existsFlowFileInRelationship(const Relationship &relationship) {
-  return std::any_of(_transferRelationship.begin(), _transferRelationship.end(),
-      [&relationship](const std::map<utils::Identifier, Relationship>::value_type &key_value_pair) {
-        return relationship == key_value_pair.second;
+bool ProcessSessionImpl::existsFlowFileInRelationship(const Relationship &relationship) {
+  return std::any_of(updated_relationships_.begin(), updated_relationships_.end(),
+      [&](const auto& key_value_pair) {
+        return key_value_pair.second && relationship == *key_value_pair.second;
+  }) || std::any_of(added_flowfiles_.begin(), added_flowfiles_.end(),
+      [&](const auto& key_value_pair) {
+        return key_value_pair.second.rel && relationship == *key_value_pair.second.rel;
   });
 }
 
-}  // namespace core
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+bool ProcessSessionImpl::hasBeenTransferred(const core::FlowFile &flow) const {
+  return (updated_relationships_.contains(flow.getUUID()) && updated_relationships_.at(flow.getUUID()) != nullptr) ||
+    (added_flowfiles_.contains(flow.getUUID()) && added_flowfiles_.at(flow.getUUID()).rel != nullptr);
+}
+
+}  // namespace org::apache::nifi::minifi::core

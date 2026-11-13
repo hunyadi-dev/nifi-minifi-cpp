@@ -1,0 +1,45 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+if (NOT (ENABLE_ALL OR ENABLE_GRAFANA_LOKI))
+    return()
+endif()
+
+include(${CMAKE_SOURCE_DIR}/extensions/ExtensionHeader.txt)
+
+if (ENABLE_GRPC_FOR_LOKI)
+    include(GetGrpc)
+    include(GenerateGrafanaLokiProto)
+
+    add_library(grafana-loki-protos ${LOKI_PROTOBUF_GENERATED_DIR}/grafana-loki-push.grpc.pb.cc ${LOKI_PROTOBUF_GENERATED_DIR}/grafana-loki-push.pb.cc)
+    target_include_directories(grafana-loki-protos SYSTEM BEFORE PRIVATE "${LOKI_PROTOBUF_GENERATED_DIR}" "${GRPC_INCLUDE_DIR}" "${PROTOBUF_INCLUDE_DIR}")
+    target_link_libraries(grafana-loki-protos gRPC::grpc++ protobuf::libprotobuf)
+
+    file(GLOB SOURCES "*.cpp")
+
+    if (NOT WIN32)
+        set_source_files_properties(${LOKI_PROTOBUF_GENERATED_DIR}/grafana-loki-push.grpc.pb.cc PROPERTIES COMPILE_FLAGS -Wno-error)
+        set_source_files_properties(${LOKI_PROTOBUF_GENERATED_DIR}/grafana-loki-push.pb.cc PROPERTIES COMPILE_FLAGS -Wno-error)
+    endif()
+else()
+    set(SOURCES
+        ${CMAKE_CURRENT_SOURCE_DIR}/PushGrafanaLoki.cpp
+        ${CMAKE_CURRENT_SOURCE_DIR}/PushGrafanaLokiREST.cpp
+    )
+endif()
+
+add_minifi_library(minifi-grafana-loki SHARED ${SOURCES})
+target_link_libraries(minifi-grafana-loki ${LIBMINIFI})
+
+if (ENABLE_GRPC_FOR_LOKI)
+    target_include_directories(minifi-grafana-loki SYSTEM BEFORE PRIVATE "${LOKI_PROTOBUF_GENERATED_DIR}" "${GRPC_INCLUDE_DIR}" "${PROTOBUF_INCLUDE_DIR}")
+    target_link_libraries(minifi-grafana-loki grafana-loki-protos)
+    add_dependencies(minifi-grafana-loki grafana-loki-protos)
+    if (MSVC)
+        target_compile_options(minifi-grafana-loki PRIVATE /wd4996)
+    endif()
+endif()
+
+register_extension(minifi-grafana-loki "GRAFANA LOKI EXTENSIONS" GRAFANA-LOKI-EXTENSIONS "This enables Grafana Loki support" "extensions/grafana-loki/tests")
+

@@ -1,0 +1,48 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#include "StatefulProcessor.h"
+
+#include <string>
+
+#include "minifi-cpp/Exception.h"
+#include "core/Resource.h"
+#include "minifi-cpp/core/ProcessContext.h"
+#include "core/ProcessSession.h"
+
+namespace org::apache::nifi::minifi::processors {
+
+void StatefulProcessor::onSchedule(core::ProcessContext& context, core::ProcessSessionFactory&) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto temp_state_manager = context.createStateManager();
+  if (temp_state_manager == nullptr) {
+    throw Exception(PROCESSOR_EXCEPTION, "Failed to get StateManager");
+  }
+
+  if (on_schedule_hook_) {
+    on_schedule_hook_(*temp_state_manager);
+  }
+}
+
+void StatefulProcessor::onTrigger(core::ProcessContext& context, core::ProcessSession&) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  auto state_manager = context.getStateManager();
+  if (on_trigger_hook_index_ < on_trigger_hooks_.size()) {
+    on_trigger_hooks_[on_trigger_hook_index_++](*state_manager);
+  }
+}
+
+void StatefulProcessor::setHooks(HookType onScheduleHook, std::vector<HookType> onTriggerHooks) {
+  std::lock_guard<std::mutex> lock(mutex_);
+  on_schedule_hook_ = std::move(onScheduleHook);
+  on_trigger_hooks_ = std::move(onTriggerHooks);
+}
+
+bool StatefulProcessor::hasFinishedHooks() const {
+  std::lock_guard<std::mutex> lock(mutex_);
+  return on_trigger_hook_index_ == on_trigger_hooks_.size();
+}
+
+REGISTER_RESOURCE(StatefulProcessor, Processor);
+
+}  // namespace org::apache::nifi::minifi::processors

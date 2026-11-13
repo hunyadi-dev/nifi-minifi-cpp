@@ -1,0 +1,80 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#include "LmdbStream.h"
+
+#include <cstring>
+#include <algorithm>
+#include <string>
+#include <utility>
+
+#include "io/validation.h"
+
+namespace org::apache::nifi::minifi::extensions::lmdb {
+
+LmdbStream::LmdbStream(std::string path, LmdbWrapper& lmdb_wrapper, bool write_enable, bool append)
+    : BaseStreamImpl(),
+      lmdb_wrapper_(lmdb_wrapper),
+      path_(std::move(path)),
+      write_enable_(write_enable),
+      exists_(loadValue()) {
+  if (write_enable_ && !append) {
+    if (exists_) {
+      logger_->log_warn("Overwriting pre-existing LMDB content for key '{}' on a non-append write", path_);
+    }
+    value_.clear();
+  }
+}
+
+bool LmdbStream::loadValue() {
+  auto value_opt = lmdb_wrapper_.getValue(path_);
+  if (!value_opt) {
+    return false;
+  }
+  value_ = *value_opt;
+  return true;
+}
+
+void LmdbStream::close() {
+  commit();
+}
+
+bool LmdbStream::commit() {
+  if (!write_enable_ || !dirty_) { return false; }
+
+  if (!lmdb_wrapper_.putValue(path_, value_)) {
+    return false;
+  }
+  dirty_ = false;
+  return true;
+}
+
+void LmdbStream::seek(size_t offset) {
+  offset_ = offset;
+}
+
+size_t LmdbStream::tell() const {
+  return offset_;
+}
+
+size_t LmdbStream::write(const uint8_t* value, size_t size) {
+  if (!write_enable_) { return io::STREAM_ERROR; }
+  if (size != 0 && value == nullptr) { return io::STREAM_ERROR; }
+  value_.append(reinterpret_cast<const char*>(value), size);
+  dirty_ = true;
+  return size;
+}
+
+size_t LmdbStream::read(std::span<std::byte> buf) {
+  if (!exists_) { return io::STREAM_ERROR; }
+  if (buf.empty()) { return 0; }
+  if (offset_ >= value_.size()) { return 0; }
+
+  const auto bytes_to_read = std::min(buf.size(), value_.size() - offset_);
+  std::memcpy(buf.data(), value_.data() + offset_, bytes_to_read);
+  offset_ += bytes_to_read;
+  return bytes_to_read;
+}
+
+}  // namespace org::apache::nifi::minifi::extensions::lmdb

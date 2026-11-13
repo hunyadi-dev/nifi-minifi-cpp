@@ -1,92 +1,76 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef LIBMINIFI_INCLUDE_C2_TRIGGERS_FILEUPDATETRIGGER_H_
-#define LIBMINIFI_INCLUDE_C2_TRIGGERS_FILEUPDATETRIGGER_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
 
+#include <atomic>
 #include <memory>
 #include <string>
-#include <atomic>
+#include <utility>
+
 #include "c2/C2Trigger.h"
 #include "utils/StringUtils.h"
 #include "utils/file/FileUtils.h"
 #include "c2/C2Payload.h"
 #include "properties/Configure.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace c2 {
+namespace org::apache::nifi::minifi::c2 {
 
 /**
  * Purpose: Defines a file update trigger when the last write time of a file has been changed.
  * Design: Extends C2Trigger, and implements a trigger, action, reset state machine. Calling
  * triggered will check the file.
  */
-class FileUpdateTrigger : public C2Trigger {
+class FileUpdateTrigger final : public C2Trigger {
  public:
-  FileUpdateTrigger(const std::string& name, const utils::Identifier& uuid = {}) // NOLINT
+  MINIFIAPI static constexpr const char* Description = "Defines a file update trigger when the last write time of a file has been changed.";
+
+  explicit FileUpdateTrigger(const std::string_view name, const utils::Identifier &uuid = {})
       : C2Trigger(name, uuid),
-        last_update_(0),
-        update_(false),
-        logger_(logging::LoggerFactory<FileUpdateTrigger>::getLogger()) {
+        update_(false) {
   }
 
-  void initialize(const std::shared_ptr<minifi::Configure> &configuration) {
+  void initialize(const std::shared_ptr<minifi::Configure> &configuration) override {
     if (nullptr != configuration) {
       if (configuration->get(minifi::Configure::nifi_c2_file_watch, "c2.file.watch", file_)) {
-        last_update_ = utils::file::FileUtils::last_write_time(file_);
+        setLastUpdate(utils::file::last_write_time(file_));
       } else {
         logger_->log_trace("Could not configure file");
       }
     }
   }
 
-  virtual bool triggered() {
-    if (last_update_ == 0) {
+  bool triggered() override {
+    if (!getLastUpdate().has_value()) {
       logger_->log_trace("Last Update is zero");
       return false;
     }
-    auto update_time = utils::file::FileUtils::last_write_time(file_);
-    logger_->log_trace("Last Update is %d and update time is %d", last_update_.load(), update_time);
-    if (update_time > last_update_) {
-      last_update_ = update_time;
+    auto update_time = utils::file::last_write_time(file_);
+    auto last_update_l = getLastUpdate().value().time_since_epoch().count();
+    logger_->log_trace("Last Update is {} and update time is {}", last_update_l , update_time.value().time_since_epoch().count());
+    if (update_time > getLastUpdate()) {
+      setLastUpdate(update_time);
       update_ = true;
       return true;
     }
     return false;
   }
 
-  virtual void reset() {
-    // reset the last write time
-    last_update_ = utils::file::FileUtils::last_write_time(file_);
+
+  void reset() override {
+    setLastUpdate(utils::file::last_write_time(file_));
     update_ = false;
   }
 
   /**
    * Returns an update payload implementing a C2 action
    */
-  virtual C2Payload getAction();
+  C2Payload getAction() override;
 
   /**
    * Determines if we are connected and operating
    */
-  virtual bool isRunning() {
+  bool isRunning() const override {
     return true;
   }
 
@@ -95,30 +79,29 @@ class FileUpdateTrigger : public C2Trigger {
    * @param timeoutMs timeout in milliseconds
    */
 
-  virtual void yield() {
+  void yield() override {
   }
 
   /**
    * Determines if work is available by this connectable
    * @return boolean if work is available.
    */
-  virtual bool isWorkAvailable() {
+  bool isWorkAvailable() override {
     return true;
   }
 
+  std::optional<std::chrono::file_clock::time_point> getLastUpdate() const;
+
+  void setLastUpdate(const std::optional<std::chrono::file_clock::time_point> &last_update);
+
  protected:
   std::string file_;
-  std::atomic<uint64_t> last_update_;
   std::atomic<bool> update_;
 
  private:
-  std::shared_ptr<logging::Logger> logger_;
+  std::shared_ptr<core::logging::Logger> logger_ = core::logging::LoggerFactory<FileUpdateTrigger>::getLogger();
+  mutable std::mutex last_update_lock;
+  std::optional<std::chrono::file_clock::time_point> last_update_;
 };
 
-}  // namespace c2
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // LIBMINIFI_INCLUDE_C2_TRIGGERS_FILEUPDATETRIGGER_H_
+}  // namespace org::apache::nifi::minifi::c2

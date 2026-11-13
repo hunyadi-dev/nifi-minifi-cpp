@@ -1,22 +1,12 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include "properties/Decryptor.h"
-#include "TestUtils.h"
+#include "unit/Catch.h"
+#include "unit/TestBase.h"
+#include "utils/StringUtils.h"
+#include "properties/Configure.h"
 
 namespace minifi = org::apache::nifi::minifi;
 namespace utils = org::apache::nifi::minifi::utils;
@@ -33,8 +23,7 @@ TEST_CASE("Decryptor can decide whether a property is encrypted", "[isValidEncry
 }
 
 TEST_CASE("Decryptor can decrypt a property", "[decrypt]") {
-  utils::crypto::Bytes encryption_key = utils::crypto::stringToBytes(utils::StringUtils::from_hex(
-      "4024b327fdc987ce3eb43dd1f690b9987e4072e0020e3edf4349ce1ad91a4e38"));
+  utils::crypto::Bytes encryption_key = utils::string::from_hex("4024b327fdc987ce3eb43dd1f690b9987e4072e0020e3edf4349ce1ad91a4e38");
   minifi::Decryptor decryptor{utils::crypto::EncryptionProvider{encryption_key}};
 
   std::string encrypted_value = "l3WY1V27knTiPa6jVX0jrq4qjmKsySOu||ErntqZpHP1M+6OkA14p5sdnqJhuNHWHDVUU5EyMloTtSytKk9a5xNKo=";
@@ -42,8 +31,7 @@ TEST_CASE("Decryptor can decrypt a property", "[decrypt]") {
 }
 
 TEST_CASE("Decryptor will throw if the value is incorrect", "[decrypt]") {
-  utils::crypto::Bytes encryption_key = utils::crypto::stringToBytes(utils::StringUtils::from_hex(
-      "4024b327fdc987ce3eb43dd1f690b9987e4072e0020e3edf4349ce1ad91a4e38"));
+  utils::crypto::Bytes encryption_key = utils::string::from_hex("4024b327fdc987ce3eb43dd1f690b9987e4072e0020e3edf4349ce1ad91a4e38");
   minifi::Decryptor decryptor{utils::crypto::EncryptionProvider{encryption_key}};
 
   // correct nonce + ciphertext and mac: "l3WY1V27knTiPa6jVX0jrq4qjmKsySOu||ErntqZpHP1M+6OkA14p5sdnqJhuNHWHDVUU5EyMloTtSytKk9a5xNKo="
@@ -84,14 +72,13 @@ TEST_CASE("Decryptor will throw if the value is incorrect", "[decrypt]") {
 }
 
 TEST_CASE("Decryptor can decrypt a configuration file", "[decryptSensitiveProperties]") {
-  utils::crypto::Bytes encryption_key = utils::crypto::stringToBytes(utils::StringUtils::from_hex(
-      "5506c28d0fe265299e294a4c766b723a48986764953e93d38b3c627176fd10ed"));
+  utils::crypto::Bytes encryption_key = utils::string::from_hex("5506c28d0fe265299e294a4c766b723a48986764953e93d38b3c627176fd10ed");
   minifi::Decryptor decryptor{utils::crypto::EncryptionProvider{encryption_key}};
 
-  minifi::Configure configuration{decryptor};
-  configuration.setHome("resources");
-  configuration.loadConfigureFile("encrypted.minifi.properties");
-  REQUIRE(configuration.getConfiguredKeys().size() > 0);
+  minifi::ConfigureImpl configuration{decryptor};
+  std::filesystem::path resources_dir{TEST_RESOURCES};
+  configuration.loadConfigureFile(resources_dir / "encrypted.minifi.properties");
+  REQUIRE_FALSE(configuration.getConfiguredKeys().empty());
 
   const auto passphrase = configuration.get(minifi::Configure::nifi_security_client_pass_phrase);
   REQUIRE(passphrase);
@@ -102,7 +89,7 @@ TEST_CASE("Decryptor can decrypt a configuration file", "[decryptSensitiveProper
   REQUIRE(*password == "OpenSesame");
 
   std::string agent_identifier;
-  REQUIRE(configuration.get("nifi.c2.agent.identifier", "c2.agent.identifier", agent_identifier));
+  REQUIRE(configuration.get(minifi::Configuration::nifi_c2_agent_identifier, "c2.agent.identifier", agent_identifier));
   REQUIRE(agent_identifier == "TailFileTester-001");
 
   const auto unencrypted_property = configuration.get(minifi::Configure::nifi_bored_yield_duration);
@@ -114,10 +101,12 @@ TEST_CASE("Decryptor can decrypt a configuration file", "[decryptSensitiveProper
 }
 
 TEST_CASE("Decryptor can be created from a bootstrap file", "[create]") {
-  const auto valid_decryptor = minifi::Decryptor::create("resources");
+  std::filesystem::path resources_dir{TEST_RESOURCES};
+  const auto valid_decryptor = minifi::Decryptor::create(resources_dir);
   REQUIRE(valid_decryptor);
   REQUIRE(valid_decryptor->decrypt("HvbPejGT3ur9/00gXQK/dJCYwaNqhopf||CiXKiNaljSN7VkLXP5zfJnb4+4UcKIG3ddwuVfSPpkRRfT4=") == "SpeakFriendAndEnter");
 
-  const auto invalid_decryptor = minifi::Decryptor::create("there.is.no.such.directory");
+  TempDirectory temp_dir;
+  const auto invalid_decryptor = minifi::Decryptor::create(temp_dir.getPath() / "there.is.no.such.directory");
   REQUIRE_FALSE(invalid_decryptor);
 }

@@ -1,189 +1,76 @@
-/**
- * @file ConsumeWindowsEventLog.cpp
- * ConsumeWindowsEventLog class declaration
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include "ConsumeWindowsEventLog.h"
-#include <stdio.h>
+
+#include <cstdio>
 #include <vector>
 #include <tuple>
 #include <utility>
-#include <queue>
 #include <map>
-#include <set>
-#include <sstream>
 #include <string>
-#include <iostream>
 #include <memory>
-#include <regex>
-#include <cinttypes>
 
+#include "wel/Bookmark.h"
+#include "wel/LookupCacher.h"
 #include "wel/MetadataWalker.h"
+#include "wel/StringSplitter.h"
 #include "wel/XMLString.h"
-#include "wel/UnicodeConversion.h"
 #include "wel/JSONUtils.h"
+#include "wel/WindowsError.h"
 
-#include "io/BufferStream.h"
-#include "core/ProcessContext.h"
+#include "minifi-cpp/core/ProcessContext.h"
 #include "core/ProcessSession.h"
 #include "core/Resource.h"
-#include "Bookmark.h"
 #include "utils/Deleters.h"
+#include "core/logging/LoggerFactory.h"
 
-#include "utils/gsl.h"
+#include "minifi-cpp/utils/gsl.h"
+#include "utils/RegexUtils.h"
+#include "utils/StringUtils.h"
+#include "utils/UnicodeConversion.h"
+#include "utils/ProcessorConfigUtils.h"
 
 #pragma comment(lib, "wevtapi.lib")
 #pragma comment(lib, "ole32.lib")
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace processors {
+using namespace std::literals::chrono_literals;
 
-// ConsumeWindowsEventLog
-const std::string ConsumeWindowsEventLog::ProcessorName("ConsumeWindowsEventLog");
-const int EVT_NEXT_TIMEOUT_MS = 500;
+namespace {
+auto createTimer() {
+  return [start_time = std::chrono::steady_clock::now()] {
+    return std::chrono::steady_clock::now() - start_time;
+  };
+}
+}  // namespace
 
-core::Property ConsumeWindowsEventLog::Channel(
-  core::PropertyBuilder::createProperty("Channel")->
-  isRequired(true)->
-  withDefaultValue("System")->
-  withDescription("The Windows Event Log Channel to listen to.")->
-  supportsExpressionLanguage(true)->
-  build());
+namespace org::apache::nifi::minifi::wel {
+std::function<bool(std::string_view)> parseSidMatcher(const std::optional<std::string>& sid_matcher) {
+  if (!sid_matcher || sid_matcher->empty()) {
+    return [](std::string_view){ return false; };
+  }
 
-core::Property ConsumeWindowsEventLog::Query(
-  core::PropertyBuilder::createProperty("Query")->
-  isRequired(true)->
-  withDefaultValue("*")->
-  withDescription("XPath Query to filter events. (See https://msdn.microsoft.com/en-us/library/windows/desktop/dd996910(v=vs.85).aspx for examples.)")->
-  supportsExpressionLanguage(true)->
-  build());
+  if (std::smatch match; utils::regexMatch(*sid_matcher, match, utils::Regex{R"_(\.\*(\w+))_"})) {
+    std::string suffix = match[1];
+    return [suffix](std::string_view field_name) { return utils::string::endsWith(field_name, suffix); };
+  }
 
-core::Property ConsumeWindowsEventLog::MaxBufferSize(
-  core::PropertyBuilder::createProperty("Max Buffer Size")->
-  isRequired(true)->
-  withDefaultValue<core::DataSizeValue>("1 MB")->
-  withDescription(
-    "The individual Event Log XMLs are rendered to a buffer."
-    " This specifies the maximum size in bytes that the buffer will be allowed to grow to. (Limiting the maximum size of an individual Event XML.)")->
-  build());
+  utils::Regex sid_matcher_regex{*sid_matcher};
+  return [sid_matcher_regex](std::string_view field_name) { return utils::regexMatch(field_name, sid_matcher_regex); };
+}
+}  // namespace org::apache::nifi::minifi::wel
 
-// !!! This property is obsolete since now subscription is not used, but leave since it might be is used already in config.yml.
-core::Property ConsumeWindowsEventLog::InactiveDurationToReconnect(
-  core::PropertyBuilder::createProperty("Inactive Duration To Reconnect")->
-  isRequired(true)->
-  withDefaultValue<core::TimePeriodValue>("10 min")->
-  withDescription(
-    "If no new event logs are processed for the specified time period, "
-    " this processor will try reconnecting to recover from a state where any further messages cannot be consumed."
-    " Such situation can happen if Windows Event Log service is restarted, or ERROR_EVT_QUERY_RESULT_STALE (15011) is returned."
-    " Setting no duration, e.g. '0 ms' disables auto-reconnection.")->
-  build());
+namespace org::apache::nifi::minifi::processors {
 
-core::Property ConsumeWindowsEventLog::IdentifierMatcher(
-  core::PropertyBuilder::createProperty("Identifier Match Regex")->
-  isRequired(false)->
-  withDefaultValue(".*Sid")->
-  withDescription("Regular Expression to match Subject Identifier Fields. These will be placed into the attributes of the FlowFile")->
-  build());
-
-
-core::Property ConsumeWindowsEventLog::IdentifierFunction(
-  core::PropertyBuilder::createProperty("Apply Identifier Function")->
-  isRequired(false)->
-  withDefaultValue<bool>(true)->
-  withDescription("If true it will resolve SIDs matched in the 'Identifier Match Regex' to the DOMAIN\\USERNAME associated with that ID")->
-  build());
-
-core::Property ConsumeWindowsEventLog::ResolveAsAttributes(
-  core::PropertyBuilder::createProperty("Resolve Metadata in Attributes")->
-  isRequired(false)->
-  withDefaultValue<bool>(true)->
-  withDescription("If true, any metadata that is resolved ( such as IDs or keyword metadata ) will be placed into attributes, otherwise it will be replaced in the XML or text output")->
-  build());
-
-
-core::Property ConsumeWindowsEventLog::EventHeaderDelimiter(
-  core::PropertyBuilder::createProperty("Event Header Delimiter")->
-  isRequired(false)->
-  withDescription("If set, the chosen delimiter will be used in the Event output header. Otherwise, a colon followed by spaces will be used.")->
-  build());
-
-
-core::Property ConsumeWindowsEventLog::EventHeader(
-  core::PropertyBuilder::createProperty("Event Header")->
-  isRequired(false)->
-  withDefaultValue("LOG_NAME=Log Name, SOURCE = Source, TIME_CREATED = Date,EVENT_RECORDID=Record ID,EVENTID = Event ID,"
-      "TASK_CATEGORY = Task Category,LEVEL = Level,KEYWORDS = Keywords,USER = User,COMPUTER = Computer, EVENT_TYPE = EventType")->
-  withDescription("Comma seperated list of key/value pairs with the following keys LOG_NAME, SOURCE, TIME_CREATED,EVENT_RECORDID,"
-      "EVENTID,TASK_CATEGORY,LEVEL,KEYWORDS,USER,COMPUTER, and EVENT_TYPE. Eliminating fields will remove them from the header.")->
-  build());
-
-core::Property ConsumeWindowsEventLog::OutputFormat(
-  core::PropertyBuilder::createProperty("Output Format")->
-  isRequired(true)->
-  withDefaultValue(Both)->
-  withAllowableValues<std::string>({XML, Plaintext, Both, JSON})->
-  withDescription("Set the output format type. In case \'Both\' is selected the processor generates two flow files for every event captured in format XML and Plaintext")->
-  build());
-
-core::Property ConsumeWindowsEventLog::JSONFormat(
-  core::PropertyBuilder::createProperty("JSON Format")->
-  isRequired(true)->
-  withDefaultValue(JSONSimple)->
-  withAllowableValues<std::string>({JSONSimple, JSONFlattened, JSONRaw})->
-  withDescription("Set the json format type. Only applicable if Output Format is set to 'JSON'")->
-  build());
-
-core::Property ConsumeWindowsEventLog::BatchCommitSize(
-  core::PropertyBuilder::createProperty("Batch Commit Size")->
-  isRequired(false)->
-  withDefaultValue<uint64_t>(1000U)->
-  withDescription("Maximum number of Events to consume and create to Flow Files from before committing.")->
-  build());
-
-core::Property ConsumeWindowsEventLog::BookmarkRootDirectory(
-  core::PropertyBuilder::createProperty("State Directory")->
-  isRequired(false)->
-  withDefaultValue("CWELState")->
-  withDescription("DEPRECATED. Only use it for state migration from the state file, supplying the legacy state directory.")->
-  build());
-
-core::Property ConsumeWindowsEventLog::ProcessOldEvents(
-  core::PropertyBuilder::createProperty("Process Old Events")->
-  isRequired(true)->
-  withDefaultValue<bool>(false)->
-  withDescription("This property defines if old events (which are created before first time server is started) should be processed.")->
-  build());
-
-core::Relationship ConsumeWindowsEventLog::Success("success", "Relationship for successfully consumed events.");
-
-ConsumeWindowsEventLog::ConsumeWindowsEventLog(const std::string& name, const utils::Identifier& uuid)
-  : core::Processor(name, uuid),
-    logger_(logging::LoggerFactory<ConsumeWindowsEventLog>::getLogger()) {
+ConsumeWindowsEventLog::ConsumeWindowsEventLog(core::ProcessorMetadata metadata)
+    : core::ProcessorImpl{std::move(metadata)} {
   char buff[MAX_COMPUTERNAME_LENGTH + 1];
   DWORD size = sizeof(buff);
   if (GetComputerName(buff, &size)) {
     computerName_ = buff;
   } else {
-    LogWindowsError();
+    logger_->log_error("GetComputerName failed due to {}", wel::getLastError());
   }
 }
 
@@ -195,7 +82,7 @@ void ConsumeWindowsEventLog::notifyStop() {
     if (FreeLibrary(hMsobjsDll_)) {
       hMsobjsDll_ = nullptr;
     } else {
-      LOG_LAST_ERROR(LoadLibrary);
+      logger_->log_error("FreeLibrary failed due to {}", wel::getLastError());
     }
   }
   logger_->log_trace("finish notifyStop");
@@ -208,140 +95,112 @@ ConsumeWindowsEventLog::~ConsumeWindowsEventLog() {
 }
 
 void ConsumeWindowsEventLog::initialize() {
-  //! Set the supported properties
-  setSupportedProperties({
-     Channel, Query, MaxBufferSize, InactiveDurationToReconnect, IdentifierMatcher, IdentifierFunction, ResolveAsAttributes,
-     EventHeaderDelimiter, EventHeader, OutputFormat, JSONFormat, BatchCommitSize, BookmarkRootDirectory, ProcessOldEvents
+  setSupportedProperties(Properties);
+  setSupportedRelationships(Relationships);
+}
+
+wel::HeaderNames ConsumeWindowsEventLog::createHeaderNames(const std::optional<std::string>& event_header_property) const {
+  if (!event_header_property) { return {}; }
+
+  wel::HeaderNames header_names;
+  wel::splitCommaSeparatedKeyValuePairs(*event_header_property, [this, &header_names](std::string_view key, std::string_view value) {
+    if (auto metadata = magic_enum::enum_cast<wel::Metadata>(key)) {
+      header_names.emplace_back(*metadata, value);
+    } else {
+      logger_->log_error("{} is an invalid key for the header map", key);
+    }
   });
-
-  //! Set the supported relationships
-  setSupportedRelationships({Success});
+  return header_names;
 }
 
-bool ConsumeWindowsEventLog::insertHeaderName(wel::METADATA_NAMES &header, const std::string &key, const std::string & value) const {
-  wel::METADATA name = wel::WindowsEventLogMetadata::getMetadataFromString(key);
-
-  if (name != wel::METADATA::UNKNOWN) {
-    header.emplace_back(std::make_pair(name, value));
-    return true;
-  }
-  return false;
-}
-
-void ConsumeWindowsEventLog::onSchedule(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSessionFactory> &sessionFactory) {
-  state_manager_ = context->getStateManager();
-  if (state_manager_ == nullptr) {
+void ConsumeWindowsEventLog::onSchedule(core::ProcessContext& context, core::ProcessSessionFactory&) {
+  auto temp_state_manager = context.createStateManager();
+  if (temp_state_manager == nullptr) {
     throw Exception(PROCESSOR_EXCEPTION, "Failed to get StateManager");
   }
-
-  context->getProperty(IdentifierMatcher.getName(), regex_);
-  context->getProperty(ResolveAsAttributes.getName(), resolve_as_attributes_);
-  context->getProperty(IdentifierFunction.getName(), apply_identifier_function_);
-  context->getProperty(EventHeaderDelimiter.getName(), header_delimiter_);
-  context->getProperty(BatchCommitSize.getName(), batch_commit_size_);
-
-  std::string header;
-  context->getProperty(EventHeader.getName(), header);
-
-  auto keyValueSplit = utils::StringUtils::split(header, ",");
-  for (const auto &kv : keyValueSplit) {
-    auto splitKeyAndValue = utils::StringUtils::split(kv, "=");
-    if (splitKeyAndValue.size() == 2) {
-      auto key = utils::StringUtils::trim(splitKeyAndValue.at(0));
-      auto value = utils::StringUtils::trim(splitKeyAndValue.at(1));
-      if (!insertHeaderName(header_names_, key, value)) {
-        logger_->log_error("%s is an invalid key for the header map", key);
-      }
-    } else if (splitKeyAndValue.size() == 1) {
-     auto key = utils::StringUtils::trim(splitKeyAndValue.at(0));
-     if (!insertHeaderName(header_names_, key, "")) {
-       logger_->log_error("%s is an invalid key for the header map", key);
-     }
+  const auto clear_state_manager = gsl::finally([&]() {
+    if (bookmark_) {
+      bookmark_->setStateManager(nullptr);
     }
-  }
+  });
 
-  std::string mode;
-  context->getProperty(OutputFormat.getName(), mode);
+  resolve_as_attributes_ = utils::parseBoolProperty(context, ResolveAsAttributes);
+  apply_identifier_function_ = utils::parseBoolProperty(context, IdentifierFunction);
+  header_delimiter_ = utils::parseOptionalProperty(context, EventHeaderDelimiter);
+  batch_commit_size_ = utils::parseU64Property(context, BatchCommitSize);
+  header_names_ = createHeaderNames(utils::parseOptionalProperty(context, EventHeader));
+  sid_matcher_ = wel::parseSidMatcher(utils::parseOptionalProperty(context, IdentifierMatcher));
+  output_format_ = utils::parseEnumProperty<wel::OutputFormat>(context, OutputFormatProperty);
+  json_format_ = utils::parseEnumProperty<wel::JsonFormat>(context, JsonFormatProperty);
 
-  output_ = {};
-  if (mode == XML) {
-    output_.xml = true;
-  } else if (mode == Plaintext) {
-    output_.plaintext = true;
-  } else if (mode == Both) {
-    output_.xml = true;
-    output_.plaintext = true;
-  } else if (mode == JSON) {
-    std::string json_format;
-    context->getProperty(JSONFormat.getName(), json_format);
-    if (json_format == JSONRaw) {
-      output_.json.type = JSONType::Raw;
-    } else if (json_format == JSONSimple) {
-      output_.json.type = JSONType::Simple;
-    } else if (json_format == JSONFlattened) {
-      output_.json.type = JSONType::Flattened;
-    }
-  } else {
-    // in the future this might be considered an error, but for now due to backwards
-    // compatibility we just fall through and execute the processor outputing nothing
-    // throw Exception(PROCESS_SCHEDULE_EXCEPTION, "Unrecognized output format: " + mode);
-  }
-
-  if ((output_.xml || output_.json) && !hMsobjsDll_) {
+  if (output_format_ != wel::OutputFormat::Plaintext && !hMsobjsDll_) {
     char systemDir[MAX_PATH];
     if (GetSystemDirectory(systemDir, sizeof(systemDir))) {
       hMsobjsDll_ = LoadLibrary((systemDir + std::string("\\msobjs.dll")).c_str());
       if (!hMsobjsDll_) {
-        LOG_LAST_ERROR(LoadLibrary);
+        logger_->log_error("LoadLibrary failed due to {}", wel::getLastError());
       }
     } else {
-      LOG_LAST_ERROR(GetSystemDirectory);
+      logger_->log_error("GetSystemDirectory failed due to {}", wel::getLastError());
     }
   }
 
-  context->getProperty(Channel.getName(), channel_);
-  wstrChannel_ = std::wstring(channel_.begin(), channel_.end());
+  path_ = wel::EventPath{utils::parseProperty(context, Channel)};
+  if (path_.kind() == wel::EventPath::Kind::FILE) {
+    logger_->log_debug("Using saved log file as log source");
+  } else {
+    logger_->log_debug("Using channel as log source");
+  }
 
-  std::string query;
-  context->getProperty(Query.getName(), query);
-  wstrQuery_ = std::wstring(query.begin(), query.end());
-
-  bool processOldEvents{};
-  context->getProperty(ProcessOldEvents.getName(), processOldEvents);
+  std::string query = context.getProperty(Query).value_or("");
+  wstr_query_ = utils::to_wstring(query);
 
   if (!bookmark_) {
-    std::string bookmarkDir;
-    context->getProperty(BookmarkRootDirectory.getName(), bookmarkDir);
-    if (bookmarkDir.empty()) {
-      logger_->log_error("State Directory is empty");
-      throw Exception(PROCESS_SCHEDULE_EXCEPTION, "State Directory is empty");
-    }
-    bookmark_ = std::make_unique<Bookmark>(wstrChannel_, wstrQuery_, bookmarkDir, getUUID(), processOldEvents, state_manager_, logger_);
-    if (!*bookmark_) {
-      bookmark_.reset();
-      throw Exception(PROCESS_SCHEDULE_EXCEPTION, "Bookmark is empty");
-    }
+    bookmark_ = createBookmark(context, temp_state_manager.get());
   }
 
-  context->getProperty(MaxBufferSize.getName(), maxBufferSize_);
-  logger_->log_debug("ConsumeWindowsEventLog: maxBufferSize_ %" PRIu64, maxBufferSize_);
+  max_buffer_size_ = utils::parseDataSizeProperty(context, MaxBufferSize);
+  logger_->log_debug("ConsumeWindowsEventLog: MaxBufferSize {}", max_buffer_size_);
 
-  provenanceUri_ = "winlog://" + computerName_ + "/" + channel_ + "?" + query;
+  cache_sid_lookups_ = utils::parseBoolProperty(context, CacheSidLookups);
+  logger_->log_debug("ConsumeWindowsEventLog: will{} cache SID to name lookups", cache_sid_lookups_ ? "" : " not");
+
+  provenanceUri_ = "winlog://" + computerName_ + "/" + path_.str() + "?" + query;
   logger_->log_trace("Successfully configured CWEL");
 }
 
-bool ConsumeWindowsEventLog::commitAndSaveBookmark(const std::wstring &bookmark_xml, const std::shared_ptr<core::ProcessSession> &session) {
+std::unique_ptr<wel::Bookmark> ConsumeWindowsEventLog::createBookmark(const core::ProcessContext& context, core::StateManager* state_manager) const {
+  std::string bookmark_dir = context.getProperty(BookmarkRootDirectory).value_or("");
+  if (bookmark_dir.empty()) {
+    logger_->log_error("State Directory is empty");
+    throw Exception(PROCESS_SCHEDULE_EXCEPTION, "State Directory is empty");
+  }
+  bool process_old_events = utils::parseBoolProperty(context, ProcessOldEvents);
+  auto bookmark = std::make_unique<wel::Bookmark>(path_, wstr_query_, bookmark_dir, getUUID(), process_old_events, state_manager, logger_);
+  if (!bookmark->isValid()) {
+    throw Exception(PROCESS_SCHEDULE_EXCEPTION, "Bookmark is empty");
+  }
+  return bookmark;
+}
+
+bool ConsumeWindowsEventLog::commitAndSaveBookmark(const std::wstring &bookmark_xml, core::ProcessContext& context, core::ProcessSession& session, core::StateManager* /*state_manager*/) {
   {
-    const TimeDiff time_diff;
-    session->commit();
-    logger_->log_debug("processQueue commit took %" PRId64 " ms", time_diff());
+    const auto time_diff = createTimer();
+    session.commit();
+    // session.commit() destroys the session's StateManager so we must create a new one before starting a new transaction.
+    context.setSessionStateManager(context.createStateManager());
+    auto* state_manager = context.getStateManager();
+    if (state_manager) {
+      bookmark_->setStateManager(state_manager);
+    }
+    logger_->log_debug("ConsumeWindowsEventLog: commit took {}", time_diff());
   }
 
   if (!bookmark_->saveBookmarkXml(bookmark_xml)) {
     logger_->log_error("Failed to save bookmark xml");
   }
 
-  if (session->outgoingConnectionsFull("success")) {
+  if (session.outgoingConnectionsFull("success")) {
     logger_->log_debug("Outgoing success connection is full");
     return false;
   }
@@ -349,17 +208,17 @@ bool ConsumeWindowsEventLog::commitAndSaveBookmark(const std::wstring &bookmark_
   return true;
 }
 
-std::tuple<size_t, std::wstring> ConsumeWindowsEventLog::processEventLogs(const std::shared_ptr<core::ProcessContext> &context,
-    const std::shared_ptr<core::ProcessSession> &session, const EVT_HANDLE& event_query_results) {
+std::tuple<size_t, std::wstring> ConsumeWindowsEventLog::processEventLogs(core::ProcessSession& session, EVT_HANDLE event_query_results) {
+  static constexpr DWORD timeout_milliseconds = 500;
   size_t processed_event_count = 0;
   std::wstring bookmark_xml;
   logger_->log_trace("Enumerating the events in the result set after the bookmarked event.");
   while (processed_event_count < batch_commit_size_ || batch_commit_size_ == 0) {
-    EVT_HANDLE next_event{};
+    EVT_HANDLE next_event_handle{};
     DWORD handles_set_count{};
-    if (!EvtNext(event_query_results, 1, &next_event, EVT_NEXT_TIMEOUT_MS, 0, &handles_set_count)) {
+    if (!EvtNext(event_query_results, 1, &next_event_handle, timeout_milliseconds, 0, &handles_set_count)) {
       if (ERROR_NO_MORE_ITEMS != GetLastError()) {
-        LogWindowsError("Failed to get next event");
+        logger_->log_error("Failed to get next event due to {}", wel::getLastError());
         continue;
         /* According to MS this iteration should only end when the return value is false AND
           the error code is NO_MORE_ITEMS. See the following page for further details:
@@ -367,26 +226,35 @@ std::tuple<size_t, std::wstring> ConsumeWindowsEventLog::processEventLogs(const 
       }
       break;
     }
-
-    const auto guard_next_event = gsl::finally([next_event]() { EvtClose(next_event); });
-    logger_->log_trace("Succesfully got the next event, performing event rendering");
-    EventRender event_render;
-    std::wstring new_bookmark_xml;
-    if (createEventRender(next_event, event_render) && bookmark_->getNewBookmarkXml(next_event, new_bookmark_xml)) {
-      bookmark_xml = std::move(new_bookmark_xml);
-      processed_event_count++;
-      putEventRenderFlowFileToSession(event_render, *session);
+    wel::unique_evt_handle next_event{next_event_handle};
+    logger_->log_trace("Successfully got the next event, performing event rendering");
+    auto processed_event = processEvent(next_event.get());
+    if (!processed_event) {
+      logger_->log_error("error processing event: {}", processed_event.error());
+      continue;
     }
+    auto new_bookmark_xml = bookmark_->getNewBookmarkXml(next_event.get());
+    if (!new_bookmark_xml) {
+      logger_->log_error("error getting the new bookmark: {}", new_bookmark_xml.error());
+      continue;
+    }
+    bookmark_xml = std::move(*new_bookmark_xml);
+    processed_event_count++;
+    createAndCommitFlowFile(*processed_event, session);
   }
   logger_->log_trace("Finished enumerating events.");
   return std::make_tuple(processed_event_count, bookmark_xml);
 }
 
-void ConsumeWindowsEventLog::onTrigger(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSession> &session) {
-  if (!bookmark_) {
-    logger_->log_debug("bookmark_ is null");
-    context->yield();
-    return;
+void ConsumeWindowsEventLog::onTrigger(core::ProcessContext& context, core::ProcessSession& session) {
+  const auto clear_state_manager = gsl::finally([&]() {
+    if (bookmark_) {
+      bookmark_->setStateManager(nullptr);
+    }
+  });
+  auto state_manager = context.getStateManager();
+  if (bookmark_) {
+    bookmark_->setStateManager(state_manager);
   }
 
   std::unique_lock<std::mutex> lock(on_trigger_mutex_, std::try_to_lock);
@@ -395,63 +263,71 @@ void ConsumeWindowsEventLog::onTrigger(const std::shared_ptr<core::ProcessContex
     return;
   }
 
+  if (!bookmark_) {
+    logger_->log_debug("bookmark_ is null");
+    context.yield();
+    return;
+  }
+
   logger_->log_trace("CWEL onTrigger");
 
   size_t processed_event_count = 0;
-  const TimeDiff time_diff;
+  const auto time_diff = createTimer();
   const auto timeGuard = gsl::finally([&]() {
-    logger_->log_debug("processed %zu Events in %"  PRId64 " ms", processed_event_count, time_diff());
+    logger_->log_debug("processed {} Events in {}", processed_event_count, time_diff());
   });
 
-  const auto event_query_results = EvtQuery(0, wstrChannel_.c_str(), wstrQuery_.c_str(), EvtQueryChannelPath);
+  wel::unique_evt_handle event_query_results{EvtQuery(nullptr, path_.wstr().c_str(), wstr_query_.c_str(), path_.getQueryFlags())};
   if (!event_query_results) {
-    LOG_LAST_ERROR(EvtQuery);
-    context->yield();
+    logger_->log_error("EvtQuery failed due to {}", wel::getLastError());
+    context.yield();
     return;
   }
-  const auto guard_event_query_results = gsl::finally([event_query_results]() { EvtClose(event_query_results); });
 
-  logger_->log_trace("Retrieved results in Channel: %ls with Query: %ls", wstrChannel_.c_str(), wstrQuery_.c_str());
+  logger_->log_trace("Retrieved results in Channel: {} with Query: {}", utils::to_string(path_.wstr()), utils::to_string(wstr_query_));
 
   auto bookmark_handle = bookmark_->getBookmarkHandleFromXML();
   if (!bookmark_handle) {
     logger_->log_error("bookmark_handle is null, unrecoverable error!");
     bookmark_.reset();
-    context->yield();
+    context.yield();
     return;
   }
 
-  if (!EvtSeek(event_query_results, 1, bookmark_handle, 0, EvtSeekRelativeToBookmark)) {
-    LOG_LAST_ERROR(EvtSeek);
-    context->yield();
+  if (!EvtSeek(event_query_results.get(), 1, bookmark_handle, 0, EvtSeekRelativeToBookmark)) {
+    logger_->log_error("EvtSeek failed due to {}", wel::getLastError());
+    context.yield();
     return;
   }
 
   refreshTimeZoneData();
 
   std::wstring bookmark_xml;
-  std::tie(processed_event_count, bookmark_xml) = processEventLogs(context, session, event_query_results);
+  std::tie(processed_event_count, bookmark_xml) = processEventLogs(session, event_query_results.get());
 
-  if (processed_event_count == 0 || !commitAndSaveBookmark(bookmark_xml, session)) {
-    context->yield();
+  if (processed_event_count == 0 || !commitAndSaveBookmark(bookmark_xml, context, session, state_manager)) {
+    context.yield();
     return;
   }
 }
 
-wel::WindowsEventLogHandler ConsumeWindowsEventLog::getEventLogHandler(const std::string & name) {
-  std::lock_guard<std::mutex> lock(cache_mutex_);
-  logger_->log_trace("Getting Event Log Handler corresponding to %s", name.c_str());
-  auto provider = providers_.find(name);
-  if (provider != std::end(providers_)) {
-    logger_->log_trace("Found the handler");
-    return provider->second;
+wel::WindowsEventLogProvider& ConsumeWindowsEventLog::getEventLogProvider(const std::string& name) {
+  logger_->log_trace("Getting Event Log Provider corresponding to {}", name);
+  auto it = providers_.find(name);
+  if (it != std::end(providers_)) {
+    logger_->log_trace("Found cached event log provider");
+    return it->second;
   }
 
-  std::wstring temp_wstring = std::wstring(name.begin(), name.end());
+  std::wstring temp_wstring = utils::to_wstring(name);
   LPCWSTR widechar = temp_wstring.c_str();
 
-  providers_[name] = wel::WindowsEventLogHandler(EvtOpenPublisherMetadata(NULL, widechar, NULL, 0, 0));
-  logger_->log_trace("Not found the handler -> created handler for %s", name.c_str());
+  auto opened_publisher_metadata_provider = EvtOpenPublisherMetadata(nullptr, widechar, nullptr, 0, 0);
+  if (!opened_publisher_metadata_provider) {
+    logger_->log_warn("EvtOpenPublisherMetadata failed due to {}", wel::getLastError());
+  }
+  providers_.emplace(name, opened_publisher_metadata_provider);
+  logger_->log_info("Created new Windows event log provider for '{}'. Number of cached providers: {}", name, providers_.size());
   return providers_[name];
 }
 
@@ -468,8 +344,8 @@ void ConsumeWindowsEventLog::substituteXMLPercentageItems(pugi::xml_document& do
   }
 
   struct TreeWalker: public pugi::xml_tree_walker {
-    TreeWalker(HMODULE hMsobjsDll, std::unordered_map<std::string, std::string>& xmlPercentageItemsResolutions, std::shared_ptr<logging::Logger> logger)
-      : hMsobjsDll_(hMsobjsDll), xmlPercentageItemsResolutions_(xmlPercentageItemsResolutions), logger_(logger) {
+    TreeWalker(HMODULE hMsobjsDll, std::unordered_map<std::string, std::string>& xmlPercentageItemsResolutions, std::shared_ptr<core::logging::Logger> logger)
+      : hMsobjsDll_(hMsobjsDll), xmlPercentageItemsResolutions_(xmlPercentageItemsResolutions), logger_(std::move(logger)) {
     }
 
     bool for_each(pugi::xml_node& node) override {
@@ -482,11 +358,11 @@ void ConsumeWindowsEventLog::substituteXMLPercentageItems(pugi::xml_document& do
       for (size_t numberPos = 0; std::string::npos != (numberPos = nodeText.find(percentages, numberPos));) {
         numberPos += percentages.size();
 
-        auto number = 0u;
+        DWORD number{};
         try {
           // Assumption - first character is not '0', otherwise not all digits will be replaced by 'value'.
           number = std::stoul(&nodeText[numberPos]);
-        } catch (const std::invalid_argument &) {
+        } catch (const std::invalid_argument&) {
           continue;
         }
 
@@ -501,18 +377,18 @@ void ConsumeWindowsEventLog::substituteXMLPercentageItems(pugi::xml_document& do
                             number,
                             MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
                             (LPTSTR)&pBuffer,
-                            1024, 0)) {
+                            1024, nullptr)) {
             value = pBuffer;
             LocalFree(pBuffer);
 
-            value = utils::StringUtils::trimRight(value);
+            value = utils::string::trimRight(value);
 
             xmlPercentageItemsResolutions_.insert({key, value});
           } else {
             // Add "" to xmlPercentageItemsResolutions_ - don't need to call FormaMessage for this 'key' again.
             xmlPercentageItemsResolutions_.insert({key, ""});
 
-            logger_->log_error("!FormatMessage error: %x. '%s' is not found in msobjs.dll.", GetLastError(), key.c_str());
+            logger_->log_error("FormatMessage failed due to {}. '{}' is not found in msobjs.dll.", wel::getLastError(), key);
           }
         } else {
           value = it->second;
@@ -535,123 +411,135 @@ void ConsumeWindowsEventLog::substituteXMLPercentageItems(pugi::xml_document& do
    private:
     HMODULE hMsobjsDll_;
     std::unordered_map<std::string, std::string>& xmlPercentageItemsResolutions_;
-    std::shared_ptr<logging::Logger> logger_;
+    std::shared_ptr<core::logging::Logger> logger_;
   } treeWalker(hMsobjsDll_, xmlPercentageItemsResolutions_, logger_);
 
   doc.traverse(treeWalker);
 }
 
-bool ConsumeWindowsEventLog::createEventRender(EVT_HANDLE hEvent, EventRender& eventRender) {
+std::expected<std::string, std::string> ConsumeWindowsEventLog::renderEventAsXml(EVT_HANDLE event_handle) {
   logger_->log_trace("Rendering an event");
   WCHAR stackBuffer[4096];
   DWORD size = sizeof(stackBuffer);
   using Deleter = utils::StackAwareDeleter<WCHAR, utils::FreeDeleter>;
-  std::unique_ptr<WCHAR, Deleter> buf{stackBuffer, Deleter{ stackBuffer }};
+  std::unique_ptr<WCHAR, Deleter> buf{stackBuffer, Deleter{stackBuffer}};
 
   DWORD used = 0;
   DWORD propertyCount = 0;
-  if (!EvtRender(NULL, hEvent, EvtRenderEventXml, size, buf.get(), &used, &propertyCount)) {
+  if (!EvtRender(nullptr, event_handle, EvtRenderEventXml, size, buf.get(), &used, &propertyCount)) {
     if (ERROR_INSUFFICIENT_BUFFER != GetLastError()) {
-      LOG_LAST_ERROR(EvtRender);
-      return false;
+      return std::unexpected{fmt::format("EvtRender failed due to {}", wel::getLastError())};
     }
-    if (used > maxBufferSize_) {
-      logger_->log_error("Dropping event because it couldn't be rendered within %" PRIu64 " bytes.", maxBufferSize_);
-      return false;
+    if (used > max_buffer_size_) {
+      return std::unexpected{fmt::format("Dropping event because it couldn't be rendered within {} bytes.", max_buffer_size_)};
     }
     size = used;
-    buf.reset((LPWSTR)malloc(size));
+    buf.reset((LPWSTR) malloc(size));
     if (!buf) {
-      return false;
+      return std::unexpected{"malloc failed"};
     }
-    if (!EvtRender(NULL, hEvent, EvtRenderEventXml, size, buf.get(), &used, &propertyCount)) {
-      LOG_LAST_ERROR(EvtRender);
-      return false;
+    if (!EvtRender(nullptr, event_handle, EvtRenderEventXml, size, buf.get(), &used, &propertyCount)) {
+      return std::unexpected{fmt::format("EvtRender failed due to {}", wel::getLastError())};
     }
   }
+  logger_->log_trace("Event rendered with size {}", used);
+  return utils::to_string(std::wstring{buf.get()});
+}
 
-  logger_->log_debug("Event rendered with size %" PRIu32 ". Performing doc traversing...", used);
-
-  std::string xml = wel::to_string(buf.get());
+std::expected<wel::ProcessedEvent, std::string> ConsumeWindowsEventLog::processEvent(EVT_HANDLE event_handle) {
+  auto event_as_xml = renderEventAsXml(event_handle);
+  if (!event_as_xml)
+    return std::unexpected{event_as_xml.error()};
 
   pugi::xml_document doc;
-  pugi::xml_parse_result result = doc.load_string(xml.c_str());
+  if (!doc.load_string(event_as_xml->c_str()))
+    return std::unexpected{"Invalid XML produced"};
 
-  if (!result) {
-    logger_->log_error("Invalid XML produced");
-    return false;
-  }
+  wel::ProcessedEvent result;
 
   // this is a well known path.
-  std::string providerName = doc.child("Event").child("System").child("Provider").attribute("Name").value();
-  wel::WindowsEventLogMetadataImpl metadata{getEventLogHandler(providerName).getMetadata(), hEvent};
-  wel::MetadataWalker walker{metadata, channel_, !resolve_as_attributes_, apply_identifier_function_, regex_};
+  std::string provider_name = doc.child("Event").child("System").child("Provider").attribute("Name").value();
+  wel::WindowsEventLogMetadataImpl metadata{getEventLogProvider(provider_name), event_handle};
+  wel::MetadataWalker walker{metadata, path_.str(), !resolve_as_attributes_, apply_identifier_function_, sid_matcher_, userIdToUsernameFunction()};
 
   // resolve the event metadata
   doc.traverse(walker);
 
-  logger_->log_debug("Finish doc traversing, performing writing...");
+  logger_->log_trace("Finish doc traversing, performing writing...");
 
-  if (output_.plaintext) {
+  if (output_format_ == wel::OutputFormat::Plaintext || output_format_ == wel::OutputFormat::Both) {
     logger_->log_trace("Writing event in plain text");
 
-    auto handler = getEventLogHandler(providerName);
-    auto message = handler.getEventMessage(hEvent);
+    auto& provider = getEventLogProvider(provider_name);
+    auto event_message = provider.getEventMessage(event_handle);
 
-    if (!message.empty()) {
-      for (const auto &mapEntry : walker.getIdentifiers()) {
-        // replace the identifiers with their translated strings.
-        if (mapEntry.first.empty() || mapEntry.second.empty()) {
-          continue;  // This is most probably a result of a failed ID resolution
+    if (event_message) {
+      for (const auto& map_entry : walker.getIdentifiers()) {
+        if (map_entry.first.empty() || map_entry.second.empty()) {
+          continue;
         }
-        utils::StringUtils::replaceAll(message, mapEntry.first, mapEntry.second);
+        utils::string::replaceAll(*event_message, map_entry.first, map_entry.second);
       }
-      wel::WindowsEventLogHeader log_header(header_names_);
-      // set the delimiter
-      log_header.setDelimiter(header_delimiter_);
-      // render the header.
-      eventRender.plaintext = log_header.getEventHeader([&walker](wel::METADATA metadata) { return walker.getMetadata(metadata); });
-      eventRender.plaintext += "Message" + header_delimiter_ + " ";
-      eventRender.plaintext += message;
     }
+
+    std::string_view payload_name = event_message ? "Message" : "Error";
+
+    wel::WindowsEventLogHeader log_header(header_names_, header_delimiter_, payload_name.size());
+    result.plaintext = log_header.getEventHeader([&walker](wel::Metadata metadata) { return walker.getMetadata(metadata); });
+    result.plaintext += payload_name;
+    result.plaintext += log_header.getDelimiterFor(payload_name.size());
+    result.plaintext += event_message.has_value() ? *event_message : event_message.error().message();
+
     logger_->log_trace("Finish writing in plain text");
   }
 
-  if (output_.xml || output_.json) {
+  if (output_format_ != wel::OutputFormat::Plaintext) {
     substituteXMLPercentageItems(doc);
     logger_->log_trace("Finish substituting %% in XML");
-
-    if (resolve_as_attributes_) {
-      eventRender.matched_fields = walker.getFieldValues();
-    }
   }
 
-  if (output_.xml) {
+  if (resolve_as_attributes_) {
+    result.matched_fields = walker.getFieldValues();
+  }
+
+  if (output_format_ == wel::OutputFormat::XML || output_format_ == wel::OutputFormat::Both) {
     logger_->log_trace("Writing event in XML");
 
     wel::XmlString writer;
     doc.print(writer, "", pugi::format_raw);  // no indentation or formatting
-    xml = writer.xml_;
+    event_as_xml = writer.xml_;
 
-    eventRender.xml = std::move(xml);
+    result.xml = std::move(*event_as_xml);
     logger_->log_trace("Finish writing in XML");
   }
 
-  if (output_.json.type == JSONType::Raw) {
-    logger_->log_trace("Writing event in raw JSON");
-    eventRender.json = wel::jsonToString(wel::toRawJSON(doc));
-    logger_->log_trace("Finish writing in raw JSON");
-  } else if (output_.json.type == JSONType::Simple) {
-    logger_->log_trace("Writing event in simple JSON");
-    eventRender.json = wel::jsonToString(wel::toSimpleJSON(doc));
-    logger_->log_trace("Finish writing in simple JSON");
-  } else if (output_.json.type == JSONType::Flattened) {
-    logger_->log_trace("Writing event in flattened JSON");
-    eventRender.json = wel::jsonToString(wel::toFlattenedJSON(doc));
-    logger_->log_trace("Finish writing in flattened JSON");
+  if (output_format_ == wel::OutputFormat::JSON) {
+    switch (json_format_) {
+      case wel::JsonFormat::Raw: {
+        logger_->log_trace("Writing event in raw JSON");
+        result.json = wel::jsonToString(wel::toRawJSON(doc));
+        logger_->log_trace("Finish writing in raw JSON");
+        break;
+      }
+      case wel::JsonFormat::Simple: {
+        logger_->log_trace("Writing event in simple JSON");
+        result.json = wel::jsonToString(wel::toSimpleJSON(doc));
+        logger_->log_trace("Finish writing in simple JSON");
+        break;
+      }
+      case wel::JsonFormat::Flattened: {
+        logger_->log_trace("Writing event in flattened JSON");
+        result.json = wel::jsonToString(wel::toFlattenedJSON(doc));
+        logger_->log_trace("Finish writing in flattened JSON");
+        break;
+      }
+      default: {
+        gsl_Assert(false);
+      }
+    }
   }
 
-  return true;
+  return result;
 }
 
 void ConsumeWindowsEventLog::refreshTimeZoneData() {
@@ -678,95 +566,56 @@ void ConsumeWindowsEventLog::refreshTimeZoneData() {
       break;
   }
 
+  timezone_name_ = utils::to_string(tzstr);
+
   tzbias *= -1;  // WinApi specifies UTC = localtime + bias, but we need offset from UTC
-  std::stringstream tzoffset;
-  tzoffset << (tzbias >= 0 ? '+' : '-') << std::setfill('0') << std::setw(2) << std::abs(tzbias) / 60
-      << ":" << std::setfill('0') << std::setw(2) << std::abs(tzbias) % 60;
+  timezone_offset_ = fmt::format("{}{:02}:{:02}", tzbias >= 0 ? '+' : '-', std::abs(tzbias) / 60, std::abs(tzbias) % 60);
 
-  timezone_name_ = wel::to_string(tzstr.c_str());
-  timezone_offset_ = tzoffset.str();
-
-  logger_->log_trace("Timezone name: %s, offset: %s", timezone_name_, timezone_offset_);
+  logger_->log_trace("Timezone name: {}, offset: {}", timezone_name_, timezone_offset_);
 }
 
-void ConsumeWindowsEventLog::putEventRenderFlowFileToSession(const EventRender& eventRender, core::ProcessSession& session) const {
-  struct WriteCallback : public OutputStreamCallback {
-    explicit WriteCallback(const std::string& str)
-        : str_(str) {
-    }
-
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) {
-      const auto write_ret = stream->write(reinterpret_cast<const uint8_t*>(str_.c_str()), str_.size());
-      return io::isError(write_ret) ? -1 : gsl::narrow<int64_t>(write_ret);
-    }
-
-    const std::string& str_;
-  };
-
-  auto commitFlowFile = [&] (const std::shared_ptr<core::FlowFile>& flowFile, const std::string& content, const std::string& mimeType) {
-    {
-      WriteCallback wc{ content };
-      session.write(flowFile, &wc);
-    }
-    session.putAttribute(flowFile, core::SpecialFlowAttribute::MIME_TYPE, mimeType);
-    session.putAttribute(flowFile, "Timezone name", timezone_name_);
-    session.putAttribute(flowFile, "Timezone offset", timezone_offset_);
-    session.getProvenanceReporter()->receive(flowFile, provenanceUri_, getUUIDStr(), "Consume windows event logs", 0);
-    session.transfer(flowFile, Success);
-  };
-
-  if (output_.xml) {
-    auto flowFile = session.create();
-    logger_->log_trace("Writing rendered XML to a flow file");
-
-    for (const auto &fieldMapping : eventRender.matched_fields) {
-      if (!fieldMapping.second.empty()) {
-        session.putAttribute(flowFile, fieldMapping.first, fieldMapping.second);
+void ConsumeWindowsEventLog::createAndCommitFlowFile(const wel::ProcessedEvent& processed_event, core::ProcessSession& session) const {
+  auto commit_flow_file = [&] (const std::string& content, const std::string& mimeType) {
+    auto flow_file = session.create();
+    for (const auto& [key, value] : processed_event.matched_fields) {
+      if (!value.empty()) {
+        session.putAttribute(*flow_file, key, value);
       }
     }
+    session.writeBuffer(flow_file, content);
+    session.putAttribute(*flow_file, core::SpecialFlowAttribute::MIME_TYPE, mimeType);
+    session.putAttribute(*flow_file, "timezone.name", timezone_name_);
+    session.putAttribute(*flow_file, "timezone.offset", timezone_offset_);
+    session.getProvenanceReporter()->receive(*flow_file, provenanceUri_, getUUIDStr(), "Consume windows event logs", 0ms);
+    session.transfer(flow_file, Success);
+  };
 
-    commitFlowFile(flowFile, eventRender.xml, "application/xml");
+  if (output_format_ == wel::OutputFormat::XML || output_format_ == wel::OutputFormat::Both) {
+    logger_->log_trace("Writing rendered XML to a flow file");
+    commit_flow_file(processed_event.xml, "application/xml");
   }
 
-  if (output_.plaintext) {
+  if (output_format_ == wel::OutputFormat::Plaintext || output_format_ == wel::OutputFormat::Both) {
     logger_->log_trace("Writing rendered plain text to a flow file");
-    commitFlowFile(session.create(), eventRender.plaintext, "text/plain");
+    commit_flow_file(processed_event.plaintext, "text/plain");
   }
 
-  if (output_.json.type == JSONType::Raw) {
-    logger_->log_trace("Writing rendered raw JSON to a flow file");
-    commitFlowFile(session.create(), eventRender.json, "application/json");
-  } else if (output_.json.type == JSONType::Simple) {
-    logger_->log_trace("Writing rendered simple JSON to a flow file");
-    commitFlowFile(session.create(), eventRender.json, "application/json");
-  } else if (output_.json.type == JSONType::Flattened) {
-    logger_->log_trace("Writing rendered flattened JSON to a flow file");
-    commitFlowFile(session.create(), eventRender.json, "application/json");
+  if (output_format_ == wel::OutputFormat::JSON) {
+    logger_->log_trace("Writing rendered {} JSON to a flow file", magic_enum::enum_name(json_format_));
+    commit_flow_file(processed_event.json, "application/json");
   }
 }
 
-void ConsumeWindowsEventLog::LogWindowsError(std::string error) const {
-  auto error_id = GetLastError();
-  LPVOID lpMsg;
-
-  FormatMessage(
-    FORMAT_MESSAGE_ALLOCATE_BUFFER |
-    FORMAT_MESSAGE_FROM_SYSTEM,
-    NULL,
-    error_id,
-    MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-    (LPTSTR)&lpMsg,
-    0, NULL);
-
-  logger_->log_error((error + " %x: %s\n").c_str(), static_cast<int>(error_id), reinterpret_cast<char *>(lpMsg));
-
-  LocalFree(lpMsg);
+std::function<std::string(const std::string&)> ConsumeWindowsEventLog::userIdToUsernameFunction() const {
+  static constexpr auto lookup = &utils::OsUtils::userIdToUsername;
+  if (cache_sid_lookups_) {
+    static auto cached_lookup = wel::LookupCacher{lookup};
+    return std::ref(cached_lookup);
+  } else {
+    return lookup;
+  }
 }
 
-REGISTER_RESOURCE(ConsumeWindowsEventLog, "Windows Event Log Subscribe Callback to receive FlowFiles from Events on Windows.");
+REGISTER_RESOURCE(ConsumeWindowsEventLog, Processor);
 
-}  // namespace processors
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+}  // namespace org::apache::nifi::minifi::processors

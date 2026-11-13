@@ -1,59 +1,76 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #pragma once
 
 #include <curl/curl.h>
 #include <libssh2.h>
 #include <libssh2_sftp.h>
-#include <vector>
+
 #include <iostream>
+#include <memory>
+#include <optional>
 #include <string>
 #include <tuple>
-#include <memory>
+#include <vector>
 
-#include "Exception.h"
+#include "minifi-cpp/Exception.h"
+#include "minifi-cpp/core/logging/Logger.h"
+#include "http/BaseHTTPClient.h"
 #include "utils/Enum.h"
-#include "utils/HTTPClient.h"
-#include "core/logging/Logger.h"
-#include "io/BaseStream.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace utils {
+namespace org::apache::nifi::minifi::io {
+class OutputStream;
+class InputStream;
+}
+namespace org::apache::nifi::minifi::utils {
 
-SMART_ENUM(SFTPError,
-    (Ok, "Ok"),
-    (PermissionDenied, "Permission denied"),
-    (FileDoesNotExist, "File does not exist"),
-    (FileAlreadyExists, "File already exists"),
-    (CommunicationFailure, "Communication failure"),
-    (IoError, "IO error"),
-    (Unexpected, "Unexpected"))
+enum class SFTPError {
+  Ok,
+  PermissionDenied,
+  FileDoesNotExist,
+  FileAlreadyExists,
+  CommunicationFailure,
+  IoError,
+  Unexpected
+};
+
+}  // namespace org::apache::nifi::minifi::utils
+
+namespace magic_enum::customize {
+using SFTPError = org::apache::nifi::minifi::utils::SFTPError;
+
+template <>
+constexpr customize_t enum_name<SFTPError>(SFTPError value) noexcept {
+  switch (value) {
+    case SFTPError::Ok:
+      return "Ok";
+    case SFTPError::PermissionDenied:
+      return "Permission denied";
+    case SFTPError::FileDoesNotExist:
+      return "File does not exist";
+    case SFTPError::FileAlreadyExists:
+      return "File already exists";
+    case SFTPError::CommunicationFailure:
+      return "Communication failure";
+    case SFTPError::IoError:
+      return "IO error";
+    case SFTPError::Unexpected:
+      return "Unexpected";
+  }
+  return invalid_tag;
+}
+}  // namespace magic_enum::customize
+
+namespace org::apache::nifi::minifi::utils {
 
 class SFTPException : public Exception {
  public:
   explicit SFTPException(const SFTPError err)
-      :Exception{ExceptionType::FILE_OPERATION_EXCEPTION, fmt::format("SFTP Error: {0}", err.toString())},
+      :Exception{ExceptionType::FILE_OPERATION_EXCEPTION, fmt::format("SFTP Error: {0}", magic_enum::enum_name(err))},
       error_{err}
   {}
-  SFTPError error() const noexcept { return error_; }
+  [[nodiscard]] SFTPError error() const noexcept { return error_; }
  private:
   SFTPError error_;
 };
@@ -80,7 +97,7 @@ class LastSFTPError {
 
 class SFTPClient {
  public:
-  SFTPClient(const std::string &hostname, uint16_t port, const std::string& username);
+  SFTPClient(std::string hostname, uint16_t port, std::string username, size_t buffer_size);
 
   ~SFTPClient();
 
@@ -100,11 +117,11 @@ class SFTPClient {
     Socks
   };
 
-  bool setProxy(ProxyType type, const utils::HTTPProxy& proxy);
+  bool setProxy(ProxyType type, const http::HTTPProxy& proxy);
 
-  bool setConnectionTimeout(int64_t timeout);
+  bool setConnectionTimeout(std::chrono::milliseconds timeout);
 
-  void setDataTimeout(int64_t timeout);
+  void setDataTimeout(std::chrono::milliseconds timeout);
 
   void setSendKeepAlive(bool send_keepalive);
 
@@ -119,11 +136,11 @@ class SFTPClient {
    * If a function did not fail because of an SFTP-related error, this function will return SFTP_ERROR_OK.
    * If this function is called after a function returns true, the return value is UNDEFINED.
    */
-  SFTPError getLastError() const;
+  [[nodiscard]] SFTPError getLastError() const;
 
-  bool getFile(const std::string& path, io::BaseStream& output, int64_t expected_size = -1);
+  std::optional<uint64_t> getFile(const std::string& path, io::OutputStream& output, int64_t expected_size = -1);
 
-  bool putFile(const std::string& path, io::BaseStream& input, bool overwrite, int64_t expected_size = -1);
+  std::optional<uint64_t> putFile(const std::string& path, io::InputStream& input, bool overwrite, int64_t expected_size = -1);
 
   bool rename(const std::string& source_path, const std::string& target_path, bool overwrite);
 
@@ -153,7 +170,7 @@ class SFTPClient {
     int64_t atime;
   };
 
-  bool setAttributes(const std::string& path, const SFTPAttributes& attrs);
+  bool setAttributes(const std::string& path, const SFTPAttributes& input);
 
  protected:
   /*
@@ -163,11 +180,12 @@ class SFTPClient {
    */
   static constexpr size_t MAX_BUFFER_SIZE = 30000U;
 
-  std::shared_ptr<logging::Logger> logger_;
+  std::shared_ptr<core::logging::Logger> logger_;
 
-  const std::string hostname_;
-  const uint16_t port_;
-  const std::string username_;
+  std::string hostname_;
+  uint16_t port_;
+  std::string username_;
+  size_t buffer_size_;
 
   LIBSSH2_KNOWNHOSTS *ssh_known_hosts_ = nullptr;
   bool strict_host_checking_ = false;
@@ -179,13 +197,11 @@ class SFTPClient {
   std::string private_key_file_path_;
   std::string private_key_passphrase_;
 
-  int64_t data_timeout_ = 0;
-
   bool send_keepalive_ = false;
 
   std::vector<char> curl_errorbuffer_;
 
-  CURL *easy_ = nullptr;
+  CURL *easy_;
   LIBSSH2_SESSION *ssh_session_ = nullptr;
   LIBSSH2_SFTP *sftp_session_ = nullptr;
 
@@ -194,8 +210,4 @@ class SFTPClient {
   LastSFTPError last_error_;
 };
 
-} /* namespace utils */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+}  // namespace org::apache::nifi::minifi::utils

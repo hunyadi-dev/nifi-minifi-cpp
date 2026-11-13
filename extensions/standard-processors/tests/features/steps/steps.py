@@ -1,0 +1,147 @@
+#
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#
+
+import humanfriendly
+from behave import given, step, then, when
+from containers.diag_slave_container import DiagSlave
+from containers.syslog_container import SyslogContainer
+from containers.tcp_client_container import TcpClientContainer
+from minifi_behave.containers.minifi_protocol import set_up_ssl_properties
+from minifi_behave.core.helpers import (
+    log_due_to_failure,
+    wait_for_condition,
+)
+from minifi_behave.core.minifi_test_context import MinifiTestContext
+from minifi_behave.steps import (
+    checking_steps,  # noqa: F401
+    configuration_steps,  # noqa: F401
+    core_steps,  # noqa: F401
+    flow_building_steps,  # noqa: F401
+)
+from minifi_c2_server_container import MinifiC2Server
+
+
+@step("a Syslog client with TCP protocol is setup to send logs to minifi")
+def setup_syslog_tcp_client(context: MinifiTestContext):
+    context.containers["syslog-tcp"] = SyslogContainer("tcp", context)
+
+
+@step("a Syslog client with UDP protocol is setup to send logs to minifi")
+def setup_syslog_udp_client(context: MinifiTestContext):
+    context.containers["syslog-udp"] = SyslogContainer("udp", context)
+
+
+@step("there is an accessible PLC with modbus enabled")
+def setup_plc_with_modbus(context: MinifiTestContext):
+    modbus_container = context.containers["diag-slave-tcp"] = DiagSlave(context)
+    assert modbus_container.deploy(context)
+
+
+@step("PLC register has been set with {modbus_cmd} command")
+def set_plc_register_with_command(context: MinifiTestContext, modbus_cmd: str):
+    assert (
+        context.containers["diag-slave-tcp"].set_value_on_plc_with_modbus(modbus_cmd)
+        or context.containers["diag-slave-tcp"].log_app_output()
+    )
+
+
+@step("a TCP client is set up to send a test TCP message to minifi")
+def setup_tcp_client(context: MinifiTestContext):
+    context.containers["tcp-client"] = TcpClientContainer(context)
+
+
+@given("C2 is enabled in MiNiFi")
+def enable_c2_in_minifi(context: MinifiTestContext):
+    context.get_or_create_default_minifi_container().set_property("nifi.c2.enable", "true")
+    context.get_or_create_default_minifi_container().set_property(
+        "nifi.c2.rest.url",
+        f"http://minifi-c2-server-{context.scenario_id}:10090/c2/config/heartbeat",
+    )
+    context.get_or_create_default_minifi_container().set_property(
+        "nifi.c2.rest.url.ack",
+        f"http://minifi-c2-server-{context.scenario_id}:10090/c2/config/acknowledge",
+    )
+    context.get_or_create_default_minifi_container().set_property(
+        "nifi.c2.flow.base.url",
+        f"http://minifi-c2-server-{context.scenario_id}:10090/c2/config/",
+    )
+    context.get_or_create_default_minifi_container().set_property(
+        "nifi.c2.root.classes",
+        "DeviceInfoNode,AgentInformation,FlowInformation,AssetInformation",
+    )
+    context.get_or_create_default_minifi_container().set_property("nifi.c2.full.heartbeat", "false")
+    context.get_or_create_default_minifi_container().set_property("nifi.c2.agent.class", "minifi-test-class")
+    context.get_or_create_default_minifi_container().set_property("nifi.c2.agent.identifier", "minifi-test-id")
+
+
+@given("ssl properties are set up for MiNiFi C2 server")
+def setup_ssl_properties_for_c2(context: MinifiTestContext):
+    context.get_or_create_default_minifi_container().set_property("nifi.c2.enable", "true")
+    context.get_or_create_default_minifi_container().set_property(
+        "nifi.c2.rest.url",
+        f"https://minifi-c2-server-{context.scenario_id}:10090/c2/config/heartbeat",
+    )
+    context.get_or_create_default_minifi_container().set_property(
+        "nifi.c2.rest.url.ack",
+        f"https://minifi-c2-server-{context.scenario_id}:10090/c2/config/acknowledge",
+    )
+    context.get_or_create_default_minifi_container().set_property(
+        "nifi.c2.flow.base.url",
+        f"https://minifi-c2-server-{context.scenario_id}:10090/c2/config/",
+    )
+    context.get_or_create_default_minifi_container().set_property(
+        "nifi.c2.root.classes",
+        "DeviceInfoNode,AgentInformation,FlowInformation,AssetInformation",
+    )
+    context.get_or_create_default_minifi_container().set_property("nifi.c2.full.heartbeat", "false")
+    context.get_or_create_default_minifi_container().set_property("nifi.c2.agent.class", "minifi-test-class")
+    context.get_or_create_default_minifi_container().set_property("nifi.c2.agent.identifier", "minifi-test-id")
+    set_up_ssl_properties(context.get_or_create_default_minifi_container())
+
+
+@given("a MiNiFi C2 server is set up")
+def setup_minifi_c2_server(context: MinifiTestContext):
+    context.containers["minifi-c2-server"] = MinifiC2Server(context)
+
+
+@given("a MiNiFi C2 server is set up with SSL")
+def setup_minifi_c2_server_with_ssl(context: MinifiTestContext):
+    context.containers["minifi-c2-server"] = MinifiC2Server(context, ssl=True)
+
+
+@given("a MiNiFi C2 server is started")
+def start_minifi_c2_server(context: MinifiTestContext):
+    context.containers["minifi-c2-server"] = MinifiC2Server(context)
+    assert context.containers["minifi-c2-server"].deploy(context)
+
+
+@when("the MiNiFi C2 server is stopped")
+def stop_minifi_c2_server(context: MinifiTestContext):
+    context.containers["minifi-c2-server"].stop()
+
+
+@then("MiNiFi exits with exit code {exit_code:d} in less than {duration}")
+def verify_minifi_exit_code(context: MinifiTestContext, exit_code: int, duration: str):
+    duration_seconds = humanfriendly.parse_timespan(duration)
+    minifi_container = context.get_or_create_default_minifi_container()
+    assert wait_for_condition(
+        condition=lambda: minifi_container.exited,
+        timeout_seconds=duration_seconds,
+        bail_condition=lambda: False,
+        context=context,
+    )
+    assert minifi_container.exit_code == exit_code or log_due_to_failure(context)
+
+
+@then('the MiNiFi C2 server logs contain the following message: "{log_message}" in less than {duration}')
+def verify_c2_server_logs_contain_message(context: MinifiTestContext, log_message: str, duration: str):
+    duration_seconds = humanfriendly.parse_timespan(duration)
+    assert wait_for_condition(
+        condition=lambda: log_message in context.containers["minifi-c2-server"].get_logs(),
+        timeout_seconds=duration_seconds,
+        bail_condition=lambda: context.containers["minifi-c2-server"].exited,
+        context=context,
+    )

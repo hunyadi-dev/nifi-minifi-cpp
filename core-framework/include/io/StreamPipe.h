@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#pragma once
+
+#include <functional>
+#include <memory>
+#include <utility>
+#include "minifi-cpp/io/InputStream.h"
+#include "minifi-cpp/io/OutputStream.h"
+#include "minifi-cpp/io/StreamCallback.h"
+#include "utils/ConfigurationUtils.h"
+
+namespace org::apache::nifi::minifi {
+namespace internal {
+
+inline io::IoResult pipe(io::InputStream& src, io::OutputStream& dst) {
+  std::array<std::byte, utils::configuration::DEFAULT_BUFFER_SIZE> buffer{};
+  uint64_t totalTransferred = 0;
+  while (true) {
+    const auto readRet = src.read(buffer);
+    if (io::isError(readRet)) return io::IoResult::error();
+    if (readRet == 0) break;
+    auto remaining = readRet;
+    size_t transferred = 0;
+    while (remaining > 0) {
+      const auto writeRet = dst.write(std::span(buffer).subspan(transferred, remaining));
+      // TODO(adebreceni):
+      //   write might return 0, e.g. in case of a congested server
+      //   what should we return then?
+      //     - the number of bytes read or
+      //     - the number of bytes wrote
+      if (io::isError(writeRet)) {
+        return io::IoResult::error();
+      }
+      transferred += writeRet;
+      remaining -= writeRet;
+    }
+    totalTransferred += transferred;
+  }
+  return io::IoResult::from(totalTransferred);
+}
+
+}  // namespace internal
+
+class InputStreamPipe {
+ public:
+  explicit InputStreamPipe(io::OutputStream& output) : output_(&output) {}
+
+  io::IoResult operator()(const std::shared_ptr<io::InputStream>& stream) const {
+    return internal::pipe(*stream, *output_);
+  }
+
+ private:
+  gsl::not_null<io::OutputStream*> output_;
+};
+
+class OutputStreamPipe {
+ public:
+  explicit OutputStreamPipe(io::InputStream& input) : input_(&input) {}
+
+  io::IoResult operator()(const std::shared_ptr<io::OutputStream>& stream) const {
+    return internal::pipe(*input_, *stream);
+  }
+
+ private:
+  gsl::not_null<io::InputStream*> input_;
+};
+
+}  // namespace org::apache::nifi::minifi

@@ -1,83 +1,49 @@
-/**
- * @file CronDrivenSchedulingAgent.cpp
- * CronDrivenSchedulingAgent class implementation
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #include "CronDrivenSchedulingAgent.h"
 #include <chrono>
-#include <memory>
-#include <thread>
-#include <iostream>
 #include "core/Processor.h"
-#include "core/ProcessContext.h"
-#include "core/ProcessSessionFactory.h"
-#include "core/Property.h"
+#include "minifi-cpp/core/ProcessContext.h"
+#include "minifi-cpp/core/ProcessSessionFactory.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
+namespace org::apache::nifi::minifi {
 
-utils::TaskRescheduleInfo CronDrivenSchedulingAgent::run(const std::shared_ptr<core::Processor> &processor, const std::shared_ptr<core::ProcessContext> &processContext,
-                                        const std::shared_ptr<core::ProcessSessionFactory> &sessionFactory) {
+utils::TaskRescheduleInfo CronDrivenSchedulingAgent::run(core::Processor* processor,
+                                                         const std::shared_ptr<core::ProcessContext>& processContext,
+                                                         const std::shared_ptr<core::ProcessSessionFactory>& sessionFactory) {
+  using namespace std::literals::chrono_literals;
+  using std::chrono::ceil;
+  using std::chrono::seconds;
+  using std::chrono::time_point_cast;
+  using std::chrono::system_clock;
+
   if (this->running_ && processor->isRunning()) {
-    auto uuid = processor->getUUID();
-    std::chrono::system_clock::time_point result;
-    std::chrono::system_clock::time_point from = std::chrono::system_clock::now();
-    {
-      std::lock_guard<std::mutex> locK(mutex_);
+    const auto uuid = processor->getUUID();
+    const auto current_time = date::make_zoned<seconds>(date::current_zone(), time_point_cast<seconds>(system_clock::now()));
+    std::lock_guard<std::mutex> lock(mutex_);
 
-      auto sched_f = schedules_.find(uuid);
-      if (sched_f != std::end(schedules_)) {
-        result = last_exec_[uuid];
-        if (from >= result) {
-          result = sched_f->second.cron_to_next(from);
-          last_exec_[uuid] = result;
-        } else {
-          // we may be woken up a little early so that we can honor our time.
-          // in this case we can return the next time to run with the expectation
-          // that the wakeup mechanism gets more granular.
-          return utils::TaskRescheduleInfo::RetryIn(std::chrono::duration_cast<std::chrono::milliseconds>(result - from));
-        }
-      } else {
-        Bosma::Cron schedule(processor->getCronPeriod());
-        result = schedule.cron_to_next(from);
-        last_exec_[uuid] = result;
-        schedules_.insert(std::make_pair(uuid, schedule));
-      }
-    }
+    schedules_.emplace(uuid, utils::Cron(processor->getCronPeriod()));
+    last_exec_.emplace(uuid, current_time.get_local_time());
 
-    if (result > from) {
-      bool shouldYield = this->onTrigger(processor, processContext, sessionFactory);
+    const auto last_trigger = last_exec_[uuid];
+    const auto next_to_last_trigger = schedules_.at(uuid).calculateNextTrigger(last_trigger);
+    if (!next_to_last_trigger)
+      return utils::TaskRescheduleInfo::Done();
 
-      if (processor->isYield()) {
-        // Honor the yield
-        return utils::TaskRescheduleInfo::RetryIn(std::chrono::milliseconds(processor->getYieldTime()));
-      } else if (shouldYield && this->bored_yield_duration_ > 0) {
-        // No work to do or need to apply back pressure
-        return utils::TaskRescheduleInfo::RetryIn(std::chrono::milliseconds(this->bored_yield_duration_));
-      }
-    }
-    return utils::TaskRescheduleInfo::RetryIn(std::chrono::duration_cast<std::chrono::milliseconds>(result - from));
+    if (*next_to_last_trigger > current_time.get_local_time())
+      return utils::TaskRescheduleInfo::RetryIn(*next_to_last_trigger-current_time.get_local_time());
+
+    if (this->triggerAndCommit(processor, processContext, sessionFactory))
+      last_exec_[uuid] = current_time.get_local_time();
+
+    if (processor->isYield())
+      return utils::TaskRescheduleInfo::RetryAfter(processor->getYieldExpirationTime());
+
+    if (const auto next_trigger = schedules_.at(uuid).calculateNextTrigger(current_time.get_local_time()))
+      return utils::TaskRescheduleInfo::RetryIn(*next_trigger-current_time.get_local_time());
   }
   return utils::TaskRescheduleInfo::Done();
 }
 
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+}  // namespace org::apache::nifi::minifi

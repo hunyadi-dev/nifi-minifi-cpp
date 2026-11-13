@@ -1,0 +1,23 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+file(GLOB SOURCES
+        src/*.cpp
+        src/core/*.cpp
+        src/core/extension/*.cpp
+        src/io/*.cpp
+        src/http/*.cpp
+        src/utils/*.cpp
+        src/utils/crypto/*.cpp
+        src/utils/crypto/ciphers/*.cpp
+        src/utils/crypto/property_encryption/*.cpp
+        src/utils/net/*.cpp
+        src/utils/file/*.cpp)
+
+add_minifi_library(minifi-core-framework-common STATIC ${SOURCES})
+target_include_directories(minifi-core-framework-common PUBLIC include)
+target_link_libraries(minifi-core-framework-common PUBLIC minifi-api-common ZLIB::ZLIB concurrentqueue::concurrentqueue rapidjson spdlog Threads::Threads gsl-lite::gsl-lite libsodium::libsodium range-v3::range-v3 date::date date::tz asio::asio magic_enum::magic_enum OpenSSL::Crypto OpenSSL::SSL CURL::libcurl)
+if(NOT WIN32)
+    target_link_libraries(minifi-core-framework-common PUBLIC OSSP::libuuid++)
+endif()

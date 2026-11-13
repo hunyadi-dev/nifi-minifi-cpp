@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+###  NOTE: Changes to this file are overwritten on upgrade. Add your custom settings to new files     ###
+###  in the conf/minifi-log.properties.d directory instead. These custom settings files should have   ###
+###  a name ending with ".properties", and they are applied in lexicographic order, after this file.  ###
+###  Example filename: conf/minifi-log.properties.d/90-log-to-stderr.properties                       ###
+
+#More verbose pattern by default
+#Format details at https://github.com/gabime/spdlog/wiki/3.-Custom-formatting
+spdlog.pattern=[%Y-%m-%d %H:%M:%S.%e] [%n] [%l] %v
+# uncomment to prune package names
+#spdlog.shorten_names=true
+
+#Old format
+#spdlog.pattern=[%Y-%m-%d %H:%M:%S.%e] [minifi log] [%l] %v
+
+#More compact format example
+#spdlog.pattern=[%D %H:%M:%S.%e] [%L] %v
+
+appender.rolling=rollingappender
+#appender.rolling.directory=@MINIFI_PATH_LOG_DIR@
+appender.rolling.file_name=minifi-app.log
+appender.rolling.max_files=1
+appender.rolling.max_file_size=20 MB
+
+#Other possible appenders
+#appender.stdout=stdout
+#appender.stderr=stderr
+#appender.null=null
+## The syslog appender will log using syslog(3) on *nix, and to the Windows Event Log on Windows
+#appender.syslog=syslog
+
+# Alert appender to forward critical logs through HTTP
+#appender.alert1=alert
+#appender.alert1.url=<URL>
+#appender.alert1.filter=<regex pattern to match logs against>
+#appender.alert1.rate.limit=10 min
+#appender.alert1.flush.period=5 s
+#appender.alert1.batch.size=100 KB
+#appender.alert1.buffer.limit=1 MB
+#appender.alert1.level=TRACE
+
+# Uncomment if you do not want to include the UUID of the component at the end of log lines
+#logger.include.uuid=false
+
+logger.root=INFO,rolling
+
+#Logging configurable by namespace
+logger.org::apache::nifi::minifi=INFO,rolling
+
+#Logging configurable by class fully qualified name
+#logger.org::apache::nifi::minifi::core::logging::LoggerConfiguration=DEBUG
+
+# Log compression #
+## Enables the agent to keep a limited chunk of the application
+## logs in memory in compressed format. Note that due to its
+## compressed nature this could mean more logs than the contents
+## of the log files.
+## Setting any of these to 0 disables the in-memory log compression.
+#compression.cached.log.max.size=8 MB
+#compression.compressed.log.max.size=8 MB
+
+## Maximum length of a MiNiFi log entry (use "unlimited" or "-1" for no limit)
+#max.log.entry.length=1024

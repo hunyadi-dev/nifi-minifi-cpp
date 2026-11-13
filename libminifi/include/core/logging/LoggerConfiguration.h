@@ -1,71 +1,52 @@
-/**
- * @file LoggerConfiguration.h
- * Logger class declaration
- * This is a C++ wrapper for spdlog, a lightweight C++ logging library
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef LIBMINIFI_INCLUDE_CORE_LOGGING_LOGGERCONFIGURATION_H_
-#define LIBMINIFI_INCLUDE_CORE_LOGGING_LOGGERCONFIGURATION_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
 
 #include <memory>
+#include <utility>
 #include <vector>
 #include <map>
 #include <mutex>
 #include <string>
+#include <string_view>
+#include <unordered_set>
 
 #include "spdlog/common.h"
 #include "spdlog/sinks/rotating_file_sink.h"
 #include "spdlog/sinks/sink.h"
 #include "spdlog/logger.h"
 #include "spdlog/formatter.h"
-#include "spdlog/pattern_formatter.h"
 
 #include "core/Core.h"
-#include "core/logging/Logger.h"
+#include "core/logging/LoggerBase.h"
 #include "LoggerProperties.h"
 #include "internal/CompressionManager.h"
+#include "alert/AlertSink.h"
 
 class LoggerTestAccessor;
 
 class LogTestController;
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace core {
-namespace logging {
+namespace org::apache::nifi::minifi::core::logging {
 
 namespace internal {
 struct LoggerNamespace {
-  spdlog::level::level_enum level;
-  bool has_level;
+  spdlog::level::level_enum level{spdlog::level::off};
+  bool has_level{false};
   std::vector<std::shared_ptr<spdlog::sinks::sink>> sinks;
   // sinks made available to all descendants
   std::vector<std::shared_ptr<spdlog::sinks::sink>> exported_sinks;
   std::map<std::string, std::shared_ptr<LoggerNamespace>> children;
 
-  LoggerNamespace()
-      : level(spdlog::level::off),
-        has_level(false),
-        sinks(std::vector<std::shared_ptr<spdlog::sinks::sink>>()),
-        children(std::map<std::string, std::shared_ptr<LoggerNamespace>>()) {
-  }
+  void forEachSink(const std::function<void(const std::shared_ptr<spdlog::sinks::sink>&)>& op) const;
 };
+
+inline std::optional<std::string> formatId(const std::optional<utils::Identifier>& opt_id) {
+  return opt_id | utils::transform([](auto id) { return " (" + std::string(id.to_string()) + ")"; });
+}
+
+inline constexpr std::string_view UNLIMITED_LOG_ENTRY_LENGTH = "unlimited";
 }  // namespace internal
 
 class LoggerConfiguration {
@@ -73,14 +54,8 @@ class LoggerConfiguration {
   friend class ::LogTestController;
 
  public:
-  /**
-   * Gets the current log configuration
-   */
+  LoggerConfiguration();  // used in some tests only
   static LoggerConfiguration& getConfiguration();
-
-  static std::unique_ptr<LoggerConfiguration> newInstance() {
-    return std::unique_ptr<LoggerConfiguration>(new LoggerConfiguration());
-  }
 
   void disableLogging() {
     controller_->setEnabled(false);
@@ -98,29 +73,42 @@ class LoggerConfiguration {
    */
   void initialize(const std::shared_ptr<LoggerProperties> &logger_properties);
 
-  static std::unique_ptr<io::InputStream> getCompressedLog(bool flush = false) {
-    return getCompressedLog(std::chrono::milliseconds{0}, flush);
+  static std::vector<std::unique_ptr<io::InputStream>> getCompressedLogs() {
+    return getCompressedLogs(std::chrono::milliseconds{0});
   }
 
+  void initializeAlertSinks(const std::shared_ptr<Configure>& config);
+
   template<class Rep, class Period>
-  static std::unique_ptr<io::InputStream> getCompressedLog(const std::chrono::duration<Rep, Period>& time, bool flush = false) {
-    return getConfiguration().compression_manager_.getCompressedLog(time, flush);
+  static std::vector<std::unique_ptr<io::InputStream>> getCompressedLogs(const std::chrono::duration<Rep, Period>& time) {
+    return getConfiguration().compression_manager_.getCompressedLogs(time);
   }
 
   /**
    * Can be used to get arbitrarily named Logger, LoggerFactory should be preferred within a class.
    */
-  std::shared_ptr<Logger> getLogger(const std::string &name);
+  std::shared_ptr<Logger> getLogger(std::string_view name, const std::optional<utils::Identifier>& id = {});
 
   static const char *spdlog_default_pattern;
 
  protected:
-  static std::shared_ptr<internal::LoggerNamespace> initialize_namespaces(const std::shared_ptr<LoggerProperties> &logger_properties);
-  static std::shared_ptr<spdlog::logger> get_logger(std::shared_ptr<Logger> logger, const std::shared_ptr<internal::LoggerNamespace> &root_namespace, const std::string &name,
-                                                    std::shared_ptr<spdlog::formatter> formatter, bool remove_if_present = false);
+  static std::shared_ptr<internal::LoggerNamespace> initialize_namespaces(const std::shared_ptr<LoggerProperties> &logger_properties, const std::shared_ptr<Logger> &logger = {});
+  static std::shared_ptr<spdlog::logger> get_logger(const std::lock_guard<std::mutex>&,
+      const std::shared_ptr<internal::LoggerNamespace> &root_namespace,
+      const std::string& name,
+      const std::shared_ptr<spdlog::formatter>& formatter);
+  static std::shared_ptr<spdlog::logger> create_logger(const std::lock_guard<std::mutex>&,
+      const std::shared_ptr<internal::LoggerNamespace> &root_namespace,
+      const std::string& name,
+      const std::shared_ptr<spdlog::formatter>& formatter);
+  static void setupSpdLogger(const std::lock_guard<std::mutex>&,
+      const std::shared_ptr<spdlog::logger>& spd_logger,
+      const std::shared_ptr<internal::LoggerNamespace> &root_namespace,
+      const std::string& name,
+      const std::shared_ptr<spdlog::formatter>& formatter);
 
  private:
-  std::shared_ptr<Logger> getLogger(const std::string& name, const std::lock_guard<std::mutex>& lock);
+  std::shared_ptr<Logger> getLogger(std::string_view name, const std::optional<utils::Identifier>& id, const std::lock_guard<std::mutex>& lock);
 
   void initializeCompression(const std::lock_guard<std::mutex>& lock, const std::shared_ptr<LoggerProperties>& properties);
 
@@ -131,53 +119,44 @@ class LoggerConfiguration {
 
   static std::shared_ptr<spdlog::logger> getSpdlogLogger(const std::string& name);
 
-  class LoggerImpl : public Logger {
+  class LoggerImpl : public LoggerBase {
    public:
-    explicit LoggerImpl(const std::string &name, const std::shared_ptr<LoggerControl> &controller, const std::shared_ptr<spdlog::logger> &delegate)
-        : Logger(delegate, controller),
-          name(name) {
+    explicit LoggerImpl(std::string name, const std::optional<utils::Identifier>& id, const std::shared_ptr<LoggerControl> &controller, const std::shared_ptr<spdlog::logger> &delegate)
+        : LoggerBase(delegate, controller),
+          name(std::move(name)),
+          id(internal::formatId(id)) {
     }
 
     void set_delegate(std::shared_ptr<spdlog::logger> delegate) {
       std::lock_guard<std::mutex> lock(mutex_);
-      delegate_ = delegate;
+      delegate_ = std::move(delegate);
     }
-    const std::string name;
+
+    std::optional<std::string> get_id() override { return id; }
+
+    std::string name;
+    std::optional<std::string> id;
   };
 
-  LoggerConfiguration();
+  static std::shared_ptr<spdlog::sinks::rotating_file_sink_mt> getRotatingFileSink(const std::string& appender_key, const std::shared_ptr<LoggerProperties>& properties);
+
   internal::CompressionManager compression_manager_;
   std::shared_ptr<internal::LoggerNamespace> root_namespace_;
-  std::vector<std::shared_ptr<LoggerImpl>> loggers;
+
+  struct LoggerId {
+    std::string name;
+    std::optional<utils::Identifier> uuid;
+  };
+  LoggerId calculateLoggerId(std::string_view name, const std::optional<utils::Identifier>& id) const;
+
   std::shared_ptr<spdlog::formatter> formatter_;
-  std::mutex mutex;
+  std::mutex mutex_;
   std::shared_ptr<LoggerImpl> logger_ = nullptr;
   std::shared_ptr<LoggerControl> controller_;
-  bool shorten_names_;
+  std::unordered_set<std::shared_ptr<AlertSink>> alert_sinks_;
+  std::optional<int> max_log_entry_length_;
+  bool shorten_names_ = false;
+  bool include_uuid_ = true;
 };
 
-template<typename T>
-class LoggerFactory {
- public:
-  /**
-   * Gets an initialized logger for the template class.
-   */
-  static std::shared_ptr<Logger> getLogger() {
-    static std::shared_ptr<Logger> logger = LoggerConfiguration::getConfiguration().getLogger(core::getClassName<T>());
-    return logger;
-  }
-
-  static std::shared_ptr<Logger> getAliasedLogger(const std::string &alias) {
-    std::shared_ptr<Logger> logger = LoggerConfiguration::getConfiguration().getLogger(alias);
-    return logger;
-  }
-};
-
-}  // namespace logging
-}  // namespace core
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // LIBMINIFI_INCLUDE_CORE_LOGGING_LOGGERCONFIGURATION_H_
+}  // namespace org::apache::nifi::minifi::core::logging

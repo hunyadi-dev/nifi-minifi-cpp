@@ -1,20 +1,6 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include <chrono>
 #include <random>
@@ -23,11 +9,12 @@
 #include <vector>
 #include <set>
 
-#include "../TestBase.h"
-#include "utils/gsl.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
+#include "minifi-cpp/utils/gsl.h"
 #include "utils/MinifiConcurrentQueue.h"
 #include "utils/StringUtils.h"
-#include "utils/IntegrationTestUtils.h"
+#include "unit/TestUtils.h"
 
 namespace utils = org::apache::nifi::minifi::utils;
 
@@ -135,7 +122,7 @@ namespace MinifiConcurrentQueueTestProducersConsumers {
       constexpr std::size_t max_read_attempts = 300;
       for (std::size_t attempt_num = 0; results.size() < 3 && attempt_num < max_read_attempts; ++attempt_num) {
         std::string s;
-        if (queue.dequeueWaitFor(s, std::chrono::milliseconds(1))) {
+        if (queue.dequeueWaitFor(s, minifi::test::utils::timeout(1ms))) {
           results.push_back(s);
         }
       }
@@ -167,8 +154,6 @@ namespace MinifiConcurrentQueueTestProducersConsumers {
 }  // namespace MinifiConcurrentQueueTestProducersConsumers
 
 TEST_CASE("TestConcurrentQueue", "[TestConcurrentQueue]") {
-  using namespace MinifiConcurrentQueueTestProducersConsumers;
-
   utils::ConcurrentQueue<std::string> queue;
 
   SECTION("empty queue") {
@@ -227,7 +212,6 @@ TEST_CASE("TestConcurrentQueue", "[TestConcurrentQueue]") {
 }
 
 TEST_CASE("TestConcurrentQueue: test simple producer and consumer", "[ProducerConsumer]") {
-  using namespace MinifiConcurrentQueueTestProducersConsumers;
   utils::ConcurrentQueue<std::string> queue;
   std::vector<std::string> results;
 
@@ -235,110 +219,113 @@ TEST_CASE("TestConcurrentQueue: test simple producer and consumer", "[ProducerCo
     std::thread producer;
     std::thread consumer;
     SECTION("using tryDequeue") {
-        producer = getSimpleProducerThread(queue);
-        consumer = getSimpleTryDequeConsumerThread(queue, results);
+        producer = MinifiConcurrentQueueTestProducersConsumers::getSimpleProducerThread(queue);
+        consumer = MinifiConcurrentQueueTestProducersConsumers::getSimpleTryDequeConsumerThread(queue, results);
       }
     SECTION("using consume") {
-        producer = getSimpleProducerThread(queue);
-        consumer = getSimpleConsumeConsumerThread(queue, results);
+        producer = MinifiConcurrentQueueTestProducersConsumers::getSimpleProducerThread(queue);
+        consumer = MinifiConcurrentQueueTestProducersConsumers::getSimpleConsumeConsumerThread(queue, results);
     }
-    /* In this testcase the consumer thread puts back all items to the queue to consume again
-    * Even in this case the ones inserted later by the producer should be consumed */
-    SECTION("with readd") {
-      producer = getSimpleProducerThread(queue);
-      consumer = getSpinningReaddingDequeueConsumerThread(queue, results);
+    // In this testcase the consumer thread puts back all items to the queue to consume again
+    // Even in this case the ones inserted later by the producer should be consumed
+    // The spinning-readding consumer doesn't work well under Valgrind, so we skip it.
+    if (!minifi::test::utils::runningUnderValgrind()) {
+      SECTION("with readd") {
+        producer = MinifiConcurrentQueueTestProducersConsumers::getSimpleProducerThread(queue);
+        consumer = MinifiConcurrentQueueTestProducersConsumers::getSpinningReaddingDequeueConsumerThread(queue, results);
+      }
     }
     producer.join();
     consumer.join();
   }
 
-  REQUIRE(utils::StringUtils::join("-", results) == "ba-dum-tss");
+  REQUIRE(utils::string::join("-", results) == "ba-dum-tss");
 }
 
 TEST_CASE("TestConcurrentQueue: test timed waiting consumers", "[ProducerConsumer]") {
-  using namespace MinifiConcurrentQueueTestProducersConsumers;
   utils::ConditionConcurrentQueue<std::string> queue(true);
   std::vector<std::string> results;
 
-  std::thread producer { getSimpleProducerThread(queue) };
+  std::thread producer { MinifiConcurrentQueueTestProducersConsumers::getSimpleProducerThread(queue) };
   std::thread consumer;
 
   SECTION("using dequeueWaitFor") {
-    consumer = getDequeueWaitForConsumerThread(queue, results);
+    consumer = MinifiConcurrentQueueTestProducersConsumers::getDequeueWaitForConsumerThread(queue, results);
   }
   SECTION("using dequeueWaitUntil") {
-    consumer = getDequeueWaitUntilConsumerThread(queue, results);
+    consumer = MinifiConcurrentQueueTestProducersConsumers::getDequeueWaitUntilConsumerThread(queue, results);
   }
   SECTION("using consumeWaitFor") {
-    consumer = getConsumeWaitForConsumerThread(queue, results);
+    consumer = MinifiConcurrentQueueTestProducersConsumers::getConsumeWaitForConsumerThread(queue, results);
   }
 
   producer.join();
   consumer.join();
 
-  REQUIRE(utils::StringUtils::join("-", results) == "ba-dum-tss");
+  REQUIRE(utils::string::join("-", results) == "ba-dum-tss");
 }
 
 TEST_CASE("TestConcurrentQueue: test untimed waiting consumers", "[ProducerConsumer]") {
-  using namespace MinifiConcurrentQueueTestProducersConsumers;
   utils::ConditionConcurrentQueue<std::string> queue(true);
   std::vector<std::string> results;
 
-  std::thread producer { getSimpleProducerThread(queue) };
+  std::thread producer { MinifiConcurrentQueueTestProducersConsumers::getSimpleProducerThread(queue) };
   std::thread consumer;
 
   SECTION("using dequeueWait") {
-    consumer = getDequeueWaitConsumerThread(queue, results);
+    consumer = MinifiConcurrentQueueTestProducersConsumers::getDequeueWaitConsumerThread(queue, results);
   }
   SECTION("using consumeWait") {
-    consumer = getConsumeWaitConsumerThread(queue, results);
+    consumer = MinifiConcurrentQueueTestProducersConsumers::getConsumeWaitConsumerThread(queue, results);
   }
 
   producer.join();
 
   auto queue_is_empty = [&queue]() { return queue.empty(); };
-  REQUIRE(utils::verifyEventHappenedInPollTime(std::chrono::seconds(1), queue_is_empty));
+  REQUIRE(minifi::test::utils::verifyEventHappenedInPollTime(std::chrono::seconds(1), queue_is_empty));
 
   queue.stop();
   consumer.join();
 
-  REQUIRE(utils::StringUtils::join("-", results) == "ba-dum-tss");
+  REQUIRE(utils::string::join("-", results) == "ba-dum-tss");
 }
 
 TEST_CASE("TestConcurrentQueue: test the readding dequeue consumer", "[ProducerConsumer]") {
-  using namespace MinifiConcurrentQueueTestProducersConsumers;
+  if (minifi::test::utils::runningUnderValgrind()) {
+    SKIP("The spinning-readding consumer doesn't work well under Valgrind's serialized scheduler");
+  }
+
   utils::ConditionConcurrentQueue<std::string> queue(true);
   std::vector<std::string> results;
 
   std::atomic_int results_size{0};
-  std::thread consumer { getReaddingDequeueConsumerThread(queue, results, results_size) };
+  std::thread consumer { MinifiConcurrentQueueTestProducersConsumers::getReaddingDequeueConsumerThread(queue, results, results_size) };
   std::this_thread::sleep_for(std::chrono::milliseconds(1));
-  std::thread producer { getSimpleProducerThread(queue) };
+  std::thread producer { MinifiConcurrentQueueTestProducersConsumers::getSimpleProducerThread(queue) };
 
   auto we_have_all_results = [&results_size]() { return results_size >= 3; };
-  REQUIRE(utils::verifyEventHappenedInPollTime(std::chrono::seconds(1), we_have_all_results));
+  REQUIRE(minifi::test::utils::verifyEventHappenedInPollTime(std::chrono::seconds(1), we_have_all_results));
 
   queue.stop();
   producer.join();
   consumer.join();
 
-  REQUIRE(utils::StringUtils::join("-", results) == "ba-dum-tss");
+  REQUIRE(utils::string::join("-", results) == "ba-dum-tss");
 }
 
 TEST_CASE("TestConcurrentQueue: test waiting consumers with blocked producer", "[ProducerConsumer]") {
-  using namespace MinifiConcurrentQueueTestProducersConsumers;
   utils::ConditionConcurrentQueue<std::string> queue(true);
   std::vector<std::string> results;
 
   std::mutex mutex;
   std::unique_lock<std::mutex> lock(mutex);
-  std::thread producer{ getBlockedProducerThread(queue, mutex) };
+  std::thread producer{ MinifiConcurrentQueueTestProducersConsumers::getBlockedProducerThread(queue, mutex) };
   std::thread consumer;
   SECTION("using dequeueWaitFor") {
-    consumer = getDequeueWaitForConsumerThread(queue, results);
+    consumer = MinifiConcurrentQueueTestProducersConsumers::getDequeueWaitForConsumerThread(queue, results);
   }
   SECTION("using consumeWaitFor") {
-    consumer = getConsumeWaitForConsumerThread(queue, results);
+    consumer = MinifiConcurrentQueueTestProducersConsumers::getConsumeWaitForConsumerThread(queue, results);
   }
   consumer.join();
   lock.unlock();
@@ -348,6 +335,10 @@ TEST_CASE("TestConcurrentQueue: test waiting consumers with blocked producer", "
 }
 
 TEST_CASE("TestConcurrentQueues::highLoad", "[TestConcurrentQueuesHighLoad]") {
+  if (minifi::test::utils::runningUnderValgrind()) {
+    SKIP("High-load busy-spin test is too slow under Valgrind's serialized scheduler");
+  }
+
   std::random_device dev;
   std::mt19937 rng(dev());
   std::uniform_int_distribution<std::mt19937::result_type> dist(1, std::numeric_limits<int>::max());
@@ -367,7 +358,7 @@ TEST_CASE("TestConcurrentQueues::highLoad", "[TestConcurrentQueuesHighLoad]") {
   std::thread relay([&queue, &cqueue]() {
     size_t cnt = 0;
     while (cnt < 50000) {
-      int i;
+      int i = 0;
       if (queue.tryDequeue(i)) {
         cnt++;
         cqueue.enqueue(i);
@@ -376,7 +367,7 @@ TEST_CASE("TestConcurrentQueues::highLoad", "[TestConcurrentQueuesHighLoad]") {
   });
 
   std::thread consumer([&cqueue, &target]() {
-    int i;
+    int i = 0;
     while (cqueue.dequeueWait(i)) {
       target.push_back(i);
     }
@@ -386,7 +377,7 @@ TEST_CASE("TestConcurrentQueues::highLoad", "[TestConcurrentQueuesHighLoad]") {
   relay.join();
 
   auto queue_is_empty = [&cqueue]() { return cqueue.empty(); };
-  REQUIRE(utils::verifyEventHappenedInPollTime(std::chrono::seconds(1), queue_is_empty));
+  REQUIRE(minifi::test::utils::verifyEventHappenedInPollTime(std::chrono::seconds(1), queue_is_empty));
 
   cqueue.stop();
   consumer.join();

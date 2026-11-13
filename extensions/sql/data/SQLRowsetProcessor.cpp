@@ -1,32 +1,13 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include "SQLRowsetProcessor.h"
 
-#include "Exception.h"
-#include "Utils.h"
+#include "minifi-cpp/Exception.h"
 #include "utils/StringUtils.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace sql {
+namespace org::apache::nifi::minifi::sql {
 
 SQLRowsetProcessor::SQLRowsetProcessor(std::unique_ptr<Rowset> rowset, std::vector<std::reference_wrapper<SQLRowSubscriber>> row_subscribers)
   : rowset_(std::move(rowset)), row_subscribers_(std::move(row_subscribers)) {
@@ -68,7 +49,7 @@ void SQLRowsetProcessor::addRow(const Row& row, size_t rowCount) {
     std::vector<std::string> column_names;
     column_names.reserve(row.size());
     for (std::size_t i = 0; i != row.size(); ++i) {
-      column_names.push_back(utils::StringUtils::toLower(row.getColumnName(i)));
+      column_names.push_back(row.getColumnName(i));
     }
     for (const auto& subscriber : row_subscribers_) {
       subscriber.get().processColumnNames(column_names);
@@ -76,7 +57,7 @@ void SQLRowsetProcessor::addRow(const Row& row, size_t rowCount) {
   }
 
   for (std::size_t i = 0; i != row.size(); ++i) {
-    const auto& name = utils::StringUtils::toLower(row.getColumnName(i));
+    const auto& name = row.getColumnName(i);
 
     if (row.isNull(i)) {
       processColumn(name, "NULL");
@@ -105,11 +86,11 @@ void SQLRowsetProcessor::addRow(const Row& row, size_t rowCount) {
         case DataType::DATE: {
           const std::tm when = row.getDate(i);
 
-          char value[128];
-          if (!std::strftime(value, sizeof(value), "%Y-%m-%d %H:%M:%S", &when))
+          std::array<char, 128> value{};
+          if (!std::strftime(value.data(), value.size(), "%Y-%m-%d %H:%M:%S", &when))
             throw minifi::Exception(PROCESSOR_EXCEPTION, "SQLRowsetProcessor: !strftime.");
 
-          processColumn(name, std::string(value));
+          processColumn(name, std::string(value.data()));
         }
         break;
         default: {
@@ -124,9 +105,4 @@ void SQLRowsetProcessor::addRow(const Row& row, size_t rowCount) {
   }
 }
 
-} /* namespace sql */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
-
+}  // namespace org::apache::nifi::minifi::sql

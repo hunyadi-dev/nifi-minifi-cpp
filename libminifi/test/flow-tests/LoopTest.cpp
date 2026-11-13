@@ -1,24 +1,8 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-#undef NDEBUG
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #include "CustomProcessors.h"
-#include "TestControllerWithFlow.h"
+#include "unit/TestControllerWithFlow.h"
 
 // A flow with structure:
 // [Generator] ---> [A] ---|
@@ -74,9 +58,9 @@ Connections:
 Remote Processing Groups:
 
 Controller Services:
-  - name: defaultstatemanagerprovider
+  - name: defaultstatestorage
     id: 2438e3c8-015a-1000-79ca-83af40ec1996
-    class: UnorderedMapPersistableKeyValueStoreService
+    class: PersistentMapStateStorage
     Properties:
       Auto Persistence Interval:
           - value: 0 sec
@@ -91,15 +75,17 @@ TEST_CASE("Flow with a single loop", "[SingleLoopFlow]") {
   auto controller = testController.controller_;
   auto root = testController.root_;
 
-  auto procGenerator = std::static_pointer_cast<org::apache::nifi::minifi::processors::TestFlowFileGenerator>(root->findProcessorByName("Generator"));
-  auto procA = std::static_pointer_cast<org::apache::nifi::minifi::processors::TestProcessor>(root->findProcessorByName("A"));
+  TypedProcessorWrapper<org::apache::nifi::minifi::processors::TestFlowFileGenerator> procGenerator = root->findProcessorByName("Generator");
+  gsl_Assert(procGenerator);
+  TypedProcessorWrapper<org::apache::nifi::minifi::processors::TestProcessor> procA = root->findProcessorByName("A");
+  gsl_Assert(procA);
 
   int tryCount = 0;
   // wait for the procA to get triggered 15 times
-  while (tryCount++ < 10 && !(procA->trigger_count.load() >= 15)) {
+  while (tryCount++ < 10 && !(procA.get().trigger_count.load() >= 15)) {
     std::this_thread::sleep_for(std::chrono::milliseconds{1000});
   }
 
-  REQUIRE(procGenerator->trigger_count.load() <= 2);
-  REQUIRE(procA->trigger_count.load() >= 15);
+  REQUIRE(procGenerator.get().trigger_count.load() <= 2);
+  REQUIRE(procA.get().trigger_count.load() >= 15);
 }

@@ -1,0 +1,76 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include <memory>
+#include <string>
+#include <utility>
+
+#include "core/ProcessorImpl.h"
+#include "core/ProcessSession.h"
+#include "utils/Enum.h"
+#include "SmbConnectionControllerService.h"
+#include "core/logging/LoggerFactory.h"
+
+namespace org::apache::nifi::minifi::extensions::smb {
+
+class PutSmb final : public core::ProcessorImpl {
+ public:
+  using ProcessorImpl::ProcessorImpl;
+
+  enum class FileExistsResolutionStrategy {
+    fail,
+    replace,
+    ignore
+  };
+
+  EXTENSIONAPI static constexpr const char* Description = "Writes the contents of a FlowFile to an smb network location";
+
+  EXTENSIONAPI static constexpr auto ConnectionControllerService = core::PropertyDefinitionBuilder<>::createProperty("SMB Connection Controller Service")
+      .withDescription("Specifies the SMB connection controller service to use for connecting to the SMB server. "
+                       "If the SMB share is auto-mounted to a drive letter, its recommended to use PutFile instead.")
+      .isRequired(true)
+      .withAllowedTypes<SmbConnectionControllerService>()
+      .build();
+  EXTENSIONAPI static constexpr auto Directory = core::PropertyDefinitionBuilder<>::createProperty("Directory")
+      .withDescription("The output directory to which to put files")
+      .supportsExpressionLanguage(true)
+      .withDefaultValue(".")
+      .build();
+  EXTENSIONAPI static constexpr auto ConflictResolution = core::PropertyDefinitionBuilder<magic_enum::enum_count<FileExistsResolutionStrategy>()>::createProperty("Conflict Resolution Strategy")
+      .withDescription("Indicates what should happen when a file with the same name already exists in the output directory")
+      .withDefaultValue(magic_enum::enum_name(FileExistsResolutionStrategy::fail))
+      .withAllowedValues(magic_enum::enum_names<FileExistsResolutionStrategy>())
+      .build();
+  EXTENSIONAPI static constexpr auto CreateMissingDirectories = core::PropertyDefinitionBuilder<0>::createProperty("Create Missing Directories")
+      .withDescription("If true, then missing destination directories will be created. If false, flowfiles are penalized and sent to failure.")
+      .withDefaultValue("true")
+      .isRequired(true)
+      .build();
+
+  EXTENSIONAPI static constexpr auto Properties = std::to_array<core::PropertyReference>({ ConnectionControllerService, Directory, ConflictResolution, CreateMissingDirectories});
+
+  EXTENSIONAPI static constexpr auto Success = core::RelationshipDefinition{"success", "All files are routed to success"};
+  EXTENSIONAPI static constexpr auto Failure = core::RelationshipDefinition{"failure", "Failed files (conflict, write failure, etc.) are transferred to failure"};
+  EXTENSIONAPI static constexpr auto Relationships = std::array{Success, Failure};
+
+  EXTENSIONAPI static constexpr bool SupportsDynamicProperties = false;
+  EXTENSIONAPI static constexpr bool SupportsDynamicRelationships = false;
+  EXTENSIONAPI static constexpr core::annotation::Input InputRequirement = core::annotation::Input::INPUT_REQUIRED;
+  EXTENSIONAPI static constexpr bool IsSingleThreaded = false;
+
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_PROCESSORS
+
+  void onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& sessionFactory) override;
+  void onTrigger(core::ProcessContext& context, core::ProcessSession& session) override;
+  void initialize() override;
+
+ private:
+  std::filesystem::path getFilePath(core::ProcessContext& context, const core::FlowFile& flow_file);
+  bool create_missing_dirs_ = true;
+  FileExistsResolutionStrategy conflict_resolution_strategy_ = FileExistsResolutionStrategy::fail;
+  std::shared_ptr<SmbConnectionControllerService> smb_connection_controller_service_;
+};
+
+}  // namespace org::apache::nifi::minifi::extensions::smb

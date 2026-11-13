@@ -1,0 +1,62 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+include(FetchContent)
+
+if (WIN32)
+    set(WIL_BUILD_TESTS OFF CACHE INTERNAL "")
+    set(WIL_BUILD_PACKAGING OFF CACHE INTERNAL "")
+
+    set(WIL_PATCH_FILE_1 "${CMAKE_SOURCE_DIR}/thirdparty/wil/cmake_version.patch")
+    set(WIL_PC ${Bash_EXECUTABLE}  -c "set -x &&\
+        (\\\"${Patch_EXECUTABLE}\\\" -p1 -R -s -f --dry-run -i \\\"${WIL_PATCH_FILE_1}\\\" || \\\"${Patch_EXECUTABLE}\\\" -p1 -N -i \\\"${WIL_PATCH_FILE_1}\\\")")
+
+    FetchContent_Declare(
+            wil
+            URL      https://github.com/microsoft/wil/archive/refs/tags/v1.0.260126.7.tar.gz
+            URL_HASH SHA256=de9e03b38ff0ff8d22048f00b111cb631d21c550328f12530ccba71c05c9e361
+            PATCH_COMMAND "${WIL_PC}"
+            SYSTEM
+    )
+    FetchContent_MakeAvailable(wil)
+endif()
+
+if (NOT WIN32)
+    include(GetLibXml2)
+    list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/libxml2/dummy")
+endif()
+
+set(WARNINGS_AS_ERRORS OFF CACHE INTERNAL "")
+set(DISABLE_AZURE_CORE_OPENTELEMETRY ON CACHE INTERNAL "")
+set(BUILD_TRANSPORT_CURL ON CACHE INTERNAL "")
+set(BUILD_TESTING OFF CACHE INTERNAL "")
+set(BUILD_SAMPLES OFF CACHE INTERNAL "")
+set(DISABLE_AMQP ON CACHE INTERNAL "")
+
+set(PATCH_FILE_1 "${CMAKE_SOURCE_DIR}/thirdparty/azure-sdk-cpp/all/patches/wil.patch")
+set(PATCH_FILE_2 "${CMAKE_SOURCE_DIR}/thirdparty/azure-sdk-cpp/all/patches/fix-openssl-helper.patch")
+set(PATCH_FILE_3 "${CMAKE_SOURCE_DIR}/thirdparty/azure-sdk-cpp/all/patches/include-cinttypes-for-uint8_t-gcc15-fix.patch")
+
+set(PC ${Bash_EXECUTABLE}  -c "set -x &&\
+        (\\\"${Patch_EXECUTABLE}\\\" -p1 -R -s -f --dry-run -i \\\"${PATCH_FILE_1}\\\" || \\\"${Patch_EXECUTABLE}\\\" -p1 -N -i \\\"${PATCH_FILE_1}\\\") &&\
+        (\\\"${Patch_EXECUTABLE}\\\" -p1 -R -s -f --dry-run -i \\\"${PATCH_FILE_2}\\\" || \\\"${Patch_EXECUTABLE}\\\" -p1 -N -i \\\"${PATCH_FILE_2}\\\") &&\
+        (\\\"${Patch_EXECUTABLE}\\\" -p1 -R -s -f --dry-run -i \\\"${PATCH_FILE_3}\\\" || \\\"${Patch_EXECUTABLE}\\\" -p1 -N -i \\\"${PATCH_FILE_3}\\\")")
+
+FetchContent_Declare(asdkext
+    URL https://github.com/Azure/azure-sdk-for-cpp/archive/refs/tags/azure-storage-blobs_12.18.0.tar.gz
+    URL_HASH "SHA256=0f266f91cf00b79bb6c7c6f99e44942b43a7141db565556a4298f6ebe3a86fcc"
+    PATCH_COMMAND "${PC}"
+    SYSTEM
+)
+
+FetchContent_MakeAvailable(asdkext)
+
+if (WIN32)
+    # Azure SDK changes C++ standard to C++14 which needs to be overridden back to C++17 required by the WIL library on Windows
+    set_target_properties(azure-identity PROPERTIES CXX_STANDARD 17 CXX_STANDARD_REQUIRED ON)
+endif()
+
+if (NOT WIN32)
+    add_dependencies(azure-storage-common LibXml2::LibXml2)
+    add_dependencies(azure-data-tables LibXml2::LibXml2)
+endif()

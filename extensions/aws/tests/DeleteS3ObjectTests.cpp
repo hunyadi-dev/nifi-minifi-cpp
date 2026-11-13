@@ -1,0 +1,132 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#include <array>
+
+#include "S3TestsFixture.h"
+#include "processors/DeleteS3Object.h"
+#include "unit/TestUtils.h"
+
+namespace {
+
+using DeleteS3ObjectTestsFixture = FlowProcessorS3TestsFixture<minifi::aws::processors::DeleteS3Object>;
+using org::apache::nifi::minifi::test::utils::verifyLogLinePresenceInPollTime;
+
+TEST_CASE_METHOD(DeleteS3ObjectTestsFixture, "Test AWS credential setting", "[awsCredentials]") {
+  setBucket();
+
+  SECTION("Test property credentials") {
+    setAccesKeyCredentialsInProcessor();
+  }
+
+  SECTION("Test credentials setting from AWS Credentials service") {
+    setAccessKeyCredentialsInController();
+    setCredentialsService();
+  }
+
+  SECTION("Test credentials file setting") {
+    setCredentialFile(s3_processor);
+  }
+
+  SECTION("Test credentials file setting from AWS Credentials service") {
+    setCredentialFile(aws_credentials_service);
+    setCredentialsService();
+  }
+
+  SECTION("Test credentials setting using default credential chain") {
+    setUseDefaultCredentialsChain(s3_processor);
+  }
+
+  SECTION("Test credentials setting from AWS Credentials service using default credential chain") {
+    setUseDefaultCredentialsChain(aws_credentials_service);
+    setCredentialsService();
+  }
+
+  test_controller.runSession(plan, true);
+  REQUIRE(mock_s3_request_sender_ptr->getCredentials().GetAWSAccessKeyId() == "key");
+  REQUIRE(mock_s3_request_sender_ptr->getCredentials().GetAWSSecretKey() == "secret");
+}
+
+TEST_CASE_METHOD(DeleteS3ObjectTestsFixture, "Test required property not set", "[awsS3Config]") {
+  SECTION("Test credentials not set") {
+  }
+
+  SECTION("Test no bucket is set") {
+    setAccesKeyCredentialsInProcessor();
+  }
+
+  SECTION("Test no object key is set") {
+    setRequiredProperties();
+    plan->setDynamicProperty(update_attribute, "filename", "");
+  }
+
+  REQUIRE_THROWS_AS(test_controller.runSession(plan, true), minifi::Exception);
+}
+
+TEST_CASE_METHOD(DeleteS3ObjectTestsFixture, "Non blank validator tests") {
+  setRequiredProperties();
+  CHECK_FALSE(plan->setProperty(s3_processor, "Region", ""));
+}
+
+TEST_CASE_METHOD(DeleteS3ObjectTestsFixture, "Test proxy setting", "[awsS3Proxy]") {
+  setRequiredProperties();
+  SECTION("Use proxy configuration service") {
+    setProxy(ProxyConfigType::ControllerServiceHttp);
+  }
+  SECTION("Use processor properties") {
+    setProxy(ProxyConfigType::ProcessorProperties);
+  }
+  test_controller.runSession(plan, true);
+  checkProxySettings();
+}
+
+TEST_CASE_METHOD(DeleteS3ObjectTestsFixture, "Test success case with default values", "[awsS3DeleteSuccess]") {
+  setRequiredProperties();
+  test_controller.runSession(plan, true);
+  REQUIRE(mock_s3_request_sender_ptr->delete_object_request.GetBucket() == "testBucket");
+  REQUIRE(mock_s3_request_sender_ptr->delete_object_request.GetKey() == INPUT_FILENAME);
+  REQUIRE(!mock_s3_request_sender_ptr->delete_object_request.VersionIdHasBeenSet());
+  REQUIRE(verifyLogLinePresenceInPollTime(std::chrono::seconds(3), "Successfully deleted S3 object"));
+  checkNoS3ErrorAttributes();
+}
+
+TEST_CASE_METHOD(DeleteS3ObjectTestsFixture, "Test version setting", "[awsS3DeleteWithVersion]") {
+  setRequiredProperties();
+  plan->setDynamicProperty(update_attribute, "s3.version", "v1");
+  plan->setProperty(s3_processor, "Version", "${s3.version}");
+  test_controller.runSession(plan, true);
+  REQUIRE(mock_s3_request_sender_ptr->delete_object_request.GetVersionId() == "v1");
+  REQUIRE(mock_s3_request_sender_ptr->delete_object_request.VersionIdHasBeenSet());
+  REQUIRE(verifyLogLinePresenceInPollTime(std::chrono::seconds(3), "Successfully deleted S3 object"));
+}
+
+TEST_CASE_METHOD(DeleteS3ObjectTestsFixture, "Test optional client configuration values", "[awsS3DeleteOptionalClientConfig]") {
+  setRequiredProperties();
+  plan->setProperty(s3_processor, "Region", minifi::aws::processors::region::US_EAST_1);
+  plan->setProperty(s3_processor, "Communications Timeout", "10 Sec");
+  plan->setProperty(s3_processor, "Endpoint Override URL", "http://localhost:1234");
+  test_controller.runSession(plan, true);
+  REQUIRE(mock_s3_request_sender_ptr->getClientConfig().region == minifi::aws::processors::region::US_EAST_1);
+  REQUIRE(mock_s3_request_sender_ptr->getClientConfig().connectTimeoutMs == 10000);
+  REQUIRE(mock_s3_request_sender_ptr->getClientConfig().endpointOverride == "http://localhost:1234");
+}
+
+TEST_CASE_METHOD(DeleteS3ObjectTestsFixture, "Test failure case", "[awsS3DeleteFailure]") {
+  auto log_failure = plan->addProcessor(
+      "LogAttribute",
+      "LogFailure",
+      core::Relationship("failure", "d"));
+  plan->addConnection(s3_processor, core::Relationship("failure", "d"), log_failure);
+  setRequiredProperties();
+  plan->setProperty(s3_processor, "Version", "v1");
+  log_failure->setAutoTerminatedRelationships(std::array{core::Relationship("success", "d")});
+  mock_s3_request_sender_ptr->setDeleteObjectResult(false);
+  test_controller.runSession(plan, true);
+  REQUIRE(mock_s3_request_sender_ptr->delete_object_request.GetBucket() == "testBucket");
+  REQUIRE(mock_s3_request_sender_ptr->delete_object_request.GetKey() == INPUT_FILENAME);
+  REQUIRE(mock_s3_request_sender_ptr->delete_object_request.GetVersionId() == "v1");
+  REQUIRE(verifyLogLinePresenceInPollTime(std::chrono::seconds(3), "Failed to delete S3 object"));
+  checkS3ErrorAttributes("DELETE_ERROR", "Error while deleting S3 object", false, -1);
+}
+
+}  // namespace

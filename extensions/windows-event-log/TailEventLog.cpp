@@ -1,76 +1,42 @@
-/**
- * @file TailEventLog.cpp
- * TailEventLog class implementation
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include "TailEventLog.h"
 
 #include <vector>
 #include <map>
-#include <set>
 #include <string>
 #include <memory>
 
 #include "io/BufferStream.h"
-#include "core/ProcessContext.h"
+#include "minifi-cpp/core/ProcessContext.h"
 #include "core/ProcessSession.h"
 #include "core/Resource.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace processors {
+#include "utils/OsUtils.h"
+#include "minifi-cpp/core/Property.h"
+#include "utils/ProcessorConfigUtils.h"
 
-const std::string TailEventLog::ProcessorName("TailEventLog");
-core::Relationship TailEventLog::Success("success", "All files, containing log events, are routed to success");
-core::Property TailEventLog::LogSourceFileName("Log Source", "Log Source from which to read events", "");
-core::Property TailEventLog::MaxEventsPerFlowFile("Max Events Per FlowFile", "Events per flow file", "1");
+namespace org::apache::nifi::minifi::processors {
+
 void TailEventLog::initialize() {
-  //! Set the supported properties
-  std::set<core::Property> properties;
-  properties.insert(LogSourceFileName);
-  properties.insert(MaxEventsPerFlowFile);
-  setSupportedProperties(properties);
-  //! Set the supported relationships
-  std::set<core::Relationship> relationships;
-  relationships.insert(Success);
-  setSupportedRelationships(relationships);
+  setSupportedProperties(Properties);
+  setSupportedRelationships(Relationships);
 }
 
-void TailEventLog::onSchedule(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSessionFactory> &sessionFactory) {
-  std::string value;
-
-  if (context->getProperty(LogSourceFileName.getName(), value)) {
-    log_source_ = value;
-  }
-  if (context->getProperty(MaxEventsPerFlowFile.getName(), value)) {
-    core::Property::StringToInt(value, max_events_);
-  }
+void TailEventLog::onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& session_factory) {
+  log_source_ = utils::parseOptionalProperty(context, LogSourceFileName).value_or("");
+  max_events_ = gsl::narrow<uint32_t>(utils::parseOptionalU64Property(context, MaxEventsPerFlowFile).value_or(0));
 
   log_handle_ = OpenEventLog(NULL, log_source_.c_str());
 
-  logger_->log_trace("TailEventLog configured to tail %s", log_source_);
+  logger_->log_trace("TailEventLog configured to tail {}", log_source_);
 }
 
-void TailEventLog::onTrigger(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSession> &session) {
+void TailEventLog::onTrigger(core::ProcessContext& context, core::ProcessSession& session) {
   if (log_handle_ == nullptr) {
-    logger_->log_debug("Handle could not be created for %s", log_source_);
+    logger_->log_debug("Handle could not be created for {}", log_source_);
   }
 
   BYTE buffer[MAX_RECORD_BUFFER_SIZE];
@@ -83,15 +49,15 @@ void TailEventLog::onTrigger(const std::shared_ptr<core::ProcessContext> &contex
   GetNumberOfEventLogRecords(log_handle_, &num_records_);
   current_record_ = num_records_-max_events_;
 
-  logger_->log_trace("%d and %d", current_record_, num_records_);
+  logger_->log_trace("{} and {}", current_record_, num_records_);
 
   if (ReadEventLog(log_handle_, EVENTLOG_FORWARDS_READ | EVENTLOG_SEEK_READ, current_record_, event_record, MAX_RECORD_BUFFER_SIZE, &bytes_to_read, &min_bytes)) {
     if (bytes_to_read == 0) {
       logger_->log_debug("Yielding");
-      context->yield();
+      context.yield();
     }
     while (bytes_to_read > 0) {
-      auto flowFile = session->create();
+      auto flowFile = session.create();
       if (flowFile == nullptr)
         return;
 
@@ -109,10 +75,10 @@ void TailEventLog::onTrigger(const std::shared_ptr<core::ProcessContext> &contex
       flowFile->addAttribute("event_time", getTimeStamp(event_record->TimeGenerated));
       flowFile->addAttribute("event_type", typeToString(event_record->EventType));
 
-      io::BufferStream stream((const uint8_t*)(event_record + event_record->DataOffset), event_record->DataLength);
+      io::BufferStream stream(std::as_bytes(std::span(event_record + event_record->DataOffset, event_record->DataLength)));
       // need an import from the data stream.
-      session->importFrom(stream, flowFile);
-      session->transfer(flowFile, Success);
+      session.importFrom(stream, flowFile);
+      session.transfer(flowFile, Success);
       bytes_to_read -= event_record->Length;
       event_record = reinterpret_cast<EVENTLOGRECORD *>((LPBYTE)event_record + event_record->Length);
     }
@@ -120,16 +86,13 @@ void TailEventLog::onTrigger(const std::shared_ptr<core::ProcessContext> &contex
     event_record = reinterpret_cast<EVENTLOGRECORD*>(&buffer);
     logger_->log_trace("All done no more");
   } else {
-    LogWindowsError();
+    auto last_error = utils::OsUtils::windowsErrorToErrorCode(GetLastError());
+    logger_->log_error("{}: {}", last_error, last_error.message());
     logger_->log_trace("Yielding due to error");
-    context->yield();
+    context.yield();
   }
 }
 
-REGISTER_RESOURCE(TailEventLog, "Windows event log reader that functions as a stateful tail of the provided windows event log name");
+REGISTER_RESOURCE(TailEventLog, Processor);
 
-} /* namespace processors */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+}  // namespace org::apache::nifi::minifi::processors

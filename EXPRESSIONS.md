@@ -1,16 +1,7 @@
 <!--
-  Licensed to the Apache Software Foundation (ASF) under one or more
-  contributor license agreements.  See the NOTICE file distributed with
-  this work for additional information regarding copyright ownership.
-  The ASF licenses this file to You under the Apache License, Version 2.0
-  (the "License"); you may not use this file except in compliance with
-  the License.  You may obtain a copy of the License at
-      http://www.apache.org/licenses/LICENSE-2.0
-  Unless required by applicable law or agreed to in writing, software
-  distributed under the License is distributed on an "AS IS" BASIS,
-  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-  See the License for the specific language governing permissions and
-  limitations under the License.
+  SPDX-License-Identifier: Apache-2.0
+  SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+  SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 -->
 # MiNiFi - C++ Expression Language
 
@@ -106,6 +97,7 @@ considered special characters:
 - `/` (forward slash)
 - `*` (asterisk)
 - `'` (single quote)
+- `-` (hyphen)
 - ` ` (space)
 - `\t` (tab)
 - `\r` (carriage return)
@@ -144,6 +136,16 @@ Therefore, we can use the Expression `${ filename : equals(${ uuid}) }` or
 cannot, however, use `${file name:equals(${uuid})}`, because this results in
 file and name being interpreted as different tokens, rather than a single
 token, filename.
+
+### Variable Registry
+
+You can also access custom properties that are defined in the `minifi.properties` configuration file.
+
+#### Refining access
+If `minifi.variable.registry.whitelist` is defined in the properties file (as a comma separated list), only these explicitly listed properties will be available.
+You can also restrict access via `minifi.variable.registry.blacklist` (also a comma separated list) any property listed here won't be accessible.
+Furthermore, any property with `password` in its name will be inaccessible.
+
 
 ## Supported Features
 
@@ -224,6 +226,8 @@ token, filename.
 - [`hostname`](#hostname)
 - [`UUID`](#uuid)
 - [`literal`](#literal)
+- [`reverseDnsLookup`](#reversednslookup)
+- [`nextInt`](#nextInt)
 
 ### Evaluating Multiple Attributes
 
@@ -257,7 +261,6 @@ token, filename.
 
 ### Subjectless Functions
 
-- `nextInt`
 - `getStateValue`
 
 ## Unsupported Features
@@ -332,7 +335,7 @@ a Regular Expression.
 
 **Subject Type**: Any
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -353,7 +356,7 @@ two values differ only by case (upper case vs. lower case).
 
 **Subject Type**: String
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -372,7 +375,7 @@ the argument cannot be coerced into a Number, this function returns `false`.
 
 **Subject Type**: Number
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -393,7 +396,7 @@ subject or the argument cannot be coerced into a Number, this function returns
 
 **Subject Type**: Number
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -413,7 +416,7 @@ argument cannot be coerced into a Number, this function returns `false`.
 
 **Subject Type**: Number
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -434,7 +437,7 @@ subject or the argument cannot be coerced into a Number, this function returns
 
 **Subject Type**: Number
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -456,7 +459,7 @@ as the argument.
 
 **Subject Type**: Boolean
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -483,7 +486,7 @@ function will return `false`.
 
 **Subject Type**: Boolean
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -949,7 +952,7 @@ filename.txt".
 
 **Arguments**: No arguments
 
-**Return Type**: String
+**Return Type**: Number
 
 **Examples**: If the attribute "filename" has a value of "a brand new
 filename.txt" and the attribute "hello" does not exist, then the Expression
@@ -1139,7 +1142,7 @@ as the argument, `false` otherwise.
 
 **Subject Type**: String
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -1161,7 +1164,7 @@ the argument, `false` otherwise.
 
 **Subject Type**: String
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -1183,7 +1186,7 @@ argument anywhere in the value.
 
 **Subject Type**: String
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -1205,7 +1208,7 @@ arguments.
 
 **Subject Type**: String
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -1227,7 +1230,7 @@ characters that matches the Regular Expression provided by the argument.
 
 **Subject Type**: String
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -1252,7 +1255,7 @@ following Expressions will provide the following results:
 
 **Subject Type**: String
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -1282,13 +1285,13 @@ found at the beginning of the Subject, the value returned will be `0`, not `1`.
 
 **Subject Type**: String
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
 | value | The value to search for in the Subject |
 
-**Return Type**: Boolean
+**Return Type**: Number
 
 **Examples**:
 
@@ -1313,13 +1316,13 @@ found at the beginning of the Subject, the value returned will be `0`, not `1`.
 
 **Subject Type**: String
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
 | value | The value to search for in the Subject |
 
-**Return Type**: Boolean
+**Return Type**: Number
 
 **Examples**:
 
@@ -1590,6 +1593,48 @@ to evaluate additional functions against.
 ${allMatchingAttributes('a.*'):count()} ):gt(3)}` returns true if there are
 more than 3 attributes whose names begin with the letter a.
 
+### reverseDnsLookup
+
+**Description**: Performs a reverse DNS lookup on an ip address, and returns the corresponding hostname.
+
+**Subject Type**: No subject
+
+**Arguments**:
+
+| Argument                      | Description                                                                                                                  |
+|-------------------------------|------------------------------------------------------------------------------------------------------------------------------|
+| IP address                    | The ip address to perform the reverse DNS lookup on.                                                                         |
+| Timeout duration milliseconds | Optional parameter that specifies the timeout duration of the operation in milliseconds. If not specified, defaults to 5000. |
+
+
+**Return Type**: String
+
+**Examples**:
+
+| Expression                                         | Value        |
+|----------------------------------------------------|--------------|
+| `${reverseDnsLookup('127.0.0.1')}`                 | `localhost`  |
+| `${reverseDnsLookup('::1')}`                       | `localhost`  |
+| `${reverseDnsLookup('2001:4860:4860::8888'), 100}` | `dns.google` |
+
+### nextInt
+
+**Description**: Returns a one-up value (starting at 0) and increasing over the
+lifetime of the running instance of MiNiFi. This value is not persisted across restarts.
+This counter is shared across all MiNiFi components, so calling this function multiple
+times from one Processor will not guarantee sequential values within the context of a
+particular Processor.
+
+**Subject Type**: No subject
+
+**Arguments**: No arguments
+
+**Return Type**: Number
+
+**Examples**: If the previous value returned by nextInt was 5, the Expression
+${nextInt():divide(2)} obtains the next available integer (6) and divides the result
+by 2, returning a value of 3.
+
 ## Evaluating Multiple Attributes
 
 When it becomes necessary to evaluate the same conditions against multiple
@@ -1609,7 +1654,7 @@ the Expression, returns a value of `true`, then this function will return
 
 **Subject Type**: No Subject
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -1637,7 +1682,7 @@ the Expression, returns a value of `true`, then this function will return
 
 **Subject Type**: No Subject
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -1666,7 +1711,7 @@ function will return `true`. Otherwise, this function will return `false`.
 
 **Subject Type**: No Subject
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -1695,7 +1740,7 @@ function will return `true`. Otherwise, this function will return `false`.
 
 **Subject Type**: No Subject
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -1723,7 +1768,7 @@ returns `false`.
 
 **Subject Type**: No Subject
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -1751,7 +1796,7 @@ Otherwise, the function returns `false`.
 
 **Subject Type**: No Subject
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -1779,7 +1824,7 @@ specified delimiter. This function may be used only in conjunction with the
 
 **Subject Type**: String
 
-**Arguments**: 
+**Arguments**:
 
 | Argument | Description |
 | - | - |
@@ -1834,9 +1879,9 @@ argument.
 
 **Arguments**:
 
-| Argument | Description |
-| - | - |
-| format | The format to use in the strftime syntax |
+| Argument  | Description                                                                                                      |
+|-----------|------------------------------------------------------------------------------------------------------------------|
+| format    | The format to use in the strftime syntax                                                                         |
 | time zone | Optional argument that specifies the time zone to use from the IANA Time Zone Database (e.g. 'America/New_York') |
 
 **Return Type**: String
@@ -1846,23 +1891,26 @@ argument.
 If the attribute "time" has the value "1420058163264", then the following
 Expressions will yield the following results:
 
-| Expression | Value |
-| - | - |
-| `${time:format("%Y/%m/%d %H:%M:%S", "GMT")}` | `2014/12/31 20:36:03` |
-| `${time:format("%Y", "America/Los_Angeles")}` | `2014` |
+| Expression                                    | Value                 |
+|-----------------------------------------------|-----------------------|
+| `${time:format("%Y/%m/%d %H:%M:%S", "GMT")}`  | `2014/12/31 20:36:03` |
+| `${time:format("%Y", "America/Los_Angeles")}` | `2014`                |
 
 ### toDate
 
 **Description**: Converts a String into a date represented by the number of
 milliseconds since the UNIX epoch, based on the format specified by the
-argument. The argument must be a String that is a valid strftime syntax. The
+argument. The first argument must be a String that is a valid strftime syntax. The
 Subject is expected to be a String that is formatted according the argument.
 The date will be evaluated using the local time zone unless specified in the
 second optional argument.
+If called without arguments it will parse the subject as a RFC3339 formatted datetime.
 
 **Subject Type**: String
 
-| format | The format to use in the strftime syntax |
+| Argument  | Description                                                                                                                                |
+|-----------|--------------------------------------------------------------------------------------------------------------------------------------------|
+| format    | Optional argument that specifies the format to use in the strftime syntax                                                                  |
 | time zone | Optional argument that specifies the time zone to use when parsing the subject, from the IANA Time Zone Database (e.g. 'America/New_York') |
 
 **Return Type**: Number
@@ -1885,7 +1933,7 @@ chaining together the two functions:
 
 **Description**: Returns the current date and time as a Date data type object.
 
-**Subject Type**: String
+**Subject Type**: No Subject
 
 **Arguments**: No arguments
 
@@ -1893,9 +1941,9 @@ chaining together the two functions:
 
 **Examples**:
 
-| Expression | Value |
-| - | - |
-| `${now()}` | `Count of milliseconds since the UNIX epoch` |
-| `${now():minus(86400000)` | `A number presenting the time 24 hours ago` |
-| `${now():format('Y')}` | `The current year` |
+| Expression                              | Value                                                                                   |
+|-----------------------------------------|-----------------------------------------------------------------------------------------|
+| `${now()}`                              | `Count of milliseconds since the UNIX epoch`                                            |
+| `${now():minus(86400000)`               | `A number presenting the time 24 hours ago`                                             |
+| `${now():format('Y')}`                  | `The current year`                                                                      |
 | `${now():minus(86400000):format('%a')}` | `The day of the week that was yesterday, as a 3-letter abbreviation (For example, Wed)` |

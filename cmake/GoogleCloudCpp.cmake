@@ -1,0 +1,47 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+include(FetchContent)
+include(Abseil)
+include(Crc32c)
+
+set(PATCH_FILE_1 "${CMAKE_SOURCE_DIR}/thirdparty/google-cloud-cpp/all/patches/remove-find_package.patch")
+set(PATCH_FILE_2 "${CMAKE_SOURCE_DIR}/thirdparty/google-cloud-cpp/all/patches/nlohmann_lib_as_interface.patch")
+set(PATCH_FILE_3 "${CMAKE_SOURCE_DIR}/thirdparty/google-cloud-cpp/all/patches/c++23_fixes.patch")
+set(PC ${Bash_EXECUTABLE}  -c "set -x &&\
+        (\\\"${Patch_EXECUTABLE}\\\" -p1 -R -s -f --dry-run -i \\\"${PATCH_FILE_1}\\\" || \\\"${Patch_EXECUTABLE}\\\" -p1 -N -i \\\"${PATCH_FILE_1}\\\") &&\
+        (\\\"${Patch_EXECUTABLE}\\\" -p1 -R -s -f --dry-run -i \\\"${PATCH_FILE_2}\\\" || \\\"${Patch_EXECUTABLE}\\\" -p1 -N -i \\\"${PATCH_FILE_2}\\\") &&\
+        (\\\"${Patch_EXECUTABLE}\\\" -p1 -R -s -f --dry-run -i \\\"${PATCH_FILE_3}\\\" || \\\"${Patch_EXECUTABLE}\\\" -p1 -N -i \\\"${PATCH_FILE_3}\\\")")
+
+set(GOOGLE_CLOUD_CPP_WITH_MOCKS OFF CACHE BOOL "" FORCE)
+if (NOT SKIP_TESTS)
+    include(GoogleTest)
+    include(FetchContent)
+    FetchContent_Declare(
+            googletest
+            URL            https://github.com/google/googletest/releases/download/v1.17.0/googletest-1.17.0.tar.gz
+            URL_HASH       SHA256=65fab701d9829d38cb77c14acdc431d2108bfdbf8979e40eb8ae567edf10b27c
+            SYSTEM
+    )
+    set(BUILD_GMOCK ON CACHE BOOL "" FORCE)
+    FetchContent_MakeAvailable(googletest)
+
+    set(GOOGLE_CLOUD_CPP_WITH_MOCKS ON CACHE BOOL "" FORCE)
+endif()
+
+set(GOOGLE_CLOUD_CPP_ENABLE storage CACHE INTERNAL storage-api)
+set(GOOGLE_CLOUD_CPP_ENABLE_MACOS_OPENSSL_CHECK OFF CACHE INTERNAL macos-openssl-check)
+set(BUILD_TESTING OFF CACHE INTERNAL testing-off)
+set(GOOGLE_CLOUD_CPP_ENABLE_WERROR OFF CACHE INTERNAL warnings-off)
+FetchContent_Declare(google-cloud-cpp
+        URL      https://github.com/googleapis/google-cloud-cpp/archive/refs/tags/v2.47.1.tar.gz
+        URL_HASH SHA256=8863056af88460e449264a976f64a0c9f4f3d98477cdad7770c2dca353fea68c
+        PATCH_COMMAND "${PC}"
+        SYSTEM)
+if (WIN32)
+    add_compile_definitions(_SILENCE_CXX20_REL_OPS_DEPRECATION_WARNING _SILENCE_CXX17_CODECVT_HEADER_DEPRECATION_WARNING CURL_STATICLIB)
+endif()
+FetchContent_MakeAvailable(google-cloud-cpp)
+
+set(MINIFI_GCP_TEST_GTEST_LIBRARIES gtest_main gmock CACHE INTERNAL "")

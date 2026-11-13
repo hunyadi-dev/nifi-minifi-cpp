@@ -1,0 +1,70 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#include "PyOutputStream.h"
+
+extern "C" {
+namespace org::apache::nifi::minifi::extensions::python {
+
+static PyMethodDef PyOutputStream_methods[] = {  // NOLINT(cppcoreguidelines-avoid-c-arrays)
+    {"write", safePyFunction<PyOutputStream::write>, METH_VARARGS, nullptr},
+    {}  /* Sentinel */
+};
+
+static PyType_Slot PyOutputStreamTypeSpecSlots[] = {  // NOLINT(cppcoreguidelines-avoid-c-arrays)
+    {Py_tp_dealloc, reinterpret_cast<void*>(pythonAllocatedInstanceDealloc<PyOutputStream>)},
+    {Py_tp_init, reinterpret_cast<void*>(PyOutputStream::init)},
+    {Py_tp_methods, reinterpret_cast<void*>(PyOutputStream_methods)},
+    {Py_tp_new, reinterpret_cast<void*>(newPythonAllocatedInstance<PyOutputStream>)},
+    {}  /* Sentinel */
+};
+
+static PyType_Spec PyOutputStreamTypeSpec{
+    .name = "minifi_native.OutputStream",
+    .basicsize = sizeof(PyOutputStream),
+    .itemsize = 0,
+    .flags = Py_TPFLAGS_DEFAULT,
+    .slots = PyOutputStreamTypeSpecSlots
+};
+
+int PyOutputStream::init(PyOutputStream* self, PyObject* args, PyObject*) {
+  PyObject* weak_ptr_capsule = nullptr;
+  if (!PyArg_ParseTuple(args, "O", &weak_ptr_capsule)) {
+    return -1;
+  }
+
+  auto output_stream = PyCapsule_GetPointer(weak_ptr_capsule, HeldTypeName);
+  if (!output_stream)
+    return -1;
+  self->output_stream_ = *static_cast<HeldType*>(output_stream);
+  return 0;
+}
+
+PyObject* PyOutputStream::write(PyOutputStream* self, PyObject* args) {
+  auto output_stream = self->output_stream_.lock();
+  if (!output_stream) {
+    PyErr_SetString(PyExc_AttributeError, "tried reading FlowFile outside 'on_trigger'");
+    return nullptr;
+  }
+
+  PyObject* bytes = nullptr;
+  if (!PyArg_ParseTuple(args, "S", &bytes)) {
+    return nullptr;
+  }
+
+  char* buffer = nullptr;
+  Py_ssize_t length = 0;
+  if (PyBytes_AsStringAndSize(bytes, &buffer, &length) == -1) {
+    return nullptr;
+  }
+  return object::returnReference(output_stream->write(std::as_bytes(std::span(buffer, length))));
+}
+
+PyTypeObject* PyOutputStream::typeObject() {
+  static OwnedObject PyOutputStreamType{PyType_FromSpec(&PyOutputStreamTypeSpec)};
+  return reinterpret_cast<PyTypeObject*>(PyOutputStreamType.get());
+}
+
+}  // namespace org::apache::nifi::minifi::extensions::python
+}  // extern "C"

@@ -1,103 +1,105 @@
-/**
- * @file ExtractText.h
- * ExtractText class declaration
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_EXTRACTTEXT_H_
-#define EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_EXTRACTTEXT_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
 
 #include <memory>
 #include <string>
+#include <string_view>
+#include <utility>
 #include <vector>
 
-#include "core/Processor.h"
+#include "core/ProcessorImpl.h"
 #include "core/ProcessSession.h"
-#include "FlowFileRecord.h"
-#include "utils/Export.h"
+#include "minifi-cpp/core/ProcessContext.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "minifi-cpp/core/PropertyValidator.h"
+#include "minifi-cpp/core/RelationshipDefinition.h"
+#include "minifi-cpp/utils/Export.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace processors {
+namespace org::apache::nifi::minifi::processors {
 
-//! ExtractText Class
-class ExtractText : public core::Processor {
+class ExtractText : public core::ProcessorImpl {
  public:
-    //! Constructor
-    /*!
-     * Create a new processor
-     */
-    explicit ExtractText(const std::string& name,  const utils::Identifier& uuid = {})
-    : Processor(name, uuid) {
-        logger_ = logging::LoggerFactory<ExtractText>::getLogger();
-    }
-    //! Processor Name
-    EXTENSIONAPI static constexpr char const* ProcessorName = "ExtractText";
-    //! Supported Properties
-    EXTENSIONAPI static core::Property Attribute;
-    EXTENSIONAPI static core::Property SizeLimit;
+  using ProcessorImpl::ProcessorImpl;
 
-    EXTENSIONAPI static core::Property RegexMode;
-    EXTENSIONAPI static core::Property IgnoreCaptureGroupZero;
-    EXTENSIONAPI static core::Property InsensitiveMatch;
-    EXTENSIONAPI static core::Property MaxCaptureGroupLen;
-    EXTENSIONAPI static core::Property EnableRepeatingCaptureGroup;
+  // Default maximum bytes to read into an attribute
+  static constexpr std::string_view DEFAULT_SIZE_LIMIT_STR = "2097152";  // 2 * 1024 * 1024
+  static constexpr std::string_view MAX_CAPTURE_GROUP_SIZE_STR = "1024";
 
-    //! Supported Relationships
-    EXTENSIONAPI static core::Relationship Success;
-    //! Default maximum bytes to read into an attribute
-    EXTENSIONAPI static constexpr int DEFAULT_SIZE_LIMIT = 2 * 1024 * 1024;
+  EXTENSIONAPI static constexpr const char* Description = "Extracts the content of a FlowFile and places it into an attribute.";
 
-    //! OnTrigger method, implemented by NiFi ExtractText
-    void onTrigger(core::ProcessContext *context, core::ProcessSession *session) override;
-    //! Initialize, over write by NiFi ExtractText
-    void initialize(void) override;
+  EXTENSIONAPI static constexpr auto Attribute = core::PropertyDefinitionBuilder<>::createProperty("Attribute")
+      .withDescription("Attribute to set from content")
+      .build();
+  // despite there being a size value, ExtractText was initially built with a numeric for this property
+  EXTENSIONAPI static constexpr auto SizeLimit = core::PropertyDefinitionBuilder<>::createProperty("Size Limit")
+      .withDescription("Maximum number of bytes to read into the attribute. 0 for no limit. Default is 2MB.")
+      .withValidator(core::StandardPropertyValidators::UNSIGNED_INTEGER_VALIDATOR)
+      .withDefaultValue(DEFAULT_SIZE_LIMIT_STR)
+      .build();
+  EXTENSIONAPI static constexpr auto RegexMode = core::PropertyDefinitionBuilder<>::createProperty("Regex Mode")
+      .withDescription("Set this to extract parts of flowfile content using regular experssions in dynamic properties")
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("false")
+      .build();
+  EXTENSIONAPI static constexpr auto IncludeCaptureGroupZero = core::PropertyDefinitionBuilder<>::createProperty("Include Capture Group 0")
+      .withDescription("Indicates that Capture Group 0 should be included as an attribute. "
+         "Capture Group 0 represents the entirety of the regular expression match, is typically not used, and could have considerable length.")
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("true")
+      .build();
+  EXTENSIONAPI static constexpr auto InsensitiveMatch = core::PropertyDefinitionBuilder<>::createProperty("Enable Case-insensitive Matching")
+      .withDescription("Indicates that two characters match even if they are in a different case. ")
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("false")
+      .build();
+  EXTENSIONAPI static constexpr auto MaxCaptureGroupLen = core::PropertyDefinitionBuilder<>::createProperty("Maximum Capture Group Length")
+      .withDescription("Specifies the maximum number of characters a given capture group value can have. "
+        "Any characters beyond the max will be truncated.")
+      .withValidator(core::StandardPropertyValidators::INTEGER_VALIDATOR)
+      .withDefaultValue(MAX_CAPTURE_GROUP_SIZE_STR)
+      .build();
+  EXTENSIONAPI static constexpr auto EnableRepeatingCaptureGroup = core::PropertyDefinitionBuilder<>::createProperty("Enable repeating capture group")
+      .withDescription("f set to true, every string matching the capture groups will be extracted. "
+                      "Otherwise, if the Regular Expression matches more than once, only the first match will be extracted.")
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("false")
+      .build();
+  EXTENSIONAPI static constexpr auto Properties = std::to_array<core::PropertyReference>({
+      Attribute,
+      SizeLimit,
+      RegexMode,
+      IncludeCaptureGroupZero,
+      InsensitiveMatch,
+      MaxCaptureGroupLen,
+      EnableRepeatingCaptureGroup
+  });
 
-    bool supportsDynamicProperties() override {
-      return true;
-    }
 
-    class ReadCallback : public InputStreamCallback {
-     public:
-        ReadCallback(std::shared_ptr<core::FlowFile> flowFile, core::ProcessContext *ct, std::shared_ptr<logging::Logger> lgr);
-        ~ReadCallback() = default;
-        int64_t process(const std::shared_ptr<io::BaseStream>& stream);
+  EXTENSIONAPI static constexpr auto Success = core::RelationshipDefinition{"success", "success operational on the flow record"};
+  EXTENSIONAPI static constexpr auto Relationships = std::array{Success};
 
-     private:
-        std::shared_ptr<core::FlowFile> flowFile_;
-        core::ProcessContext *ctx_;
-        std::vector<uint8_t> buffer_;
-        std::shared_ptr<logging::Logger> logger_;
-    };
+  EXTENSIONAPI static constexpr bool SupportsDynamicProperties = true;
+  EXTENSIONAPI static constexpr bool SupportsDynamicRelationships = false;
+  EXTENSIONAPI static constexpr core::annotation::Input InputRequirement = core::annotation::Input::INPUT_REQUIRED;
+  EXTENSIONAPI static constexpr bool IsSingleThreaded = false;
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_PROCESSORS
 
- private:
-    core::annotation::Input getInputRequirement() const override {
-      return core::annotation::Input::INPUT_REQUIRED;
-    }
+  void onTrigger(core::ProcessContext& context, core::ProcessSession& session) override;
+  void initialize() override;
 
-    //! Logger
-    std::shared_ptr<logging::Logger> logger_;
+  class ReadCallback {
+   public:
+    ReadCallback(std::shared_ptr<core::FlowFile> flowFile, core::ProcessContext& ctx, std::shared_ptr<core::logging::Logger> lgr);
+    io::IoResult operator()(const std::shared_ptr<io::InputStream>& stream) const;
+
+   private:
+    std::shared_ptr<core::FlowFile> flowFile_;
+    gsl::not_null<core::ProcessContext*> ctx_;
+    std::shared_ptr<core::logging::Logger> logger_;
+  };
 };
 
-}  // namespace processors
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_EXTRACTTEXT_H_
+}  // namespace org::apache::nifi::minifi::processors

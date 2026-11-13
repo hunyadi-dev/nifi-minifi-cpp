@@ -1,103 +1,69 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef LIBMINIFI_INCLUDE_CORE_CONTROLLER_CONTROLLERSERVICE_H_
-#define LIBMINIFI_INCLUDE_CORE_CONTROLLER_CONTROLLERSERVICE_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
 
 #include <memory>
 #include <string>
+#include <utility>
 #include <vector>
-#include <set>
-#include "properties/Configure.h"
-#include "core/Core.h"
-#include "core/ConfigurableComponent.h"
-#include "core/Connectable.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace core {
-namespace controller {
+#include "minifi-cpp/properties/Configure.h"
+#include "core/Core.h"
+#include "core/ConfigurableComponentImpl.h"
+#include "core/Connectable.h"
+#include "minifi-cpp/core/controller/ControllerServiceApi.h"
+#include "minifi-cpp/core/ControllerServiceTypeDefinition.h"
+
+namespace org::apache::nifi::minifi::core::controller {
 
 enum ControllerServiceState {
-  /**
-   * Controller Service is disabled and cannot be used.
-   */
   DISABLED,
-  /**
-   * Controller Service is in the process of being disabled.
-   */
   DISABLING,
-  /**
-   * Controller Service is being enabled.
-   */
   ENABLING,
-  /**
-   * Controller Service is enabled.
-   */
   ENABLED
 };
 
-/**
- * Controller Service base class that contains some pure virtual methods.
- *
- * Design: OnEnable is executed when the controller service is being enabled.
- * Note that keeping state here must be protected  in this function.
- */
-class ControllerService : public ConfigurableComponent, public Connectable {
+// Wrapper class to manage common functionalities of controller service implementations (properties, name, id, etc)
+class ControllerService : public ConfigurableComponentImpl, public CoreComponentImpl {
+  class ControllerServiceDescriptorImpl : public ControllerServiceDescriptor {
+   public:
+    explicit ControllerServiceDescriptorImpl(ControllerService& impl): impl_(impl) {}
+    void setSupportedProperties(std::span<const PropertyReference> properties) override;
+    void setSupportedProperties(std::span<const Property> properties) override;
+
+   private:
+    ControllerService& impl_;
+  };
+
+  class ControllerServiceContextImpl : public ControllerServiceContext {
+   public:
+    explicit ControllerServiceContextImpl(ControllerService& impl): impl_(impl) {}
+    [[nodiscard]] std::expected<std::string, std::error_code> getProperty(std::string_view name) const override;
+    [[nodiscard]] std::expected<std::vector<std::string>, std::error_code> getAllPropertyValues(std::string_view name) const override;
+
+   private:
+    ControllerService& impl_;
+  };
+
  public:
-  /**
-   * Controller Service constructor.
-   */
-  ControllerService()
-      : Connectable(core::getClassName<ControllerService>()),
-        configuration_(std::make_shared<Configure>()) {
+  explicit ControllerService(std::string_view name, const utils::Identifier& uuid, std::unique_ptr<ControllerServiceApi> impl)
+      : CoreComponentImpl(name, uuid),
+        impl_(std::move(impl)),
+        configuration_(Configure::create()) {
     current_state_ = DISABLED;
   }
 
-  /**
-   * Controller Service constructor.
-   */
-  explicit ControllerService(const std::string &name, const utils::Identifier &uuid)
-      : Connectable(name, uuid),
-        configuration_(std::make_shared<Configure>()) {
-    current_state_ = DISABLED;
+  void initialize() final {
+    ControllerServiceDescriptorImpl descriptor{*this};
+    impl_->initialize(descriptor);
   }
 
-  /**
-     * Controller Service constructor.
-     */
-    explicit ControllerService(const std::string &name)
-        : Connectable(name),
-          configuration_(std::make_shared<Configure>()) {
-      current_state_ = DISABLED;
-    }
-
-  virtual void initialize() {
-    // set base supported properties
-    Property property("Linked Services", "Referenced Controller Services");
-    std::set<Property> supportedProperties;
-    supportedProperties.insert(property);
-    setSupportedProperties(supportedProperties);
-    current_state_ = ENABLED;
+  bool supportsDynamicRelationships() const final {
+    return false;
   }
 
-  virtual ~ControllerService() {
+  ~ControllerService() override {
     notifyStop();
   }
 
@@ -108,20 +74,27 @@ class ControllerService : public ConfigurableComponent, public Connectable {
     configuration_ = configuration;
   }
 
-  ControllerServiceState getState() {
+  ControllerServiceState getState() const {
     return current_state_.load();
   }
 
   /**
    * Function is called when Controller Services are enabled and being run
    */
-  virtual void onEnable() {
+  void onEnable() {
+    ControllerServiceContextImpl context{*this};
+    std::vector<std::shared_ptr<ControllerServiceHandle>> service_interfaces;
+    for (auto& service : linked_services_) {
+      service_interfaces.emplace_back(std::shared_ptr<ControllerServiceHandle>(service, service->impl_->getControllerServiceHandle()));
+    }
+    impl_->onEnable(context, configuration_, service_interfaces);
   }
 
   /**
    * Function is called when Controller Services are disabled
    */
-  virtual void notifyStop() {
+  void notifyStop() {
+    impl_->notifyStop();
   }
 
   void setState(ControllerServiceState state) {
@@ -131,28 +104,46 @@ class ControllerService : public ConfigurableComponent, public Connectable {
     }
   }
 
-  virtual bool supportsDynamicProperties() {
-    return false;
-  }
-
   void setLinkedControllerServices(const std::vector<std::shared_ptr<controller::ControllerService>> &services) {
     linked_services_ = services;
   }
 
+  template<typename T = ControllerServiceHandle>
+  gsl::not_null<T*> getImplementation() {
+    return gsl::make_not_null(dynamic_cast<T*>(impl_->getControllerServiceHandle()));
+  }
+
+  bool supportsDynamicProperties() const final {
+    return impl_->supportsDynamicProperties();
+  }
+
+  static constexpr auto ImplementsApis = std::array<ControllerServiceTypeDefinition, 0>{};
+
  protected:
+  std::unique_ptr<ControllerServiceApi> impl_;
   std::vector<std::shared_ptr<controller::ControllerService> > linked_services_;
   std::shared_ptr<Configure> configuration_;
-  std::atomic<ControllerServiceState> current_state_;
-  virtual bool canEdit() {
+  mutable std::atomic<ControllerServiceState> current_state_;
+  bool canEdit() override {
     return true;
   }
 };
 
-}  // namespace controller
-}  // namespace core
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+inline void ControllerService::ControllerServiceDescriptorImpl::setSupportedProperties(std::span<const PropertyReference> properties) {
+  impl_.setSupportedProperties(properties);
+}
 
-#endif  // LIBMINIFI_INCLUDE_CORE_CONTROLLER_CONTROLLERSERVICE_H_
+inline void ControllerService::ControllerServiceDescriptorImpl::setSupportedProperties(std::span<const Property> properties) {
+  impl_.setSupportedProperties(properties);
+}
+
+inline std::expected<std::string, std::error_code> ControllerService::ControllerServiceContextImpl::getProperty(std::string_view name) const {
+  return impl_.getProperty(name);
+}
+
+inline std::expected<std::vector<std::string>, std::error_code> ControllerService::ControllerServiceContextImpl::getAllPropertyValues(std::string_view name) const {
+  return impl_.getAllPropertyValues(name);
+}
+
+
+}  // namespace org::apache::nifi::minifi::core::controller

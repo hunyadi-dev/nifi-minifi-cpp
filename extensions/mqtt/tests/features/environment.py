@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+from pathlib import Path
+
+from containers.mqtt_broker_container import MqttBrokerContainer
+from minifi_behave.containers.docker_image_builder import DockerImageBuilder
+from minifi_behave.core.hooks import common_after_scenario, common_before_scenario
+
+import docker
+
+
+def before_all(context):
+    check_log_lines_path = Path(__file__).resolve().parent / "resources" / "publish_mqtt_message.py"
+    check_log_lines_content = None
+    with open(check_log_lines_path, "rb") as f:
+        check_log_lines_content = f.read()
+    dockerfile = """
+FROM python:3.13-slim-bookworm
+RUN pip install paho-mqtt==2.1.0
+COPY publish_mqtt_message.py /scripts/publish_mqtt_message.py"""
+    mqtt_helper_builder = DockerImageBuilder(
+        image_tag="minifi-mqtt-helper:latest",
+        dockerfile_content=dockerfile,
+        files_on_context={"publish_mqtt_message.py": check_log_lines_content},
+    )
+    mqtt_helper_builder.build()
+    docker.from_env().images.pull(MqttBrokerContainer.IMAGE)
+
+
+def before_scenario(context, scenario):
+    common_before_scenario(context, scenario)
+
+
+def after_scenario(context, scenario):
+    common_after_scenario(context, scenario)

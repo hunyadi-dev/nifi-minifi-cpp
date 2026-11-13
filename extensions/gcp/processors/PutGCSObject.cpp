@@ -1,0 +1,167 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#include "PutGCSObject.h"
+
+#include <utility>
+
+#include "../GCPAttributes.h"
+#include "api/core/ProcessContext.h"
+#include "api/core/ProcessSession.h"
+#include "api/core/Resource.h"
+#include "api/utils/ProcessorConfigUtils.h"
+#include "minifi-cpp/io/InputStream.h"
+
+namespace gcs = ::google::cloud::storage;
+
+namespace org::apache::nifi::minifi::extensions::gcp {
+namespace {
+class UploadToGCSCallback {
+ public:
+  UploadToGCSCallback(gcs::Client& client, std::string bucket, std::string key)
+      : bucket_(std::move(bucket)),
+        key_(std::move(key)),
+        client_(client) {
+  }
+
+  io::IoResult operator()(const std::shared_ptr<io::InputStream>& stream) {
+    std::string content;
+    content.resize(stream->size());
+    const auto read_ret = stream->read(as_writable_bytes(std::span(content)));
+    if (io::isError(read_ret)) {
+      return io::IoResult::error();
+    }
+    auto writer = client_.WriteObject(bucket_, key_, hash_value_, crc32c_checksum_, encryption_key_, content_type_, predefined_acl_, if_generation_match_);
+    writer << content;
+    writer.Close();
+    result_ = writer.metadata();
+    return io::IoResult::from(read_ret);
+  }
+
+  [[nodiscard]] const google::cloud::StatusOr<gcs::ObjectMetadata>& getResult() const noexcept {
+    return result_;
+  }
+
+  void setHashValue(const std::string& hash_value_str) {
+    hash_value_ = gcs::MD5HashValue(hash_value_str);
+  }
+
+  void setCrc32CChecksumValue(const std::string& crc32c_checksum_str) {
+    crc32c_checksum_ = gcs::Crc32cChecksumValue(crc32c_checksum_str);
+  }
+
+  void setEncryptionKey(const gcs::EncryptionKey& encryption_key) {
+    encryption_key_ = encryption_key;
+  }
+
+  void setPredefinedAcl(put_gcs_object::PredefinedAcl predefined_acl) {
+    predefined_acl_ = gcs::PredefinedAcl(std::string{magic_enum::enum_name(predefined_acl)});
+  }
+
+  void setContentType(const std::string& content_type_str) {
+    content_type_ = gcs::ContentType(content_type_str);
+  }
+
+  void setIfGenerationMatch(std::optional<bool> overwrite) {
+    if (overwrite.has_value() && !overwrite.value()) {
+      if_generation_match_ = gcs::IfGenerationMatch(0);
+    } else {
+      if_generation_match_ = gcs::IfGenerationMatch();
+    }
+  }
+
+ private:
+  std::string bucket_;
+  std::string key_;
+  gcs::Client& client_;
+
+  gcs::MD5HashValue hash_value_;
+  gcs::Crc32cChecksumValue crc32c_checksum_;
+  gcs::EncryptionKey encryption_key_;
+  gcs::PredefinedAcl predefined_acl_;
+  gcs::ContentType content_type_;
+  gcs::IfGenerationMatch if_generation_match_;
+
+  google::cloud::StatusOr<gcs::ObjectMetadata> result_;
+};
+
+}  // namespace
+
+
+minifi_status PutGCSObject::onScheduleImpl(api::core::ProcessContext& context) {
+  const auto status = GCSProcessor::onScheduleImpl(context);
+  if (status != minifi_status::MINIFI_STATUS_SUCCESS) {
+    return status;
+  }
+
+  if (auto encryption_key = context.getProperty(EncryptionKey, nullptr)) {
+    try {
+      encryption_key_ = gcs::EncryptionKey::FromBase64Key(*encryption_key);
+    } catch (const google::cloud::RuntimeStatusError&) {
+      logger_->log_error("Could not decode the base64-encoded encryption key from property {}", std::string(EncryptionKey.name));
+      return MINIFI_STATUS_UNKNOWN_ERROR;
+    }
+  }
+  return MINIFI_STATUS_SUCCESS;
+}
+
+minifi_status PutGCSObject::onTriggerImpl(api::core::ProcessContext& context, api::core::ProcessSession& session) {
+  gsl_Expects(gcp_credentials_);
+
+  auto flow_file = session.get();
+  if (!flow_file) {
+    return MINIFI_STATUS_PROCESSOR_YIELD;
+  }
+
+  auto bucket = api::utils::parseOptionalProperty(context, Bucket, &flow_file);
+
+  if (!bucket || bucket->empty()) {
+    logger_->log_error("Missing bucket name");
+    session.transfer(std::move(flow_file), Failure);
+    return MINIFI_STATUS_SUCCESS;
+  }
+  auto object_name = api::utils::parseOptionalProperty(context, Key, &flow_file);
+  if (!object_name || object_name->empty()) {
+    logger_->log_error("Missing object name");
+    session.transfer(std::move(flow_file), Failure);
+    return MINIFI_STATUS_SUCCESS;
+  }
+
+  gcs::Client client = getClient();
+  UploadToGCSCallback callback(client, *bucket, *object_name);
+
+  if (auto crc32_checksum = api::utils::parseOptionalProperty(context, Crc32cChecksum, &flow_file)) {
+    callback.setCrc32CChecksumValue(*crc32_checksum);
+  }
+
+  if (auto md5_hash = api::utils::parseOptionalProperty(context, MD5Hash, &flow_file)) {
+    callback.setHashValue(*md5_hash);
+  }
+
+  auto content_type = api::utils::parseOptionalProperty(context, ContentType, &flow_file);
+  if (content_type && !content_type->empty())
+    callback.setContentType(*content_type);
+
+  if (auto predefined_acl = api::utils::parseOptionalEnumProperty<put_gcs_object::PredefinedAcl>(context, ObjectACL))
+    callback.setPredefinedAcl(*predefined_acl);
+  callback.setIfGenerationMatch(api::utils::parseOptionalBoolProperty(context, OverwriteObject));
+
+  callback.setEncryptionKey(encryption_key_);
+
+  session.read(flow_file, std::ref(callback));
+  auto& result = callback.getResult();
+  if (!result.ok()) {
+    session.setAttribute(flow_file, GCS_STATUS_MESSAGE, result.status().message());
+    session.setAttribute(flow_file, GCS_ERROR_REASON, result.status().error_info().reason());
+    session.setAttribute(flow_file, GCS_ERROR_DOMAIN, result.status().error_info().domain());
+    logger_->log_error("Failed to upload to Google Cloud Storage {} {}", result.status().message(), result.status().error_info().reason());
+    session.transfer(std::move(flow_file), Failure);
+  } else {
+    setAttributesFromObjectMetadata(flow_file, *result, session);
+    session.transfer(std::move(flow_file), Success);
+  }
+  return MINIFI_STATUS_SUCCESS;
+}
+
+}  // namespace org::apache::nifi::minifi::extensions::gcp

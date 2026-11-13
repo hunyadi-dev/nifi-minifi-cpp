@@ -1,23 +1,8 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
-#ifndef LIBMINIFI_INCLUDE_C2_PAYLOADSERIALIZER_H_
-#define LIBMINIFI_INCLUDE_C2_PAYLOADSERIALIZER_H_
+#pragma once
 
 #include <memory>
 #include <string>
@@ -26,21 +11,19 @@
 
 #include "core/state/Value.h"
 #include "c2/C2Protocol.h"
-#include "io/BaseStream.h"
-#include "utils/gsl.h"
+#include "minifi-cpp/io/OutputStream.h"
+#include "minifi-cpp/io/InputStream.h"
+#include "io/BufferStream.h"
+#include "minifi-cpp/utils/gsl.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace c2 {
+namespace org::apache::nifi::minifi::c2 {
 
 class PayloadSerializer {
  public:
   /**
    * Static function that serializes the value nodes
    */
-  static void serializeValueNode(state::response::ValueNode &value, std::shared_ptr<io::BaseStream> stream) {
+  static void serializeValueNode(const state::response::ValueNode &value, std::shared_ptr<io::OutputStream> stream) {
     auto base_type = value.getValue();
     if (!base_type) {
       uint8_t type = 0;
@@ -74,8 +57,8 @@ class PayloadSerializer {
       stream->write(str);
     }
   }
-  static void serialize(uint16_t op, const C2Payload &payload, std::shared_ptr<io::BaseStream> stream) {
-    uint8_t st;
+  static void serialize(uint16_t op, const C2Payload &payload, std::shared_ptr<io::OutputStream> stream) {
+    uint8_t st = 0;
     uint32_t size = gsl::narrow<uint32_t>(payload.getNestedPayloads().size());
     stream->write(size);
     for (const auto &nested_payload : payload.getNestedPayloads()) {
@@ -93,7 +76,7 @@ class PayloadSerializer {
         stream->write(size);
         for (auto content : payload_content.operation_arguments) {
           stream->write(content.first);
-          serializeValueNode(content.second, stream);
+          serializeValueNode(*gsl::not_null(content.second.valueNode()), stream);
         }
       }
       if (nested_payload.getNestedPayloads().size() > 0) {
@@ -108,32 +91,32 @@ class PayloadSerializer {
   static uint8_t opToInt(const Operation opt) {
     uint8_t op;
 
-    switch (opt.value()) {
-      case Operation::ACKNOWLEDGE:
+    switch (opt) {
+      case Operation::acknowledge:
         op = 1;
         break;
-      case Operation::HEARTBEAT:
+      case Operation::heartbeat:
         op = 2;
         break;
-      case Operation::RESTART:
+      case Operation::restart:
         op = 3;
         break;
-      case Operation::DESCRIBE:
+      case Operation::describe:
         op = 4;
         break;
-      case Operation::STOP:
+      case Operation::stop:
         op = 5;
         break;
-      case Operation::START:
+      case Operation::start:
         op = 6;
         break;
-      case Operation::UPDATE:
+      case Operation::update:
         op = 7;
         break;
-      case Operation::PAUSE:
+      case Operation::pause:
         op = 8;
         break;
-      case Operation::RESUME:
+      case Operation::resume:
         op = 9;
         break;
       default:
@@ -142,8 +125,8 @@ class PayloadSerializer {
     }
     return op;
   }
-  static std::shared_ptr<io::BaseStream> serialize(uint16_t version, const C2Payload &payload) {
-    std::shared_ptr<io::BaseStream> stream = std::make_shared<io::BufferStream>();
+  static std::shared_ptr<io::OutputStream> serialize(uint16_t version, const C2Payload &payload) {
+    std::shared_ptr<io::OutputStream> stream = std::make_shared<io::BufferStream>();
     uint16_t op = 0;
     uint8_t st = 0;
     op = opToInt(payload.getOperation());
@@ -168,16 +151,16 @@ class PayloadSerializer {
       stream->write(size);
       for (auto content : payload_content.operation_arguments) {
         stream->write(content.first);
-        serializeValueNode(content.second, stream);
+        serializeValueNode(*gsl::not_null(content.second.valueNode()), stream);
       }
     }
     serialize(op, payload, stream);
     return stream;
   }
 
-  static state::response::ValueNode deserializeValueNode(io::BaseStream *stream) {
+  static state::response::ValueNode deserializeValueNode(io::InputStream *stream) {
     uint8_t type = 0;
-    stream->read(&type, 1);
+    stream->read(type);
     state::response::ValueNode node;
     switch (type) {
       case 1: {
@@ -193,7 +176,7 @@ class PayloadSerializer {
         break;
       }
       case 3: {
-        stream->read(&type, 1);
+        stream->read(type);
         if (type == 1)
           node = true;
         else
@@ -203,18 +186,18 @@ class PayloadSerializer {
       case 4:
       default: {
         std::string str;
-        stream->read(str);
+        stream->read(str, io::LengthPrefixSize::_16BIT, 64_KiB);
         node = str;
       }
     }
     return node;
   }
-  static C2Payload deserialize(std::vector<uint8_t> data) {
-    C2Payload payload(Operation::HEARTBEAT, state::UpdateState::READ_COMPLETE);
+  static C2Payload deserialize(const std::vector<std::byte>& data) {
+    C2Payload payload(Operation::heartbeat, state::UpdateState::READ_COMPLETE);
     if (deserialize(data, payload)) {
       return payload;
     }
-    return C2Payload(Operation::HEARTBEAT, state::UpdateState::READ_ERROR);
+    return C2Payload(Operation::heartbeat, state::UpdateState::READ_ERROR);
   }
   /**
    * Deserializes the payloads
@@ -223,7 +206,7 @@ class PayloadSerializer {
    * @param identifier for this payload
    * @param stream base stream in which we will serialize the parent payload.
    */
-  static bool deserializePayload(C2Payload &parent, Operation operation, std::string identifier, io::BaseStream *stream) {
+  static bool deserializePayload(C2Payload &parent, Operation operation, std::string identifier, io::InputStream *stream) {
     uint32_t payloads = 0;
     stream->read(payloads);
     uint8_t op{}, st{};
@@ -231,8 +214,8 @@ class PayloadSerializer {
     for (size_t i = 0; i < payloads; i++) {
       stream->read(op);
       stream->read(st);
-      stream->read(label);
-      stream->read(identifier);
+      stream->read(label, io::LengthPrefixSize::_16BIT, 1_KiB);
+      stream->read(identifier, io::LengthPrefixSize::_16BIT, utils::Identifier::UUID_STR_LEN);
       operation = intToOp(op);
       C2Payload subPayload(operation, st == 1 ? state::UpdateState::NESTED : state::UpdateState::READ_COMPLETE);
       subPayload.setIdentifier(identifier);
@@ -243,13 +226,13 @@ class PayloadSerializer {
         std::string content_name;
         uint32_t args = 0;
         C2ContentResponse content(operation);
-        stream->read(content_name);
+        stream->read(content_name, io::LengthPrefixSize::_16BIT, 1_KiB);
         content.name = content_name;
         stream->read(args);
         for (uint32_t j = 0; j < args; j++) {
           std::string first, second;
-          stream->read(first);
-          content.operation_arguments[first] = deserializeValueNode(stream);
+          stream->read(first, io::LengthPrefixSize::_16BIT, 1_KiB);
+          content.operation_arguments[first] = C2Value{deserializeValueNode(stream)};
         }
         subPayload.addContent(std::move(content));
       }
@@ -258,8 +241,8 @@ class PayloadSerializer {
     }
     return true;
   }
-  static bool deserialize(std::vector<uint8_t> data, C2Payload &payload) {
-    io::BufferStream stream(data.data(), gsl::narrow<unsigned int>(data.size()));
+  static bool deserialize(std::vector<std::byte> data, C2Payload &payload) {
+    io::BufferStream stream(data);
 
     uint8_t op = 0, st = 0;
     uint16_t version = 0;
@@ -269,8 +252,8 @@ class PayloadSerializer {
     stream.read(op);
     stream.read(version);
     stream.read(st);
-    stream.read(label);
-    stream.read(identifier);
+    stream.read(label, io::LengthPrefixSize::_16BIT, 1_KiB);
+    stream.read(identifier, io::LengthPrefixSize::_16BIT, utils::Identifier::UUID_STR_LEN);
 
     Operation operation = intToOp(op);
 
@@ -284,14 +267,14 @@ class PayloadSerializer {
       std::string content_name;
       uint32_t args = 0;
       C2ContentResponse content(operation);
-      stream.read(content_name);
+      stream.read(content_name, io::LengthPrefixSize::_16BIT, 1_KiB);
       content.name = content_name;
       stream.read(args);
       for (uint32_t j = 0; j < args; j++) {
         std::string first, second;
-        stream.read(first);
+        stream.read(first, io::LengthPrefixSize::_16BIT, 1_KiB);
         // stream.readUTF(second);
-        content.operation_arguments[first] = deserializeValueNode(&stream);
+        content.operation_arguments[first] = C2Value{deserializeValueNode(&stream)};
       }
       newPayload.addContent(std::move(content));
     }
@@ -306,35 +289,29 @@ class PayloadSerializer {
   static Operation intToOp(int op) {
     switch (op) {
       case 1:
-        return Operation::ACKNOWLEDGE;
+        return Operation::acknowledge;
       case 2:
-        return Operation::HEARTBEAT;
+        return Operation::heartbeat;
       case 3:
-        return Operation::RESTART;
+        return Operation::restart;
       case 4:
-        return Operation::DESCRIBE;
+        return Operation::describe;
       case 5:
-        return Operation::STOP;
+        return Operation::stop;
       case 6:
-        return Operation::START;
+        return Operation::start;
       case 7:
-        return Operation::UPDATE;
+        return Operation::update;
       case 8:
-        return Operation::PAUSE;
+        return Operation::pause;
       case 9:
-        return Operation::RESUME;
+        return Operation::resume;
       default:
-        return Operation::HEARTBEAT;
+        return Operation::heartbeat;
     }
   }
   PayloadSerializer();
   virtual ~PayloadSerializer();
 };
 
-}  // namespace c2
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // LIBMINIFI_INCLUDE_C2_PAYLOADSERIALIZER_H_
+}  // namespace org::apache::nifi::minifi::c2

@@ -1,94 +1,71 @@
-/**
- * @file FocusArchiveEntry.h
- * FocusArchiveEntry class declaration
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #pragma once
 
 #include <memory>
 #include <string>
+#include <utility>
 
 #include "archive.h"
 
 #include "ArchiveMetadata.h"
-#include "FlowFileRecord.h"
-#include "core/Processor.h"
+#include "minifi-cpp/FlowFileRecord.h"
+#include "core/ProcessorImpl.h"
 #include "core/ProcessSession.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "minifi-cpp/core/RelationshipDefinition.h"
 #include "core/Core.h"
-#include "core/logging/LoggerConfiguration.h"
+#include "core/logging/LoggerFactory.h"
 #include "utils/file/FileManager.h"
-#include "utils/Export.h"
+#include "minifi-cpp/utils/Export.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace processors {
+namespace org::apache::nifi::minifi::processors {
 
-//! FocusArchiveEntry Class
-class FocusArchiveEntry : public core::Processor {
+class FocusArchiveEntry : public core::ProcessorImpl {
  public:
-  //! Constructor
-  /*!
-   * Create a new processor
-   */
-  explicit FocusArchiveEntry(const std::string& name, const utils::Identifier& uuid = {})
-  : core::Processor(name, uuid),
-    logger_(logging::LoggerFactory<FocusArchiveEntry>::getLogger()) {
-  }
-  //! Destructor
-  virtual ~FocusArchiveEntry()   = default;
-  //! Processor Name
-  EXTENSIONAPI static constexpr char const* ProcessorName = "FocusArchiveEntry";
-  //! Supported Properties
-  EXTENSIONAPI static core::Property Path;
-  //! Supported Relationships
-  EXTENSIONAPI static core::Relationship Success;
+  using ProcessorImpl::ProcessorImpl;
+  ~FocusArchiveEntry()   override = default;
 
-  //! OnTrigger method, implemented by NiFi FocusArchiveEntry
-  virtual void onTrigger(core::ProcessContext *context,
-      core::ProcessSession *session);
-  //! Initialize, over write by NiFi FocusArchiveEntry
-  virtual void initialize(void);
+  EXTENSIONAPI static constexpr const char* Description = "Allows manipulation of entries within an archive (e.g. TAR) by focusing on one entry within the archive at a time. "
+      "When an archive entry is focused, that entry is treated as the content of the FlowFile and may be manipulated independently of the rest of the archive. "
+      "To restore the FlowFile to its original state, use UnfocusArchiveEntry.";
 
-  class ReadCallback : public InputStreamCallback {
+  EXTENSIONAPI static constexpr auto Path = core::PropertyDefinitionBuilder<>::createProperty("Path")
+      .withDescription("The path within the archive to focus (\"/\" to focus the total archive)")
+      .build();
+  EXTENSIONAPI static constexpr auto Properties = std::to_array<core::PropertyReference>({Path});
+
+  EXTENSIONAPI static constexpr auto Success = core::RelationshipDefinition{"success", "success operational on the flow record"};
+  EXTENSIONAPI static constexpr auto Relationships = std::array{Success};
+
+  EXTENSIONAPI static constexpr bool SupportsDynamicProperties = false;
+  EXTENSIONAPI static constexpr bool SupportsDynamicRelationships = false;
+  EXTENSIONAPI static constexpr core::annotation::Input InputRequirement = core::annotation::Input::INPUT_ALLOWED;
+  EXTENSIONAPI static constexpr bool IsSingleThreaded = false;
+
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_PROCESSORS
+
+  void onTrigger(core::ProcessContext& context, core::ProcessSession& session) override;
+  void initialize() override;
+
+  class ReadCallback {
    public:
-    explicit ReadCallback(core::Processor*, fileutils::FileManager *file_man, ArchiveMetadata *archiveMetadata);
-    ~ReadCallback();
-    virtual int64_t process(const std::shared_ptr<io::BaseStream>& stream);
-    bool isRunning() {return proc_->isRunning();}
+    explicit ReadCallback(core::ProcessContext* context, utils::file::FileManager *file_man, ArchiveMetadata *archiveMetadata);
+    io::IoResult operator()(const std::shared_ptr<io::InputStream>& stream) const;
 
    private:
-    fileutils::FileManager *file_man_;
-    core::Processor * const proc_;
-    std::shared_ptr<logging::Logger> logger_;
+    utils::file::FileManager *file_man_;
+    core::ProcessContext* const context_;
+    std::shared_ptr<core::logging::Logger> logger_ = core::logging::LoggerFactory<FocusArchiveEntry>::getLogger();
     ArchiveMetadata *_archiveMetadata;
     static int ok_cb(struct archive *, void* /*d*/) { return ARCHIVE_OK; }
     static la_ssize_t read_cb(struct archive * a, void *d, const void **buf);
   };
 
  private:
-  //! Logger
-  std::shared_ptr<logging::Logger> logger_;
   static std::shared_ptr<utils::IdGenerator> id_generator_;
 };
 
-} /* namespace processors */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+}  // namespace org::apache::nifi::minifi::processors

@@ -1,0 +1,13 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!--
+  SPDX-License-Identifier: Apache-2.0
+  SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+  SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+-->
+<Wix xmlns="http://schemas.microsoft.com/wix/2006/wi">
+    <Fragment>
+	 <DirectoryRef Id="TARGETDIR">
+      <Merge Id="VCRedist"  SourceFile="@VCRUNTIME_X86_MERGEMODULE_PATH@"	   DiskId="1" 	   Language="0" />
+    </DirectoryRef>
+    </Fragment>
+</Wix>

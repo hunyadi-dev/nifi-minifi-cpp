@@ -1,33 +1,22 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #include <algorithm>
 #include <memory>
 #include <string>
 
-#include "io/BaseStream.h"
 #include "serialization/FlowFileV3Serializer.h"
 #include "serialization/PayloadSerializer.h"
 #include "core/FlowFile.h"
-#include "../TestBase.h"
-#include "utils/gsl.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
+#include "minifi-cpp/utils/gsl.h"
+#include "utils/span.h"
+#include "FlowFile.h"
+#include "FlowFileRecord.h"
 
 std::shared_ptr<minifi::FlowFileRecord> createEmptyFlowFile() {
-  auto flowFile = std::make_shared<minifi::FlowFileRecord>();
+  auto flowFile = std::make_shared<minifi::FlowFileRecordImpl>();
   flowFile->removeAttribute(core::SpecialFlowAttribute::FILENAME);
   return flowFile;
 }
@@ -44,13 +33,11 @@ TEST_CASE("Payload Serializer", "[testPayload]") {
   flowFile->addAttribute("first", "one");
   flowFile->addAttribute("second", "two");
 
-  minifi::PayloadSerializer serializer([&] (const std::shared_ptr<core::FlowFile>&, minifi::InputStreamCallback* cb) {
-    return gsl::narrow<int>(cb->process(contentStream));
+  minifi::PayloadSerializer serializer([&] (const std::shared_ptr<core::FlowFile>&, const minifi::io::InputStreamCallback& cb) -> minifi::io::IoResult {
+    return cb(contentStream);
   });
   serializer.serialize(flowFile, result);
-
-  std::string serialized{reinterpret_cast<const char*>(result->getBuffer()), result->size()};
-
+  const auto serialized = utils::span_to<std::string>(utils::as_span<const char>(result->getBuffer()));
   REQUIRE(serialized == content);
 }
 
@@ -66,12 +53,11 @@ TEST_CASE("FFv3 Serializer", "[testFFv3]") {
   flowFile->addAttribute("first", "one");
   flowFile->addAttribute("second", "two");
 
-  minifi::FlowFileV3Serializer serializer([&] (const std::shared_ptr<core::FlowFile>&, minifi::InputStreamCallback* cb) {
-    return gsl::narrow<int>(cb->process(contentStream));
+  minifi::FlowFileV3Serializer serializer([&] (const std::shared_ptr<core::FlowFile>&, const minifi::io::InputStreamCallback& cb) -> minifi::io::IoResult {
+    return cb(contentStream);
   });
   serializer.serialize(flowFile, result);
-
-  std::string serialized{reinterpret_cast<const char*>(result->getBuffer()), result->size()};
+  const auto serialized = utils::span_to<std::string>(utils::as_span<const char>(result->getBuffer()));
 
   std::string expected = "NiFiFF3";
   expected += std::string("\x00\x02", 2);  // number of attributes

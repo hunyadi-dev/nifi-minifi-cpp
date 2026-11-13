@@ -1,0 +1,27 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+Flow Controller:
+    name: MiNiFi Flow
+    id: 2438e3c8-015a-1000-79ca-83af40ec1998
+Processors:
+    - name: DummmyControllerUserProcessor
+      id: 2438e3c8-015a-1000-79ca-83af40ec1899
+      class: org.apache.nifi.processors.DummmyControllerUserProcessor
+      max concurrent tasks: 1
+      scheduling strategy: TIMER_DRIVEN
+      scheduling period: 100 msec
+      penalization period: 30 sec
+      yield period: 10 sec
+      run duration nanos: 0
+      auto-terminated relationships list:
+      Properties:
+          Dummy Controller Service: DummyController
+
+Controller Services:
+    - name: DummyController
+      id: 2438e3c8-015a-1000-79ca-83af40ec1888
+      class: DummyController
+      Properties:
+        Dummy Controller Property:

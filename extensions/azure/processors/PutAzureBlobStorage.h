@@ -1,22 +1,6 @@
-/**
- * @file PutAzureBlobStorage.h
- * PutAzureBlobStorage class declaration
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #pragma once
 
@@ -26,43 +10,54 @@
 #include <utility>
 #include <vector>
 
-#include "core/Property.h"
-#include "core/logging/Logger.h"
-#include "core/logging/LoggerConfiguration.h"
-#include "storage/AzureBlobStorage.h"
-#include "AzureStorageProcessorBase.h"
-#include "storage/AzureStorageCredentials.h"
+#include "minifi-cpp/core/ProcessContext.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "minifi-cpp/core/PropertyValidator.h"
+#include "minifi-cpp/core/Property.h"
+#include "core/logging/LoggerFactory.h"
+#include "AzureBlobStorageSingleBlobProcessorBase.h"
+#include "io/StreamPipe.h"
+#include "utils/ArrayUtils.h"
 
-class PutAzureBlobStorageTestsFixture;
+template<typename T>
+class AzureBlobStorageTestsFixture;
 
 namespace org::apache::nifi::minifi::azure::processors {
 
-class PutAzureBlobStorage final : public AzureStorageProcessorBase {
+class PutAzureBlobStorage final : public AzureBlobStorageSingleBlobProcessorBase {
  public:
-  // Supported Properties
-  static const core::Property ContainerName;
-  static const core::Property StorageAccountName;
-  static const core::Property StorageAccountKey;
-  static const core::Property SASToken;
-  static const core::Property CommonStorageAccountEndpointSuffix;
-  static const core::Property ConnectionString;
-  static const core::Property Blob;
-  static const core::Property CreateContainer;
-  static const core::Property UseManagedIdentityCredentials;
+  EXTENSIONAPI static constexpr const char* Description = "Puts content into an Azure Storage Blob";
 
-  // Supported Relationships
-  static const core::Relationship Failure;
-  static const core::Relationship Success;
+  EXTENSIONAPI static constexpr auto CreateContainer = core::PropertyDefinitionBuilder<>::createProperty("Create Container")
+    .withDescription("Specifies whether to check if the container exists and to automatically create it if it does not. "
+        "Permission to list containers is required. If false, this check is not made, but the Put operation will "
+        "fail if the container does not exist.")
+    .isRequired(true)
+    .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+    .withDefaultValue("false")
+    .build();
+  EXTENSIONAPI static constexpr auto Properties = utils::array_cat(AzureBlobStorageSingleBlobProcessorBase::Properties, std::to_array<core::PropertyReference>({CreateContainer}));
 
-  explicit PutAzureBlobStorage(const std::string& name, const minifi::utils::Identifier& uuid = minifi::utils::Identifier())
-    : PutAzureBlobStorage(name, uuid, nullptr) {
+  EXTENSIONAPI static constexpr auto Success = core::RelationshipDefinition{"success", "All successfully processed FlowFiles are routed to this relationship"};
+  EXTENSIONAPI static constexpr auto Failure = core::RelationshipDefinition{"failure", "Unsuccessful operations will be transferred to the failure relationship"};
+  EXTENSIONAPI static constexpr auto Relationships = std::array{Success, Failure};
+
+  EXTENSIONAPI static constexpr bool SupportsDynamicProperties = false;
+  EXTENSIONAPI static constexpr bool SupportsDynamicRelationships = false;
+  EXTENSIONAPI static constexpr core::annotation::Input InputRequirement = core::annotation::Input::INPUT_ALLOWED;
+  EXTENSIONAPI static constexpr bool IsSingleThreaded = false;
+
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_PROCESSORS
+
+  explicit PutAzureBlobStorage(core::ProcessorMetadata metadata)
+    : PutAzureBlobStorage(metadata, nullptr) {
   }
 
   void initialize() override;
-  void onSchedule(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSessionFactory> &sessionFactory) override;
-  void onTrigger(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSession> &session) override;
+  void onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& session_factory) override;
+  void onTrigger(core::ProcessContext& context, core::ProcessSession& session) override;
 
-  class ReadCallback : public InputStreamCallback {
+  class ReadCallback {
    public:
     ReadCallback(uint64_t flow_size, storage::AzureBlobStorage& azure_blob_storage, const storage::PutAzureBlobStorageParameters& params)
       : flow_size_(flow_size)
@@ -70,15 +65,16 @@ class PutAzureBlobStorage final : public AzureStorageProcessorBase {
       , params_(params) {
     }
 
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
-      std::vector<uint8_t> buffer;
-      size_t read_ret = stream->read(buffer, flow_size_);
+    io::IoResult operator()(const std::shared_ptr<io::InputStream>& stream) {
+      std::vector<std::byte> buffer;
+      buffer.resize(flow_size_);
+      const size_t read_ret = stream->read(buffer);
       if (io::isError(read_ret) || read_ret != flow_size_) {
-        return -1;
+        return io::IoResult::error();
       }
 
-      result_ = azure_blob_storage_.uploadBlob(params_, gsl::make_span(buffer.data(), flow_size_));
-      return read_ret;
+      result_ = azure_blob_storage_.uploadBlob(params_, buffer);
+      return io::IoResult::from(read_ret);
     }
 
     std::optional<storage::UploadBlobResult> getResult() const {
@@ -93,26 +89,15 @@ class PutAzureBlobStorage final : public AzureStorageProcessorBase {
   };
 
  private:
-  friend class ::PutAzureBlobStorageTestsFixture;
+  friend class ::AzureBlobStorageTestsFixture<PutAzureBlobStorage>;
 
-  explicit PutAzureBlobStorage(const std::string& name, const minifi::utils::Identifier& uuid, std::unique_ptr<storage::BlobStorageClient> blob_storage_client)
-    : AzureStorageProcessorBase(name, uuid, logging::LoggerFactory<PutAzureBlobStorage>::getLogger())
-    , azure_blob_storage_(std::move(blob_storage_client)) {
+  explicit PutAzureBlobStorage(core::ProcessorMetadata metadata, std::unique_ptr<storage::BlobStorageClient> blob_storage_client)
+    : AzureBlobStorageSingleBlobProcessorBase(metadata, std::move(blob_storage_client)) {
   }
 
-  storage::AzureStorageCredentials getAzureCredentialsFromProperties(
-    const std::shared_ptr<core::ProcessContext> &context,
-    const std::shared_ptr<core::FlowFile> &flow_file) const;
-  std::optional<storage::AzureStorageCredentials> getCredentials(
-    const std::shared_ptr<core::ProcessContext> &context,
-    const std::shared_ptr<core::FlowFile> &flow_file) const;
-  std::optional<storage::PutAzureBlobStorageParameters> buildAzureBlobStorageParameters(
-    const std::shared_ptr<core::ProcessContext> &context,
-    const std::shared_ptr<core::FlowFile> &flow_file);
+  std::optional<storage::PutAzureBlobStorageParameters> buildPutAzureBlobStorageParameters(core::ProcessContext &context, const core::FlowFile& flow_file);
 
-  storage::AzureBlobStorage azure_blob_storage_;
   bool create_container_ = false;
-  bool use_managed_identity_credentials_ = false;
 };
 
 }  // namespace org::apache::nifi::minifi::azure::processors

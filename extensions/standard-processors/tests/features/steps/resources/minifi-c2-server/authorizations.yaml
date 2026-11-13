@@ -1,0 +1,50 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+Default Action: deny
+Paths:
+  /c2/config:
+    Default Action: deny
+    Actions:
+    - Authorization: CLASS_MINIFI_CPP
+      Action: allow
+    - Authorization: ROLE_SUPERUSER
+      Action: allow
+
+    # Default authorization lets anonymous pull any config.  Remove below to change that.
+    - Authorization: ROLE_ANONYMOUS
+      Action: allow
+
+  /c2/config/contentTypes:
+    Default Action: deny
+    Actions:
+    - Authorization: CLASS_MINIFI_CPP
+      Action: allow
+    # Default authorization lets anonymous pull any config.  Remove below to change that.
+    - Authorization: ROLE_ANONYMOUS
+      Action: allow
+
+  /c2/config/heartbeat:
+    Default Action: deny
+    Actions:
+      - Authorization: CLASS_MINIFI_CPP
+        Action: allow
+      - Authorization: ROLE_SUPERUSER
+        Action: allow
+
+      # Default authorization lets anonymous pull any config.  Remove below to change that.
+      - Authorization: ROLE_ANONYMOUS
+        Action: allow
+
+  /c2/config/acknowledge:
+    Default Action: deny
+    Actions:
+      - Authorization: CLASS_MINIFI_CPP
+        Action: allow
+      - Authorization: ROLE_SUPERUSER
+        Action: allow
+
+      # Default authorization lets anonymous pull any config.  Remove below to change that.
+      - Authorization: ROLE_ANONYMOUS
+        Action: allow

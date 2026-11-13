@@ -1,50 +1,30 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-#include <sys/stat.h>
-
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#include <array>
 #include <cstdio>
 #include <utility>
 #include <memory>
 #include <string>
-#include <vector>
-#include <set>
 #include <fstream>
 
 #include "utils/file/FileUtils.h"
-#include "TestBase.h"
-#include "TestUtils.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
+#include "unit/TestUtils.h"
 #include "processors/LogAttribute.h"
 #include "processors/GetFile.h"
 #include "processors/PutFile.h"
 #include "unit/ProvenanceTestHelper.h"
 #include "core/Core.h"
-#include "core/FlowFile.h"
+#include "minifi-cpp/core/FlowFile.h"
 #include "core/Processor.h"
-#include "core/ProcessContext.h"
-#include "core/ProcessSession.h"
-#include "core/ProcessorNode.h"
 #include "core/reporting/SiteToSiteProvenanceReportingTask.h"
-#include "Exception.h"
+#include "minifi-cpp/Exception.h"
 
 TEST_CASE("Test Creation of PutFile", "[getfileCreate]") {
   TestController testController;
-  std::shared_ptr<core::Processor> processor = std::make_shared<org::apache::nifi::minifi::processors::PutFile>("processorname");
+  auto processor = minifi::test::utils::make_processor<org::apache::nifi::minifi::processors::PutFile>("processorname");
   REQUIRE(processor->getName() == "processorname");
 }
 
@@ -54,33 +34,31 @@ TEST_CASE("PutFileTest", "[getfileputpfile]") {
   LogTestController::getInstance().setDebug<minifi::processors::GetFile>();
   LogTestController::getInstance().setDebug<TestPlan>();
   LogTestController::getInstance().setDebug<minifi::processors::PutFile>();
-  LogTestController::getInstance().setDebug<minifi::processors::PutFile::ReadCallback>();
   LogTestController::getInstance().setDebug<minifi::processors::LogAttribute>();
 
   std::shared_ptr<TestPlan> plan = testController.createPlan();
 
-  std::shared_ptr<core::Processor> getfile = plan->addProcessor("GetFile", "getfileCreate2");
+  auto getfile = plan->addProcessor("GetFile", "getfileCreate2");
 
-  std::shared_ptr<core::Processor> putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
+  auto putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
 
   plan->addProcessor("LogAttribute", "logattribute", core::Relationship("success", "description"), true);
 
   const auto dir = testController.createTempDirectory();
   const auto putfiledir = testController.createTempDirectory();
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory.getName(), dir);
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory.getName(), putfiledir);
+  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory, dir.string());
+  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory, putfiledir.string());
 
   testController.runSession(plan, false);
 
   auto records = plan->getProvenanceRecords();
   std::shared_ptr<core::FlowFile> record = plan->getCurrentFlowFile();
   REQUIRE(record == nullptr);
-  REQUIRE(records.size() == 0);
+  REQUIRE(records.empty());
 
   std::fstream file;
-  std::stringstream ss;
-  ss << dir << utils::file::FileUtils::get_separator() << "tstFile.ext";
-  file.open(ss.str(), std::ios::out);
+  auto path = dir / "tstFile.ext";
+  file.open(path, std::ios::out);
   file << "tempFile";
   file.close();
   plan->reset();
@@ -89,22 +67,20 @@ TEST_CASE("PutFileTest", "[getfileputpfile]") {
 
   testController.runSession(plan, false);
 
-  records = plan->getProvenanceRecords();
-  record = plan->getCurrentFlowFile();
   testController.runSession(plan, false);
 
-  std::remove(ss.str().c_str());
+  std::filesystem::remove(path);
 
-  REQUIRE(true == LogTestController::getInstance().contains("key:absolute.path value:" + ss.str()));
+  REQUIRE(true == LogTestController::getInstance().contains("key:absolute.path value:" + (dir / "").string()));
   REQUIRE(true == LogTestController::getInstance().contains("Size:8 Offset:0"));
-  REQUIRE(true == LogTestController::getInstance().contains("key:path value:" + std::string(dir)));
+  REQUIRE(true == LogTestController::getInstance().contains("key:path value:" + (std::filesystem::path(".") / "").string()));
   // verify that the fle was moved
-  REQUIRE(false == std::ifstream(ss.str()).good());
-  std::stringstream movedFile;
-  movedFile << putfiledir << utils::file::FileUtils::get_separator() << "tstFile.ext";
-  REQUIRE(true == std::ifstream(movedFile.str()).good());
+  REQUIRE(false == std::ifstream(path).good());
+  auto moved_path = putfiledir / "tstFile.ext";
 
-  file.open(movedFile.str(), std::ios::in);
+  REQUIRE(true == std::ifstream(moved_path).good());
+
+  file.open(moved_path, std::ios::in);
   std::string contents((std::istreambuf_iterator<char>(file)),
                        std::istreambuf_iterator<char>());
   REQUIRE("tempFile" == contents);
@@ -122,34 +98,32 @@ TEST_CASE("PutFileTestFileExists", "[getfileputpfile]") {
 
   std::shared_ptr<TestPlan> plan = testController.createPlan();
 
-  std::shared_ptr<core::Processor> getfile = plan->addProcessor("GetFile", "getfileCreate2");
+  auto getfile = plan->addProcessor("GetFile", "getfileCreate2");
 
-  std::shared_ptr<core::Processor> putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
+  auto putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
 
   plan->addProcessor("LogAttribute", "logattribute", core::Relationship("failure", "description"), true);
 
   const auto dir = testController.createTempDirectory();
-  const auto putfiledir = testController.createTempDirectory();
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory.getName(), dir);
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory.getName(), putfiledir);
+  const auto put_file_dir = testController.createTempDirectory();
+  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory, dir.string());
+  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory, put_file_dir.string());
 
   testController.runSession(plan, false);
 
   auto records = plan->getProvenanceRecords();
   std::shared_ptr<core::FlowFile> record = plan->getCurrentFlowFile();
   REQUIRE(record == nullptr);
-  REQUIRE(records.size() == 0);
+  REQUIRE(records.empty());
 
   std::fstream file;
-  std::stringstream ss;
-  ss << dir << utils::file::FileUtils::get_separator() << "tstFile.ext";
-  file.open(ss.str(), std::ios::out);
+  auto path = dir / "tstFile.ext";
+  file.open(path, std::ios::out);
   file << "tempFile";
   file.close();
-//
-  std::stringstream movedFile;
-  movedFile << putfiledir << utils::file::FileUtils::get_separator() << "tstFile.ext";
-  file.open(movedFile.str(), std::ios::out);
+
+  auto moved_path = put_file_dir / "tstFile.ext";
+  file.open(moved_path, std::ios::out);
   file << "tempFile";
   file.close();
 
@@ -159,18 +133,16 @@ TEST_CASE("PutFileTestFileExists", "[getfileputpfile]") {
 
   testController.runSession(plan, false);
 
-  records = plan->getProvenanceRecords();
-  record = plan->getCurrentFlowFile();
   testController.runSession(plan, false);
 
-  std::remove(ss.str().c_str());
+  std::filesystem::remove(path);
 
-  REQUIRE(true == LogTestController::getInstance().contains("key:absolute.path value:" + ss.str()));
+  REQUIRE(true == LogTestController::getInstance().contains("key:absolute.path value:" + (dir / "").string()));
   REQUIRE(true == LogTestController::getInstance().contains("Size:8 Offset:0"));
-  REQUIRE(true == LogTestController::getInstance().contains("key:path value:" + std::string(dir)));
+  REQUIRE(true == LogTestController::getInstance().contains("key:path value:" + (std::filesystem::path(".") / "").string()));
   // verify that the fle was moved
-  REQUIRE(false == std::ifstream(ss.str()).good());
-  REQUIRE(true == std::ifstream(movedFile.str()).good());
+  REQUIRE(false == std::ifstream(path).good());
+  REQUIRE(true == std::ifstream(moved_path).good());
 
   LogTestController::getInstance().reset();
 }
@@ -185,38 +157,36 @@ TEST_CASE("PutFileTestFileExistsIgnore", "[getfileputpfile]") {
 
   std::shared_ptr<TestPlan> plan = testController.createPlan();
 
-  std::shared_ptr<core::Processor> getfile = plan->addProcessor("GetFile", "getfileCreate2");
+  auto getfile = plan->addProcessor("GetFile", "getfileCreate2");
 
-  std::shared_ptr<core::Processor> putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
+  auto putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
 
   plan->addProcessor("LogAttribute", "logattribute", core::Relationship("success", "description"), true);
 
   const auto dir = testController.createTempDirectory();
-  const auto putfiledir = testController.createTempDirectory();
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory.getName(), dir);
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory.getName(), putfiledir);
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::ConflictResolution.getName(), "ignore");
+  const auto put_file_dir = testController.createTempDirectory();
+  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory, dir.string());
+  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory, put_file_dir.string());
+  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::ConflictResolution, "ignore");
 
   testController.runSession(plan, false);
 
   auto records = plan->getProvenanceRecords();
   std::shared_ptr<core::FlowFile> record = plan->getCurrentFlowFile();
   REQUIRE(record == nullptr);
-  REQUIRE(records.size() == 0);
+  REQUIRE(records.empty());
 
   std::fstream file;
-  std::stringstream ss;
-  ss << dir << utils::file::FileUtils::get_separator() << "tstFile.ext";
-  file.open(ss.str(), std::ios::out);
+  auto path = dir / "tstFile.ext";
+  file.open(path, std::ios::out);
   file << "tempFile";
   file.close();
-//
-  std::stringstream movedFile;
-  movedFile << putfiledir << utils::file::FileUtils::get_separator() << "tstFile.ext";
-  file.open(movedFile.str(), std::ios::out);
+
+  auto moved_path = put_file_dir / "tstFile.ext";
+  file.open(moved_path, std::ios::out);
   file << "tempFile";
   file.close();
-  auto filemodtime = fileutils::FileUtils::last_write_time(movedFile.str());
+  auto file_mod_time = utils::file::last_write_time(moved_path);
 
   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
   plan->reset();
@@ -225,19 +195,17 @@ TEST_CASE("PutFileTestFileExistsIgnore", "[getfileputpfile]") {
 
   testController.runSession(plan, false);
 
-  records = plan->getProvenanceRecords();
-  record = plan->getCurrentFlowFile();
   testController.runSession(plan, false);
 
-  std::remove(ss.str().c_str());
+  std::filesystem::remove(path);
 
-  REQUIRE(true == LogTestController::getInstance().contains("key:absolute.path value:" + ss.str()));
+  REQUIRE(true == LogTestController::getInstance().contains("key:absolute.path value:" + (dir / "").string() ));
   REQUIRE(true == LogTestController::getInstance().contains("Size:8 Offset:0"));
-  REQUIRE(true == LogTestController::getInstance().contains("key:path value:" + dir));
+  REQUIRE(true == LogTestController::getInstance().contains("key:path value:" + (std::filesystem::path(".") / "").string()));
   // verify that the fle was moved
-  REQUIRE(false == std::ifstream(ss.str()).good());
-  REQUIRE(true == std::ifstream(movedFile.str()).good());
-  REQUIRE(filemodtime == fileutils::FileUtils::last_write_time(movedFile.str()));
+  REQUIRE(false == std::ifstream(path).good());
+  REQUIRE(true == std::ifstream(moved_path).good());
+  REQUIRE(file_mod_time == utils::file::last_write_time(moved_path));
   LogTestController::getInstance().reset();
 }
 
@@ -251,38 +219,36 @@ TEST_CASE("PutFileTestFileExistsReplace", "[getfileputpfile]") {
 
   std::shared_ptr<TestPlan> plan = testController.createPlan();
 
-  std::shared_ptr<core::Processor> getfile = plan->addProcessor("GetFile", "getfileCreate2");
+  auto getfile = plan->addProcessor("GetFile", "getfileCreate2");
 
-  std::shared_ptr<core::Processor> putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
+  auto putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
 
   plan->addProcessor("LogAttribute", "logattribute", { core::Relationship("success", "d"), core::Relationship("failure", "d") }, true);
 
   const auto dir = testController.createTempDirectory();
-  const auto putfiledir = testController.createTempDirectory();
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory.getName(), dir);
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory.getName(), putfiledir);
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::ConflictResolution.getName(), "replace");
+  const auto put_file_dir = testController.createTempDirectory();
+  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory, dir.string());
+  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory, put_file_dir.string());
+  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::ConflictResolution, "replace");
 
   testController.runSession(plan, false);
 
   auto records = plan->getProvenanceRecords();
   std::shared_ptr<core::FlowFile> record = plan->getCurrentFlowFile();
   REQUIRE(record == nullptr);
-  REQUIRE(records.size() == 0);
+  REQUIRE(records.empty());
 
   std::fstream file;
-  std::stringstream ss;
-  ss << dir << utils::file::FileUtils::get_separator() << "tstFile.ext";
-  file.open(ss.str(), std::ios::out);
+  auto path = dir / "tstFile.ext";
+  file.open(path, std::ios::out);
   file << "tempFile";
   file.close();
-//
-  std::stringstream movedFile;
-  movedFile << putfiledir << utils::file::FileUtils::get_separator() << "tstFile.ext";
-  file.open(movedFile.str(), std::ios::out);
+
+  auto moved_path = put_file_dir / "tstFile.ext";
+  file.open(moved_path, std::ios::out);
   file << "tempFile";
   file.close();
-  auto filemodtime = fileutils::FileUtils::last_write_time(movedFile.str());
+  auto file_mod_time = utils::file::last_write_time(moved_path);
 
   std::this_thread::sleep_for(std::chrono::milliseconds(1000));
   plan->reset();
@@ -291,31 +257,20 @@ TEST_CASE("PutFileTestFileExistsReplace", "[getfileputpfile]") {
 
   testController.runSession(plan, false);
 
-  records = plan->getProvenanceRecords();
-  record = plan->getCurrentFlowFile();
   testController.runSession(plan, false);
 
-  std::remove(ss.str().c_str());
+  std::filesystem::remove(path);
 
-  REQUIRE(true == LogTestController::getInstance().contains("key:absolute.path value:" + ss.str()));
+  REQUIRE(true == LogTestController::getInstance().contains("key:absolute.path value:" + (dir / "").string()));
   REQUIRE(true == LogTestController::getInstance().contains("Size:8 Offset:0"));
-  REQUIRE(true == LogTestController::getInstance().contains("key:path value:" + std::string(dir)));
+  REQUIRE(true == LogTestController::getInstance().contains("key:path value:" + (std::filesystem::path(".") / "").string()));
   // verify that the fle was moved
-  REQUIRE(false == std::ifstream(ss.str()).good());
-  REQUIRE(true == std::ifstream(movedFile.str()).good());
+  REQUIRE(false == std::ifstream(path).good());
+  REQUIRE(true == std::ifstream(moved_path).good());
 #ifndef WIN32
-  REQUIRE(filemodtime != fileutils::FileUtils::last_write_time(movedFile.str()));
+  REQUIRE(file_mod_time != utils::file::last_write_time(moved_path));
 #endif
   LogTestController::getInstance().reset();
-}
-
-TEST_CASE("Test generation of temporary write path", "[putfileTmpWritePath]") {
-  auto processor = std::make_shared<org::apache::nifi::minifi::processors::PutFile>("processorname");
-  std::stringstream prefix;
-  prefix << "a" << utils::file::FileUtils::get_separator() << "b" << utils::file::FileUtils::get_separator();
-  std::string path = prefix.str() + "c";
-  std::string expected_path = prefix.str() + ".c";
-  REQUIRE(processor->tmpWritePath(path, "").substr(1, expected_path.length()) == expected_path);
 }
 
 TEST_CASE("PutFileMaxFileCountTest", "[getfileputpfilemaxcount]") {
@@ -328,26 +283,25 @@ TEST_CASE("PutFileMaxFileCountTest", "[getfileputpfilemaxcount]") {
 
   std::shared_ptr<TestPlan> plan = testController.createPlan();
 
-  std::shared_ptr<core::Processor> getfile = plan->addProcessor("GetFile", "getfileCreate");
+  auto getfile = plan->addProcessor("GetFile", "getfileCreate");
 
-  std::shared_ptr<core::Processor> putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
+  auto putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
 
   plan->addProcessor("LogAttribute", "logattribute", { core::Relationship("success", "d"), core::Relationship("failure", "d") }, true);
 
   const auto dir = testController.createTempDirectory();
   const auto putfiledir = testController.createTempDirectory();
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory.getName(), dir);
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::BatchSize.getName(), "1");
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory.getName(), putfiledir);
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::MaxDestFiles.getName(), "1");
+  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory, dir.string());
+  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::BatchSize, "1");
+  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory, putfiledir.string());
+  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::MaxDestFiles, "1");
 
 
 
   for (int i = 0; i < 2; ++i) {
-    std::stringstream ss;
-    ss << dir << utils::file::FileUtils::get_separator() << "tstFile" << i << ".ext";
+    auto path = dir / ("tstFile" + std::to_string(i) + ".ext");
     std::fstream file;
-    file.open(ss.str(), std::ios::out);
+    file.open(path, std::ios::out);
     file << "tempFile";
     file.close();
   }
@@ -361,18 +315,17 @@ TEST_CASE("PutFileMaxFileCountTest", "[getfileputpfilemaxcount]") {
   testController.runSession(plan);
 
 
-  REQUIRE(LogTestController::getInstance().contains("key:absolute.path value:" + std::string(dir) + utils::file::FileUtils::get_separator() + "tstFile0.ext"));
+  REQUIRE(LogTestController::getInstance().contains("key:absolute.path value:" + (dir / "").string()));
   REQUIRE(LogTestController::getInstance().contains("Size:8 Offset:0"));
-  REQUIRE(LogTestController::getInstance().contains("key:path value:" + std::string(dir)));
+  REQUIRE(LogTestController::getInstance().contains("key:path value:" + (std::filesystem::path(".") / "").string()));
 
   // Only 1 of the 2 files should make it to the target dir
-  // Non-determistic, so let's just count them
+  // Non-deterministic, so let's just count them
   int files_in_dir = 0;
 
   for (int i = 0; i < 2; ++i) {
-    std::stringstream ss;
-    ss << putfiledir << utils::file::FileUtils::get_separator() << "tstFile" << i << ".ext";
-    std::ifstream file(ss.str());
+    auto path = putfiledir / ("tstFile" + std::to_string(i) + ".ext");
+    std::ifstream file(path);
     if (file.is_open() && file.good()) {
       files_in_dir++;
       file.close();
@@ -395,27 +348,27 @@ TEST_CASE("PutFileEmptyTest", "[EmptyFilePutTest]") {
 
   std::shared_ptr<TestPlan> plan = testController.createPlan();
 
-  std::shared_ptr<core::Processor> getfile = plan->addProcessor("GetFile", "getfileCreate2");
+  auto getfile = plan->addProcessor("GetFile", "getfileCreate2");
 
-  std::shared_ptr<core::Processor> putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
+  auto putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
 
   const auto dir = testController.createTempDirectory();
   const auto putfiledir = testController.createTempDirectory();
 
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory.getName(), dir);
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory.getName(), putfiledir);
+  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory, dir.string());
+  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory, putfiledir.string());
 
-  std::ofstream of(std::string(dir) + utils::file::FileUtils::get_separator() + "tstFile.ext");
+  std::ofstream of(dir / "tstFile.ext");
   of.close();
 
   plan->runNextProcessor();  // Get
   plan->runNextProcessor();  // Put
 
-  std::ifstream is(std::string(putfiledir) + utils::file::FileUtils::get_separator() + "tstFile.ext", std::ifstream::binary);
+  std::ifstream is(putfiledir / "tstFile.ext", std::ifstream::binary);
 
   REQUIRE(is.is_open());
   is.seekg(0, is.end);
-  REQUIRE(is.tellg() == 0);
+  CHECK(is.tellg() == 0);
 }
 
 #ifndef WIN32
@@ -428,32 +381,32 @@ TEST_CASE("TestPutFilePermissions", "[PutFilePermissions]") {
 
   std::shared_ptr<TestPlan> plan = testController.createPlan();
 
-  std::shared_ptr<core::Processor> getfile = plan->addProcessor("GetFile", "getfileCreate2");
+  auto getfile = plan->addProcessor("GetFile", "getfileCreate2");
 
-  std::shared_ptr<core::Processor> putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
+  auto putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
 
   const auto dir = testController.createTempDirectory();
-  const auto putfiledir = testController.createTempDirectory() + utils::file::FileUtils::get_separator() + "test_dir";
+  const auto putfiledir = testController.createTempDirectory() / "test_dir";
 
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory.getName(), dir);
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory.getName(), putfiledir);
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Permissions.getName(), "644");
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::DirectoryPermissions.getName(), "0777");
+  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory, dir.string());
+  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory, putfiledir.string());
+  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Permissions, "644");
+  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::DirectoryPermissions, "0777");
 
   std::fstream file;
-  file.open(std::string(dir) + utils::file::FileUtils::get_separator() + "tstFile.ext", std::ios::out);
+  file.open(dir / "tstFile.ext", std::ios::out);
   file << "tempFile";
   file.close();
 
   plan->runNextProcessor();  // Get
   plan->runNextProcessor();  // Put
 
-  auto path = std::string(putfiledir) + utils::file::FileUtils::get_separator() + "tstFile.ext";
+  auto path = putfiledir / "tstFile.ext";
   uint32_t perms = 0;
-  REQUIRE(utils::file::FileUtils::get_permissions(path, perms));
-  REQUIRE(perms == 0644);
-  REQUIRE(utils::file::FileUtils::get_permissions(putfiledir, perms));
-  REQUIRE(perms == 0777);
+  CHECK(utils::file::FileUtils::get_permissions(path, perms));
+  CHECK(perms == 0644);
+  CHECK(utils::file::FileUtils::get_permissions(putfiledir, perms));
+  CHECK(perms == 0777);
 }
 
 TEST_CASE("PutFileCreateDirectoryTest", "[PutFileProperties]") {
@@ -461,84 +414,79 @@ TEST_CASE("PutFileCreateDirectoryTest", "[PutFileProperties]") {
   LogTestController::getInstance().setDebug<minifi::processors::GetFile>();
   LogTestController::getInstance().setDebug<TestPlan>();
   LogTestController::getInstance().setDebug<minifi::processors::PutFile>();
-  LogTestController::getInstance().setDebug<minifi::processors::PutFile::ReadCallback>();
   LogTestController::getInstance().setDebug<minifi::processors::LogAttribute>();
 
   std::shared_ptr<TestPlan> plan = testController.createPlan();
-  std::shared_ptr<core::Processor> getfile = plan->addProcessor("GetFile", "getfileCreate2");
-  std::shared_ptr<core::Processor> putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
+  auto getfile = plan->addProcessor("GetFile", "getfileCreate2");
+  auto putfile = plan->addProcessor("PutFile", "putfile", core::Relationship("success", "description"), true);
   plan->addProcessor("LogAttribute", "logattribute", core::Relationship("success", "description"), true);
 
   // Define Directory
   auto dir = testController.createTempDirectory();
-  // Defining a sub directory
-  auto putfiledir = testController.createTempDirectory() + utils::file::FileUtils::get_separator() + "test_dir";
+  // Defining a subdirectory
+  auto putfiledir = testController.createTempDirectory() / "test_dir";
 
-  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory.getName(), putfiledir);
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory.getName(), dir);
+  plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::Directory, putfiledir.string());
+  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetFile::Directory, dir.string());
 
   SECTION("with an empty file and create directory property set to true") {
-    plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::CreateDirs.getName(), "true");
+    plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::CreateDirs, "true");
 
-    std::ofstream of(std::string(dir) + utils::file::FileUtils::get_separator() + "tstFile.ext");
+    std::ofstream of(dir / "tstFile.ext");
     of.close();
-    auto path = std::string(putfiledir) + utils::file::FileUtils::get_separator() + "tstFile.ext";
+    auto path = putfiledir / "tstFile.ext";
 
     plan->runNextProcessor();
     plan->runNextProcessor();
 
-    REQUIRE(org::apache::nifi::minifi::utils::file::exists(putfiledir));
-    REQUIRE(org::apache::nifi::minifi::utils::file::exists(path));
+    REQUIRE(utils::file::exists(putfiledir));
+    REQUIRE(utils::file::exists(path));
   }
 
   SECTION("with an empty file and create directory property set to false") {
-    plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::CreateDirs.getName(), "false");
-    putfile->setAutoTerminatedRelationships({core::Relationship("failure", "description")});
+    plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::CreateDirs, "false");
+    putfile->setAutoTerminatedRelationships(std::array{core::Relationship("failure", "description")});
 
-    std::ofstream of(std::string(dir) + utils::file::FileUtils::get_separator() + "tstFile.ext");
+    std::ofstream of(dir / "tstFile.ext");
     of.close();
-    auto path = std::string(putfiledir) + utils::file::FileUtils::get_separator() + "tstFile.ext";
+    auto path = putfiledir / "tstFile.ext";
 
     plan->runNextProcessor();
     plan->runNextProcessor();
 
-    REQUIRE_FALSE(org::apache::nifi::minifi::utils::file::exists(putfiledir));
-    REQUIRE_FALSE(org::apache::nifi::minifi::utils::file::exists(path));
-    std::string check = "Failed to create empty file: " + path;
-    REQUIRE(LogTestController::getInstance().contains(check));
+    REQUIRE_FALSE(utils::file::exists(putfiledir));
+    REQUIRE_FALSE(utils::file::exists(path));
   }
 
   SECTION("with a non-empty file and create directory property set to true") {
-    plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::CreateDirs.getName(), "true");
+    plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::CreateDirs, "true");
 
-    std::ofstream of(std::string(dir) + utils::file::FileUtils::get_separator() + "tstFile.ext");
+    std::ofstream of(dir / "tstFile.ext");
     of << "tempFile";
     of.close();
-    auto path = std::string(putfiledir) + utils::file::FileUtils::get_separator() + "tstFile.ext";
+    auto path = putfiledir / "tstFile.ext";
 
     plan->runNextProcessor();
     plan->runNextProcessor();
 
-    REQUIRE(org::apache::nifi::minifi::utils::file::exists(putfiledir));
-    REQUIRE(org::apache::nifi::minifi::utils::file::exists(path));
+    REQUIRE(utils::file::exists(putfiledir));
+    REQUIRE(utils::file::exists(path));
   }
 
   SECTION("with a non-empty file and create directory property set to false") {
-    plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::CreateDirs.getName(), "false");
-    putfile->setAutoTerminatedRelationships({core::Relationship("failure", "description")});
+    plan->setProperty(putfile, org::apache::nifi::minifi::processors::PutFile::CreateDirs, "false");
+    putfile->setAutoTerminatedRelationships(std::array{core::Relationship("failure", "description")});
 
-    std::ofstream of(std::string(dir) + utils::file::FileUtils::get_separator() + "tstFile.ext");
+    std::ofstream of(dir / "tstFile.ext");
     of << "tempFile";
     of.close();
-    auto path = std::string(putfiledir) + utils::file::FileUtils::get_separator() + "tstFile.ext";
+    auto path = putfiledir / "tstFile.ext";
 
     plan->runNextProcessor();
     plan->runNextProcessor();
 
-    REQUIRE_FALSE(org::apache::nifi::minifi::utils::file::exists(putfiledir));
-    REQUIRE_FALSE(org::apache::nifi::minifi::utils::file::exists(path));
-    std::string check = "PutFile commit put file operation to " + path + " failed because write failed";
-    REQUIRE(LogTestController::getInstance().contains(check));
+    REQUIRE_FALSE(utils::file::exists(putfiledir));
+    REQUIRE_FALSE(utils::file::exists(path));
   }
 }
 

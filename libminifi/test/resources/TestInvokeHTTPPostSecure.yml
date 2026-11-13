@@ -1,3 +1,7 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
 MiNiFi Config Version: 3
 Flow Controller:
   name: c++lw
@@ -72,7 +76,6 @@ Processors:
     Always Output Response: 'false'
     Connection Timeout: 2 s
     Content-type: application/octet-stream
-    Disable Peer Verification: 'true'
     HTTP Method: POST
     Read Timeout: 1 s
     Remote URL: https://localhost:0/minifi
@@ -108,7 +111,6 @@ Processors:
   - failure
   Properties:
     invoke_http: failure
-Controller Services: []
 Process Groups: []
 Input Ports: []
 Output Ports: []

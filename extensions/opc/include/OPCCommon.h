@@ -1,0 +1,173 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+
+#pragma once
+
+#include <array>
+#include <string>
+#include <functional>
+#include <map>
+#include <vector>
+#include <memory>
+#include <string_view>
+#include <utility>
+#include <optional>
+
+#include "open62541/client.h"
+#include "minifi-cpp/core/logging/Logger.h"
+#include "minifi-cpp/Exception.h"
+
+namespace org::apache::nifi::minifi::opc {
+
+class OPCException : public minifi::Exception {
+ public:
+  OPCException(ExceptionType type, std::string &&error_msg)
+    : Exception(type, error_msg) {
+  }
+};
+
+enum class OPCNodeIDType{
+  Path,
+  Int,
+  String
+};
+
+enum class OPCNodeDataType{
+  Int64,
+  UInt64,
+  Int32,
+  UInt32,
+  Boolean,
+  Float,
+  Double,
+  String
+};
+
+// RAII owner for a UA_NodeId that calls UA_NodeId_clear to free node id allocation
+class NodeId {
+ public:
+  NodeId() = default;
+  explicit NodeId(UA_NodeId id) noexcept : id_(id) {}  // takes ownership of an already-built node id
+  NodeId(const NodeId&) = delete;
+  NodeId& operator=(const NodeId&) = delete;
+  NodeId(NodeId&& other) noexcept : id_(other.id_) { other.id_ = UA_NODEID_NULL; }
+  NodeId& operator=(NodeId&& other) noexcept {
+    if (this != &other) {
+      UA_NodeId_clear(&id_);
+      id_ = other.id_;
+      other.id_ = UA_NODEID_NULL;
+    }
+    return *this;
+  }
+  ~NodeId() noexcept { UA_NodeId_clear(&id_); }
+
+  static NodeId copyOf(const UA_NodeId& id) {
+    NodeId result;
+    UA_NodeId_copy(&id, &result.id_);
+    return result;
+  }
+
+  operator const UA_NodeId&() const noexcept { return id_; }  // NOLINT(google-explicit-constructor) implicit passthrough to the C API is intended
+  [[nodiscard]] const UA_NodeId& get() const noexcept { return id_; }
+
+  // Returns a pointer to the (cleared) node id for an open62541 out-parameter to write a freshly created node id into.
+  UA_NodeId* receive() noexcept {
+    UA_NodeId_clear(&id_);
+    return &id_;
+  }
+
+ private:
+  UA_NodeId id_ = UA_NODEID_NULL;
+};
+
+struct NodeData;
+
+class Client;
+
+using NodeFoundCallBackFunc = bool(const UA_ReferenceDescription*, const std::string&);
+
+class Client {
+ public:
+  ~Client();
+  bool isConnected();
+  UA_StatusCode connect(const std::string& url, const std::string& username = "", const std::string& password = "");
+  NodeData getNodeData(const UA_ReferenceDescription *ref, const std::string& base_path = "");
+  UA_ReferenceDescription * getNodeReference(UA_NodeId node_id);
+  void traverse(UA_NodeId node_id, const std::function<NodeFoundCallBackFunc>& cb, const std::string& base_path = "", uint64_t max_depth = 0, bool fetch_root = true);
+  bool exists(UA_NodeId node_id);
+  UA_StatusCode translateBrowsePathsToNodeIdsRequest(const std::string& path, std::vector<NodeId>& found_node_ids, int32_t namespace_index,
+    const std::vector<UA_UInt32>& path_reference_types, const std::shared_ptr<core::logging::Logger>& logger);
+
+  template<typename T>
+  UA_StatusCode update_node(const UA_NodeId node_id, T value);
+
+  template<typename T>
+  UA_StatusCode add_node(const UA_NodeId parent_node_id, const UA_NodeId target_node_id, const UA_UInt32 ref_type_id, std::string_view browse_name, T value, UA_NodeId *received_node_id);
+
+  static std::unique_ptr<Client> createClient(const std::shared_ptr<core::logging::Logger>& logger, const std::string& application_uri,
+                                              const std::vector<char>& cert_buffer, const std::vector<char>& key_buffer,
+                                              const std::vector<std::vector<char>>& trust_buffers);
+
+ private:
+  Client(const std::shared_ptr<core::logging::Logger>& logger, const std::string& application_uri,
+      const std::vector<char>& cert_buffer, const std::vector<char>& key_buffer,
+      const std::vector<std::vector<char>>& trust_buffers);
+
+  UA_Client *client_{nullptr};
+  std::shared_ptr<core::logging::Logger> logger_;
+  UA_Logger minifi_ua_logger_{};
+  bool use_encryption_{false};
+};
+
+using ClientPtr = std::unique_ptr<Client>;
+
+struct NodeData {
+  std::vector<uint8_t> data;
+  UA_DataTypeKind data_type_id;
+  std::map<std::string, std::string> attributes;
+
+  virtual ~NodeData() {
+    if (var_) {
+      UA_Variant_delete(var_);
+    }
+  }
+
+  NodeData (const NodeData&) = delete;
+  NodeData& operator= (const NodeData &) = delete;
+  NodeData& operator= (NodeData &&) = delete;
+
+  NodeData(NodeData&& rhs) : data(rhs.data), attributes(rhs.attributes) {
+    data_type_id = rhs.data_type_id;
+    this->var_ = rhs.var_;
+    rhs.var_ = nullptr;
+  }
+
+ private:
+  UA_Variant* var_;
+
+  explicit NodeData(UA_Variant * var = nullptr) {
+    var_ = var;  // NOLINT(clang-analyzer-optin.cplusplus.UninitializedObject)
+  }
+  void addVariant(UA_Variant * var) {
+    if (var_) {
+      UA_Variant_delete(var_);
+    }
+    var_ = var;
+  }
+
+  friend class Client;
+  friend std::string nodeValue2String(const NodeData&);
+};
+
+std::string nodeValue2String(const NodeData& nd);
+
+std::string OPCDateTime2String(UA_DateTime raw_date);
+
+void logFunc(void *context, UA_LogLevel level, UA_LogCategory category, const char *msg, va_list args);
+
+std::optional<UA_UInt32> mapOpcReferenceType(const std::string& ref_type);
+
+}  // namespace org::apache::nifi::minifi::opc
+

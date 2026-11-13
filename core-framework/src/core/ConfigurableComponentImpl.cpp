@@ -1,0 +1,155 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#include "core/ConfigurableComponentImpl.h"
+
+#include "minifi-cpp/core/Property.h"
+#include "utils/PropertyErrors.h"
+
+namespace org::apache::nifi::minifi::core {
+void ConfigurableComponentImpl::setSupportedProperties(std::span<const core::PropertyReference> properties) {
+  if (!canEdit()) { return; }
+
+  std::lock_guard<std::mutex> lock(configuration_mutex_);
+
+  supported_properties_.clear();
+  for (const auto& item: properties) { supported_properties_.emplace(item.name, item); }
+}
+
+void ConfigurableComponentImpl::setSupportedProperties(std::span<const Property> properties) {
+  if (!canEdit()) { return; }
+
+  std::lock_guard<std::mutex> lock(configuration_mutex_);
+  supported_properties_.clear();
+  for (const auto& item: properties) { supported_properties_.emplace(item.getName(), item); }
+}
+
+
+std::expected<std::string, std::error_code> ConfigurableComponentImpl::getProperty(const std::string_view name) const {
+  const std::lock_guard<std::mutex> lock(configuration_mutex_);
+  const auto it = supported_properties_.find(name);
+  if (it == supported_properties_.end()) { return std::unexpected{PropertyErrorCode::NotSupportedProperty}; }
+  const Property& prop = it->second;
+  return prop.getValue() | utils::transform([](const std::string_view value_view) -> std::string { return std::string{value_view}; });
+}
+
+std::expected<void, std::error_code> ConfigurableComponentImpl::setProperty(const std::string_view name, std::string value) {
+  const std::lock_guard<std::mutex> lock(configuration_mutex_);
+  const auto it = supported_properties_.find(name);
+  if (it == supported_properties_.end()) { return std::unexpected{PropertyErrorCode::NotSupportedProperty}; }
+  Property& prop = it->second;
+
+  return prop.setValue(std::move(value));
+}
+
+std::expected<void, std::error_code> ConfigurableComponentImpl::clearProperty(const std::string_view name) {
+  const std::lock_guard<std::mutex> lock(configuration_mutex_);
+  const auto it = supported_properties_.find(name);
+  if (it == supported_properties_.end()) { return std::unexpected{PropertyErrorCode::NotSupportedProperty}; }
+  Property& prop = it->second;
+
+  prop.clearValues();
+  return {};
+}
+
+std::expected<void, std::error_code> ConfigurableComponentImpl::clearPropertyDefaultValue(const std::string_view name) {
+  const std::lock_guard<std::mutex> lock(configuration_mutex_);
+  const auto it = supported_properties_.find(name);
+  if (it == supported_properties_.end()) { return std::unexpected{PropertyErrorCode::NotSupportedProperty}; }
+  Property& prop = it->second;
+
+  prop.clearDefaultValue();
+  return {};
+}
+
+std::expected<void, std::error_code> ConfigurableComponentImpl::appendProperty(const std::string_view name, std::string value) {
+  const std::lock_guard<std::mutex> lock(configuration_mutex_);
+  const auto it = supported_properties_.find(name);
+  if (it == supported_properties_.end()) { return std::unexpected{PropertyErrorCode::NotSupportedProperty}; }
+  Property& prop = it->second;
+
+  return prop.appendValue(std::move(value));
+}
+
+std::expected<std::string, std::error_code> ConfigurableComponentImpl::getDynamicProperty(const std::string_view name) const {
+  const std::lock_guard<std::mutex> lock(configuration_mutex_);
+  if (!supportsDynamicProperties()) {
+    return std::unexpected{PropertyErrorCode::DynamicPropertiesNotSupported};
+  }
+  const auto it = dynamic_properties_.find(name);
+  if (it == dynamic_properties_.end()) { return std::unexpected{PropertyErrorCode::PropertyNotSet}; }
+  const Property& prop = it->second;
+  return prop.getValue() | utils::transform([](const std::string_view value_view) -> std::string { return std::string{value_view}; });
+}
+
+std::expected<void, std::error_code> ConfigurableComponentImpl::setDynamicProperty(std::string name, std::string value) {
+  const std::lock_guard<std::mutex> lock(configuration_mutex_);
+  if (!supportsDynamicProperties()) {
+    return std::unexpected{PropertyErrorCode::DynamicPropertiesNotSupported};
+  }
+  Property& prop = dynamic_properties_[std::move(name)];
+  prop.setSupportsExpressionLanguage(true);  // all dynamic properties support EL
+  return prop.setValue(std::move(value));
+}
+
+std::expected<void, std::error_code> ConfigurableComponentImpl::appendDynamicProperty(const std::string_view name, std::string value) {
+  const std::lock_guard<std::mutex> lock(configuration_mutex_);
+  if (!supportsDynamicProperties()) {
+    return std::unexpected{PropertyErrorCode::DynamicPropertiesNotSupported};
+  }
+  Property& prop = dynamic_properties_[std::string{name}];
+  prop.setSupportsExpressionLanguage(true);  // all dynamic properties support EL
+  return prop.appendValue(std::move(value));
+}
+
+std::vector<std::string> ConfigurableComponentImpl::getDynamicPropertyKeys() const {
+  std::lock_guard<std::mutex> lock(configuration_mutex_);
+
+  return dynamic_properties_ | ranges::views::transform([](const auto& kv) { return kv.first; }) | ranges::to<std::vector>();
+}
+
+std::map<std::string, std::string> ConfigurableComponentImpl::getDynamicProperties() const {
+  std::lock_guard<std::mutex> lock(configuration_mutex_);
+  std::map<std::string, std::string> result;
+  for (const auto& [key, value]: dynamic_properties_) {
+    result[key] = value.getValue().value_or("");
+  }
+  return result;
+}
+
+[[nodiscard]] std::expected<std::vector<std::string>, std::error_code> ConfigurableComponentImpl::getAllPropertyValues(const std::string_view name) const {
+  std::lock_guard<std::mutex> lock(configuration_mutex_);
+
+  const auto it = supported_properties_.find(name);
+  if (it == supported_properties_.end()) { return std::unexpected{PropertyErrorCode::NotSupportedProperty}; }
+  const Property& prop = it->second;
+  return prop.getAllValues() | utils::transform([](const auto& values) -> std::vector<std::string> { return std::vector<std::string>{values.begin(), values.end()}; });
+}
+
+[[nodiscard]] std::expected<std::vector<std::string>, std::error_code> ConfigurableComponentImpl::getAllDynamicPropertyValues(const std::string_view name) const {
+  std::lock_guard<std::mutex> lock(configuration_mutex_);
+
+  const auto it = dynamic_properties_.find(name);
+  if (it == dynamic_properties_.end()) { return std::unexpected{PropertyErrorCode::PropertyNotSet}; }
+  const Property& prop = it->second;
+  return prop.getAllValues() | utils::transform([](const auto& values) -> std::vector<std::string> { return std::vector<std::string>{values.begin(), values.end()}; });
+}
+
+[[nodiscard]] std::map<std::string, Property, std::less<>> ConfigurableComponentImpl::getSupportedProperties() const {
+  std::lock_guard<std::mutex> lock(configuration_mutex_);
+  std::map<std::string, Property, std::less<>> supported_properties;
+  for (const auto& [name, prop]: supported_properties_) {
+    supported_properties.emplace(name, prop);
+  }
+  return supported_properties;
+}
+
+[[nodiscard]] std::expected<Property, std::error_code> ConfigurableComponentImpl::getSupportedProperty(const std::string_view name) const {
+  std::lock_guard<std::mutex> lock(configuration_mutex_);
+  const auto it = supported_properties_.find(name);
+  if (it == supported_properties_.end()) { return std::unexpected{PropertyErrorCode::NotSupportedProperty}; }
+  return it->second;
+}
+
+}  // namespace org::apache::nifi::minifi::core

@@ -1,73 +1,71 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef LIBMINIFI_INCLUDE_CONTROLLERS_UPDATEPOLICYCONTROLLERSERVICE_H_
-#define LIBMINIFI_INCLUDE_CONTROLLERS_UPDATEPOLICYCONTROLLERSERVICE_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
 
-#include <string>
 #include <iostream>
-#include <memory>
 #include <limits>
+#include <memory>
+#include <string>
+#include <utility>
+
 #include "utils/StringUtils.h"
 #include "io/validation.h"
-#include "core/controller/ControllerService.h"
-#include "core/logging/LoggerConfiguration.h"
+#include "core/controller/ControllerServiceBase.h"
+#include "core/logging/LoggerFactory.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "minifi-cpp/core/PropertyValidator.h"
 #include "core/state/UpdatePolicy.h"
-#include "utils/Export.h"
+#include "minifi-cpp/utils/Export.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace controllers {
+namespace org::apache::nifi::minifi::controllers {
 
 /**
  * Purpose: UpdatePolicyControllerService allows a flow specific policy on allowing or disallowing updates.
  * Since the flow dictates the purpose of a device it will also be used to dictate updates to specific components.
  */
-class UpdatePolicyControllerService : public core::controller::ControllerService, public std::enable_shared_from_this<UpdatePolicyControllerService> {
+class UpdatePolicyControllerService : public core::controller::ControllerServiceBase, public core::controller::ControllerServiceHandle {
  public:
-  explicit UpdatePolicyControllerService(const std::string &name, const utils::Identifier &uuid = {})
-      : ControllerService(name, uuid),
-        persist_updates_(false),
-        policy_(new state::UpdatePolicy(false)),
-        logger_(logging::LoggerFactory<UpdatePolicyControllerService>::getLogger()) {
-  }
+  using ControllerServiceBase::ControllerServiceBase;
 
-  explicit UpdatePolicyControllerService(const std::string &name, const std::shared_ptr<Configure> &configuration)
-      : UpdatePolicyControllerService(name) {
-    setConfiguration(configuration);
-    initialize();
-  }
+  MINIFIAPI static constexpr const char* Description = "UpdatePolicyControllerService allows a flow specific policy on allowing or disallowing updates. "
+                                                       "Since the flow dictates the purpose of a device it will also be used to dictate updates to specific components.";
 
-  MINIFIAPI static core::Property AllowAllProperties;
-  MINIFIAPI static core::Property PersistUpdates;
-  MINIFIAPI static core::Property AllowedProperties;
-  MINIFIAPI static core::Property DisallowedProperties;
+  MINIFIAPI static constexpr auto AllowAllProperties = core::PropertyDefinitionBuilder<>::createProperty("Allow All Properties")
+      .withDescription("Allows all properties, which are also not disallowed, to be updated")
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("false")
+      .build();
+  MINIFIAPI static constexpr auto PersistUpdates = core::PropertyDefinitionBuilder<>::createProperty("Persist Updates")
+      .withDescription("Property that dictates whether updates should persist after a restart")
+      .isRequired(false)
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("false")
+      .build();
+  MINIFIAPI static constexpr auto AllowedProperties = core::PropertyDefinitionBuilder<>::createProperty("Allowed Properties")
+      .withDescription("Properties for which we will allow updates")
+      .isRequired(false)
+      .build();
+  MINIFIAPI static constexpr auto DisallowedProperties = core::PropertyDefinitionBuilder<>::createProperty("Disallowed Properties")
+      .withDescription("Properties for which we will not allow updates")
+      .isRequired(false)
+      .build();
+  MINIFIAPI static constexpr auto Properties = std::to_array<core::PropertyReference>({
+                                                                                          AllowAllProperties,
+                                                                                          PersistUpdates,
+                                                                                          AllowedProperties,
+                                                                                          DisallowedProperties
+                                                                                      });
 
-  void initialize();
+  MINIFIAPI static constexpr bool SupportsDynamicProperties = false;
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_CONTROLLER_SERVICES
 
-  void yield();
+  void initialize() override;
 
-  bool isRunning();
+  void onEnable() override;
 
-  bool isWorkAvailable();
-
-  void onEnable();
+  [[nodiscard]] ControllerServiceHandle* getControllerServiceHandle() override {return this;}
 
   bool canUpdate(const std::string &property) const {
     return policy_->canUpdate(property);
@@ -78,15 +76,8 @@ class UpdatePolicyControllerService : public core::controller::ControllerService
   }
 
  private:
-  bool persist_updates_;
-  std::unique_ptr<state::UpdatePolicy> policy_;
-  std::shared_ptr<logging::Logger> logger_;
+  bool persist_updates_ = false;
+  std::unique_ptr<state::UpdatePolicy> policy_ = std::make_unique<state::UpdatePolicy>(false);
 };
 
-}  // namespace controllers
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // LIBMINIFI_INCLUDE_CONTROLLERS_UPDATEPOLICYCONTROLLERSERVICE_H_
+}  // namespace org::apache::nifi::minifi::controllers

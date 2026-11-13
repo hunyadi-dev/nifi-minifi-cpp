@@ -1,0 +1,90 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include <unordered_map>
+#include <string>
+#include <mutex>
+#include <memory>
+#include <utility>
+
+#include "utils/AutoPersistor.h"
+#include "core/Core.h"
+#include "InMemoryKeyValueStorage.h"
+#include "controllers/keyvalue/KeyValueStateStorage.h"
+#include "minifi-cpp/core/logging/Logger.h"
+#include "core/logging/LoggerFactory.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "minifi-cpp/properties/Configure.h"
+#include "minifi-cpp/core/PropertyValidator.h"
+
+namespace org::apache::nifi::minifi::controllers {
+
+class PersistentMapStateStorage : public KeyValueStateStorage {
+ public:
+  using KeyValueStateStorage::KeyValueStateStorage;
+
+  ~PersistentMapStateStorage() override;
+
+  EXTENSIONAPI static constexpr const char* Description = "A persistable state storage service implemented by a locked std::unordered_map<std::string, std::string> and persisted into a file";
+
+  EXTENSIONAPI static constexpr auto AlwaysPersist = core::PropertyDefinitionBuilder<>::createProperty(ALWAYS_PERSIST_PROPERTY_NAME)
+      .withDescription("Persist every change instead of persisting it periodically.")
+      .isRequired(true)
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("false")
+      .build();
+  EXTENSIONAPI static constexpr auto AutoPersistenceInterval = core::PropertyDefinitionBuilder<>::createProperty(AUTO_PERSISTENCE_INTERVAL_PROPERTY_NAME)
+      .withDescription("The interval of the periodic task persisting all values. Only used if Always Persist is false. If set to 0 seconds, auto persistence will be disabled.")
+      .isRequired(true)
+      .withValidator(core::StandardPropertyValidators::TIME_PERIOD_VALIDATOR)
+      .withDefaultValue("1 min")
+      .build();
+  EXTENSIONAPI static constexpr auto File = core::PropertyDefinitionBuilder<>::createProperty("File")
+      .withDescription("Path to a file to store state")
+      .isRequired(true)
+      .build();
+  EXTENSIONAPI static constexpr auto Properties = std::to_array<core::PropertyReference>({
+      AlwaysPersist,
+      AutoPersistenceInterval,
+      File
+  });
+
+
+  EXTENSIONAPI static constexpr bool SupportsDynamicProperties = false;
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_CONTROLLER_SERVICES
+
+  void onEnable() override;
+  void initialize() override;
+  void notifyStop() override;
+
+  bool set(const std::string& key, const std::string& value) override;
+  bool get(const std::string& key, std::string& value) override;
+  bool get(std::unordered_map<std::string, std::string>& kvs) override;
+  bool remove(const std::string& key) override;
+  bool clear() override;
+  bool update(const std::string& key, const std::function<bool(bool /*exists*/, std::string& /*value*/)>& update_func) override;
+
+  bool persist() override {
+    return persistNonVirtual();
+  }
+
+ private:
+  static constexpr const char* FORMAT_VERSION_KEY = "__UnorderedMapPersistableKeyValueStoreService_FormatVersion";
+  static constexpr int FORMAT_VERSION = 1;
+
+  bool load();
+  bool parseLine(const std::string& line, std::string& key, std::string& value);
+
+  // non-virtual to allow calling in destructor
+  bool persistNonVirtual();
+
+  std::mutex mutex_;
+  std::string file_;
+  InMemoryKeyValueStorage storage_;
+  AutoPersistor auto_persistor_;
+};
+
+}  // namespace org::apache::nifi::minifi::controllers

@@ -1,0 +1,95 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+from abc import ABC, abstractmethod
+
+from minifi_native import OutputStream, ProcessContext, Processor, ProcessSession
+
+from .properties import (
+    ExpressionLanguageScope,
+    MinifiPropertyTypes,
+    PropertyDescriptor,
+    translateStandardValidatorToMiNiFiPropertype,
+)
+from .properties import ProcessContext as ProcessContextProxy
+
+
+class WriteCallback:
+    def __init__(self, content):
+        self.content = content
+
+    def process(self, output_stream: OutputStream):
+        output_stream.write(self.content)
+        return len(self.content)
+
+
+class ProcessorBase(ABC):
+    # These will be added through the python bindings using C API
+    logger = None
+    REL_SUCCESS = None
+    REL_FAILURE = None
+    REL_ORIGINAL = None
+
+    def describe(self, processor: Processor):
+        if hasattr(self, "ProcessorDetails") and hasattr(self.ProcessorDetails, "description"):
+            processor.setDescription(self.ProcessorDetails.description)
+        else:
+            processor.setDescription(self.__class__.__name__)
+
+        if hasattr(self, "ProcessorDetails") and hasattr(self.ProcessorDetails, "version"):
+            processor.setVersion(self.ProcessorDetails.version)
+
+    def onInitialize(self, processor: Processor):
+        get_dynamic_property_descriptor_attr = getattr(self, "getDynamicPropertyDescriptor", None)
+        if get_dynamic_property_descriptor_attr and callable(get_dynamic_property_descriptor_attr):
+            processor.setSupportsDynamicProperties()
+            self.supports_dynamic_properties = True
+        else:
+            self.supports_dynamic_properties = False
+
+        if hasattr(self, "_trigger_serially") and self._trigger_serially:
+            processor.setSingleThreaded()
+
+        for property in self.getPropertyDescriptors():
+            expression_language_supported = property.expressionLanguageScope != ExpressionLanguageScope.NONE
+            property_type_code = translateStandardValidatorToMiNiFiPropertype(property.validators)
+
+            # MiNiFi C++ does not support validators for expression language enabled properties
+            if (
+                expression_language_supported
+                and property_type_code is not None
+                and property_type_code != MinifiPropertyTypes.NON_BLANK_TYPE
+            ):
+                self.logger.warn(
+                    f"Property '{property.name}' has validators defined, but since it also supports Expression Language, the validators will be ignored."
+                )
+                property_type_code = None
+
+            # MiNiFi C++ does not support dependant properties, so if a property depends on another property, it should not be required
+            is_required = bool(property.required and not property.dependencies)
+            processor.addProperty(
+                property.name,
+                property.description,
+                property.defaultValue,
+                is_required,
+                expression_language_supported,
+                property.sensitive,
+                property_type_code,
+                property.allowableValues,
+                property.controllerServiceDefinition,
+            )
+
+    def onScheduled(self, context_proxy: ProcessContextProxy):
+        pass
+
+    def onSchedule(self, context: ProcessContext):
+        context_proxy = ProcessContextProxy(context, self)
+        self.onScheduled(context_proxy)
+
+    @abstractmethod
+    def onTrigger(self, context: ProcessContext, session: ProcessSession):
+        pass
+
+    def getPropertyDescriptors(self) -> list[PropertyDescriptor]:
+        return []

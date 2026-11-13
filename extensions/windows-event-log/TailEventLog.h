@@ -1,68 +1,59 @@
-/**
- * @file TailEventLog.h
- * TailEventLog class declaration
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #pragma once
 
 #include <memory>
 #include <string>
 
-#include "core/Core.h"
-#include "FlowFileRecord.h"
-#include "core/Processor.h"
-#include "core/ProcessSession.h"
+#include <Windows.h>
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace processors {
+#include "core/Core.h"
+#include "minifi-cpp/FlowFileRecord.h"
+#include "core/ProcessorImpl.h"
+#include "core/ProcessSession.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "minifi-cpp/core/RelationshipDefinition.h"
+
+namespace org::apache::nifi::minifi::processors {
 
 #define MAX_RECORD_BUFFER_SIZE 0x10000  // 64k
 const LPCWSTR pEventTypeNames[] = { L"Error", L"Warning", L"Informational", L"Audit Success", L"Audit Failure" };
 const char log_name[255] = "Application";
 
-class TailEventLog : public core::Processor {
+class TailEventLog : public core::ProcessorImpl {
  public:
-  explicit TailEventLog(const std::string& name, const utils::Identifier& uuid = {})
-  : core::Processor(name, uuid), logger_(logging::LoggerFactory<TailEventLog>::getLogger()), max_events_(1) {
-  }
+  using ProcessorImpl::ProcessorImpl;
   virtual ~TailEventLog() = default;
-  static const std::string ProcessorName;
 
-  // Supported Properties
-  static core::Property LogSourceFileName;
-  static core::Property MaxEventsPerFlowFile;
+  EXTENSIONAPI static constexpr const char* Description = "Windows event log reader that functions as a stateful tail of the provided windows event log name";
 
-  // Supported Relationships
-  static core::Relationship Success;
+  EXTENSIONAPI static constexpr auto LogSourceFileName = core::PropertyDefinitionBuilder<>::createProperty("Log Source")
+      .withDescription("Log Source from which to read events")
+      .build();
+  EXTENSIONAPI static constexpr auto MaxEventsPerFlowFile = core::PropertyDefinitionBuilder<>::createProperty("Max Events Per FlowFile")
+      .withDescription("Events per flow file")
+      .withDefaultValue("1")
+      .build();
+  EXTENSIONAPI static constexpr auto Properties = std::to_array<core::PropertyReference>({
+      LogSourceFileName,
+      MaxEventsPerFlowFile
+  });
 
- public:
-  /**
-   * Function that's executed when the processor is scheduled.
-   * @param context process context.
-   * @param sessionFactory process session factory that is used when creating
-   * ProcessSession objects.
-   */
-  void onSchedule(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSessionFactory> &sessionFactory) override;
-  // OnTrigger method, implemented by NiFi TailEventLog
-  void onTrigger(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSession> &session) override;
-  // Initialize, over write by NiFi TailEventLog
+
+  EXTENSIONAPI static constexpr auto Success = core::RelationshipDefinition{"success", "All files, containing log events, are routed to success"};
+  EXTENSIONAPI static constexpr auto Relationships = std::array{Success};
+
+  EXTENSIONAPI static constexpr bool SupportsDynamicProperties = false;
+  EXTENSIONAPI static constexpr bool SupportsDynamicRelationships = false;
+  EXTENSIONAPI static constexpr core::annotation::Input InputRequirement = core::annotation::Input::INPUT_ALLOWED;
+  EXTENSIONAPI static constexpr bool IsSingleThreaded = false;
+
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_PROCESSORS
+
+  void onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& session_factory) override;
+  void onTrigger(core::ProcessContext& context, core::ProcessSession& session) override;
   void initialize(void) override;
 
  protected:
@@ -108,38 +99,14 @@ class TailEventLog : public core::Processor {
     return str.str();
   }
 
-  void LogWindowsError(void) {
-    auto error_id = GetLastError();
-    LPVOID lpMsg;
-
-    FormatMessage(
-      FORMAT_MESSAGE_ALLOCATE_BUFFER |
-      FORMAT_MESSAGE_FROM_SYSTEM,
-      NULL,
-      error_id,
-      MAKELANGID(LANG_NEUTRAL, SUBLANG_DEFAULT),
-      (LPTSTR)&lpMsg,
-      0, NULL);
-
-    logger_->log_debug("Error %d: %s\n", static_cast<int>(error_id), reinterpret_cast<char *>(lpMsg));
-
-    LocalFree(lpMsg);
-  }
-
  private:
   std::mutex log_mutex_;
   std::string log_source_;
-  uint32_t max_events_;
+  uint32_t max_events_ = 1;
   DWORD current_record_;
   DWORD num_records_;
 
   HANDLE log_handle_;
-  // Logger
-  std::shared_ptr<logging::Logger> logger_;
 };
 
-} /* namespace processors */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+}  // namespace org::apache::nifi::minifi::processors

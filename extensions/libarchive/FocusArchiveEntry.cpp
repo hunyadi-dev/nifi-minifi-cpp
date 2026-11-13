@@ -1,89 +1,64 @@
-/**
- * @file FocusArchiveEntry.cpp
- * FocusArchiveEntry class implementation
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #include "FocusArchiveEntry.h"
 
 #include <archive.h>
 #include <archive_entry.h>
 
-#include <string.h>
+#include <cstring>
 
+#include <array>
 #include <string>
-#include <set>
 
 #include <memory>
 
-#include "core/ProcessContext.h"
+#include "minifi-cpp/core/ProcessContext.h"
 #include "core/ProcessSession.h"
 #include "core/Resource.h"
-#include "Exception.h"
-#include "utils/gsl.h"
+#include "minifi-cpp/Exception.h"
+#include "SmartArchivePtrs.h"
+#include "utils/ConfigurationUtils.h"
+#include "minifi-cpp/utils/gsl.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace processors {
+namespace {
+inline constexpr auto BUFFER_SIZE = org::apache::nifi::minifi::utils::configuration::DEFAULT_BUFFER_SIZE;
+}  // namespace
+
+namespace org::apache::nifi::minifi::processors {
 
 std::shared_ptr<utils::IdGenerator> FocusArchiveEntry::id_generator_ = utils::IdGenerator::getIdGenerator();
 
-core::Property FocusArchiveEntry::Path("Path", "The path within the archive to focus (\"/\" to focus the total archive)", "");
-core::Relationship FocusArchiveEntry::Success("success", "success operational on the flow record");
-
 void FocusArchiveEntry::initialize() {
-  //! Set the supported properties
-  std::set<core::Property> properties;
-  properties.insert(Path);
-  setSupportedProperties(properties);
-  //! Set the supported relationships
-  std::set<core::Relationship> relationships;
-  relationships.insert(Success);
-  setSupportedRelationships(relationships);
+  setSupportedProperties(Properties);
+  setSupportedRelationships(Relationships);
 }
 
-void FocusArchiveEntry::onTrigger(core::ProcessContext *context, core::ProcessSession *session) {
-  auto flowFile = session->get();
+void FocusArchiveEntry::onTrigger(core::ProcessContext& context, core::ProcessSession& session) {
+  auto flowFile = session.get();
 
   if (!flowFile) {
     return;
   }
 
-  fileutils::FileManager file_man;
+  utils::file::FileManager file_man;
 
   // Extract archive contents
   ArchiveMetadata archiveMetadata;
-  context->getProperty(Path.getName(), archiveMetadata.focusedEntry);
+  archiveMetadata.focusedEntry = context.getProperty(Path).value_or("");
   flowFile->getAttribute("filename", archiveMetadata.archiveName);
 
-  ReadCallback cb(this, &file_man, &archiveMetadata);
-  session->read(flowFile, &cb);
+  session.read(flowFile, ReadCallback{&context, &file_man, &archiveMetadata});
 
   // For each extracted entry, import & stash to key
   std::string targetEntryStashKey;
-  std::string targetEntry;
 
   for (auto &entryMetadata : archiveMetadata.entryMetadata) {
     if (entryMetadata.entryType == AE_IFREG) {
-      logger_->log_info("FocusArchiveEntry importing %s from %s", entryMetadata.entryName, entryMetadata.tmpFileName);
-      session->import(entryMetadata.tmpFileName, flowFile, false, 0);
+      logger_->log_info("FocusArchiveEntry importing {} from {}", entryMetadata.entryName, entryMetadata.tmpFileName);
+      session.import(entryMetadata.tmpFileName.string(), flowFile, false, 0);
       utils::Identifier stashKeyUuid = id_generator_->generate();
-      logger_->log_debug("FocusArchiveEntry generated stash key %s for entry %s", stashKeyUuid.to_string(), entryMetadata.entryName);
+      logger_->log_debug("FocusArchiveEntry generated stash key {} for entry {}", stashKeyUuid.to_string(), entryMetadata.entryName);
       entryMetadata.stashKey = stashKeyUuid.to_string();
 
       if (entryMetadata.entryName == archiveMetadata.focusedEntry) {
@@ -91,15 +66,15 @@ void FocusArchiveEntry::onTrigger(core::ProcessContext *context, core::ProcessSe
       }
 
       // Stash the content
-      session->stash(entryMetadata.stashKey, flowFile);
+      session.stash(entryMetadata.stashKey, flowFile);
     }
   }
 
   // Restore target archive entry
-  if (targetEntryStashKey != "") {
-    session->restore(targetEntryStashKey, flowFile);
+  if (!targetEntryStashKey.empty()) {
+    session.restore(targetEntryStashKey, flowFile);
   } else {
-    logger_->log_warn("FocusArchiveEntry failed to locate target entry: %s",
+    logger_->log_warn("FocusArchiveEntry failed to locate target entry: {}",
                       archiveMetadata.focusedEntry.c_str());
   }
 
@@ -114,8 +89,8 @@ void FocusArchiveEntry::onTrigger(core::ProcessContext *context, core::ProcessSe
       try {
         archiveStack.loadJsonString(existingLensStack);
       } catch (Exception &exception) {
-        logger_->log_debug(exception.what());
-        context->yield();
+        logger_->log_debug("{}", exception.what());
+        context.yield();
         return;
       }
     }
@@ -134,28 +109,28 @@ void FocusArchiveEntry::onTrigger(core::ProcessContext *context, core::ProcessSe
   flowFile->setAttribute("absolute.path", archiveMetadata.focusedEntry);
 
   // Transfer to the relationship
-  session->transfer(flowFile, Success);
+  session.transfer(flowFile, Success);
 }
 
-typedef struct {
-  std::shared_ptr<io::BaseStream> stream;
-  core::Processor *processor;
-  char buf[8196];
-} FocusArchiveEntryReadData;
+struct FocusArchiveEntryReadData {
+  std::shared_ptr<io::InputStream> stream;
+  core::ProcessContext* context = nullptr;
+  std::array<std::byte, BUFFER_SIZE> buf{};
+};
 
 // Read callback which reads from the flowfile stream
 la_ssize_t FocusArchiveEntry::ReadCallback::read_cb(struct archive * a, void *d, const void **buf) {
   auto data = static_cast<FocusArchiveEntryReadData *>(d);
-  *buf = data->buf;
+  *buf = data->buf.data();
   size_t read = 0;
   size_t last_read = 0;
 
   do {
-    last_read = data->stream->read(reinterpret_cast<uint8_t *>(data->buf), 8196 - read);
+    last_read = data->stream->read(data->buf);
     read += last_read;
-  } while (data->processor->isRunning() && last_read > 0 && !io::isError(last_read) && read < 8196);
+  } while (data->context->isRunning() && last_read > 0 && !io::isError(last_read) && read < BUFFER_SIZE);
 
-  if (!data->processor->isRunning()) {
+  if (!data->context->isRunning()) {
     archive_set_error(a, EINTR, "Processor shut down during read");
     return -1;
   }
@@ -163,46 +138,39 @@ la_ssize_t FocusArchiveEntry::ReadCallback::read_cb(struct archive * a, void *d,
   return gsl::narrow<la_ssize_t>(read);
 }
 
-int64_t FocusArchiveEntry::ReadCallback::process(const std::shared_ptr<io::BaseStream>& stream) {
-  auto inputArchive = archive_read_new();
-  struct archive_entry *entry;
+io::IoResult FocusArchiveEntry::ReadCallback::operator()(const std::shared_ptr<io::InputStream>& stream) const {
+  auto input_archive = processors::archive_read_unique_ptr{archive_read_new()};
+  struct archive_entry *entry = nullptr;
   int64_t nlen = 0;
 
   FocusArchiveEntryReadData data;
   data.stream = stream;
-  data.processor = proc_;
+  data.context = context_;
 
-  archive_read_support_format_all(inputArchive);
-  archive_read_support_filter_all(inputArchive);
+  archive_read_support_format_all(input_archive.get());
+  archive_read_support_filter_all(input_archive.get());
 
   // Read each item in the archive
-  int res;
-
-  if ((res = archive_read_open(inputArchive, &data, ok_cb, read_cb, ok_cb))) {
-    logger_->log_error("FocusArchiveEntry can't open due to archive error: %s", archive_error_string(inputArchive));
-    return nlen;
+  if (archive_read_open(input_archive.get(), &data, ok_cb, read_cb, ok_cb)) {
+    logger_->log_error("FocusArchiveEntry can't open due to archive error: {}", archive_error_string(input_archive.get()));
+    return io::IoResult::zero();
   }
 
-  while (isRunning()) {
-    res = archive_read_next_header(inputArchive, &entry);
+  while (context_->isRunning()) {
+    auto res = archive_read_next_header(input_archive.get(), &entry);
 
     if (res == ARCHIVE_EOF) {
       break;
     }
 
-    if (res < ARCHIVE_OK) {
-      logger_->log_error("FocusArchiveEntry can't read header due to archive error: %s", archive_error_string(inputArchive));
-      return nlen;
-    }
-
-    if (res < ARCHIVE_WARN) {
-      logger_->log_warn("FocusArchiveEntry got archive warning while reading header: %s", archive_error_string(inputArchive));
-      return nlen;
+    if (res < ARCHIVE_OK) {  // TODO(MINIFICPP-2761)
+      logger_->log_error("FocusArchiveEntry can't read header due to archive error: {}", archive_error_string(input_archive.get()));
+      return io::IoResult::from(nlen);
     }
 
     auto entryName = archive_entry_pathname(entry);
-    (*_archiveMetadata).archiveFormatName.assign(archive_format_name(inputArchive));
-    (*_archiveMetadata).archiveFormat = archive_format(inputArchive);
+    _archiveMetadata->archiveFormatName.assign(archive_format_name(input_archive.get()));
+    _archiveMetadata->archiveFormat = archive_format(input_archive.get());
 
     // Record entry metadata
     auto entryType = archive_entry_filetype(entry);
@@ -217,52 +185,41 @@ int64_t FocusArchiveEntry::ReadCallback::process(const std::shared_ptr<io::BaseS
     metadata.entryMTime = archive_entry_mtime(entry);
     metadata.entryMTimeNsec = archive_entry_mtime_nsec(entry);
 
-    logger_->log_info("FocusArchiveEntry entry type of %s is: %d", entryName, metadata.entryType);
-    logger_->log_info("FocusArchiveEntry entry perm of %s is: %d", entryName, metadata.entryPerm);
+    logger_->log_info("FocusArchiveEntry entry type of {} is: {}", entryName, metadata.entryType);
+    logger_->log_info("FocusArchiveEntry entry perm of {} is: {}", entryName, metadata.entryPerm);
 
     // Write content to tmp file
     if (entryType == AE_IFREG) {
       auto tmpFileName = file_man_->unique_file(true);
       metadata.tmpFileName = tmpFileName;
       metadata.entryType = entryType;
-      logger_->log_info("FocusArchiveEntry extracting %s to: %s", entryName, tmpFileName);
+      logger_->log_info("FocusArchiveEntry extracting {} to: {}", entryName, tmpFileName);
 
-      auto fd = fopen(tmpFileName.c_str(), "w");
+      auto fd = fopen(tmpFileName.string().c_str(), "w");
 
       if (archive_entry_size(entry) > 0) {
 #ifdef WIN32
-        nlen += archive_read_data_into_fd(inputArchive, _fileno(fd));
+        nlen += archive_read_data_into_fd(input_archive.get(), _fileno(fd));
 #else
-        nlen += archive_read_data_into_fd(inputArchive, fileno(fd));
+        nlen += archive_read_data_into_fd(input_archive.get(), fileno(fd));
 #endif
       }
 
-      fclose(fd);
+      (void)fclose(fd);
     }
 
-    (*_archiveMetadata).entryMetadata.push_back(metadata);
+    _archiveMetadata->entryMetadata.push_back(metadata);
   }
 
-  archive_read_close(inputArchive);
-  archive_read_free(inputArchive);
-  return nlen;
+  return io::IoResult::from(nlen);
 }
 
-FocusArchiveEntry::ReadCallback::ReadCallback(core::Processor *processor, fileutils::FileManager *file_man, ArchiveMetadata *archiveMetadata)
+FocusArchiveEntry::ReadCallback::ReadCallback(core::ProcessContext* context, utils::file::FileManager *file_man, ArchiveMetadata *archiveMetadata)
     : file_man_(file_man),
-      proc_(processor) {
-  logger_ = logging::LoggerFactory<FocusArchiveEntry>::getLogger();
-  _archiveMetadata = archiveMetadata;
+      context_(context),
+      _archiveMetadata(archiveMetadata) {
 }
 
-FocusArchiveEntry::ReadCallback::~ReadCallback() = default;
+REGISTER_RESOURCE(FocusArchiveEntry, Processor);
 
-REGISTER_RESOURCE(FocusArchiveEntry, "Allows manipulation of entries within an archive (e.g. TAR) by focusing on one entry within the archive at a time. "
-    "When an archive entry is focused, that entry is treated as the content of the FlowFile and may be manipulated independently of the rest of the archive."
-    " To restore the FlowFile to its original state, use UnfocusArchiveEntry.");
-
-} /* namespace processors */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+}  // namespace org::apache::nifi::minifi::processors

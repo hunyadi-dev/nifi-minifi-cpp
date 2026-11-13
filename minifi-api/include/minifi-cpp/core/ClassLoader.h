@@ -1,0 +1,104 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#pragma once
+
+#include <utility>
+#include <mutex>
+#include <vector>
+#include <string>
+#include <map>
+#include <memory>
+
+#include "Core.h"
+#include "ObjectFactory.h"
+#include "ProcessorFactory.h"
+#include "controller/ControllerServiceFactory.h"
+
+namespace org::apache::nifi::minifi::core {
+
+#define RESOURCE_FAILURE -1
+
+#define RESOURCE_SUCCESS 1
+
+#ifdef WIN32
+#define RTLD_LAZY   0
+#define RTLD_NOW    0
+
+#define RTLD_GLOBAL (1 << 1)
+#define RTLD_LOCAL  (1 << 2)
+#endif
+
+/**
+ * Processor class loader that accepts
+ * a variety of mechanisms to load in shared
+ * objects.
+ */
+class ClassLoader {
+ public:
+  static ClassLoader &getDefaultClassLoader();
+
+  virtual ~ClassLoader() = default;
+
+  /**
+   * Retrieves a class loader
+   * @param name name of class loader
+   * @return class loader reference
+   */
+  virtual ClassLoader& getClassLoader(const std::string& child_name) = 0;
+
+  /**
+   * Register a class with the give ProcessorFactory
+   */
+  virtual void registerClass(const std::string &clazz, std::unique_ptr<ObjectFactory> factory) = 0;
+
+  virtual void registerClass(const std::string &clazz, std::unique_ptr<ProcessorFactory> factory) = 0;
+
+  virtual void registerClass(const std::string &clazz, std::unique_ptr<controller::ControllerServiceFactory> factory) = 0;
+
+  virtual void unregisterClass(const std::string& clazz) = 0;
+
+  [[nodiscard]] virtual std::optional<std::string> getModuleForClass(std::string_view class_name) const = 0;
+
+  [[nodiscard]] virtual std::unique_ptr<CoreComponent> instantiate(const std::string &class_name, const std::string &name, std::function<bool(CoreComponent*)> filter) = 0;
+
+  [[nodiscard]] virtual std::unique_ptr<CoreComponent> instantiate(const std::string &class_name, const utils::Identifier &uuid, std::function<bool(CoreComponent*)> filter) = 0;
+
+  [[nodiscard]] virtual std::unique_ptr<CoreComponent> instantiate(
+      const std::string &class_name, const std::string &name, const utils::Identifier &uuid, std::function<bool(CoreComponent*)> filter) = 0;
+
+  [[nodiscard]] virtual gsl::owner<CoreComponent*> instantiateRaw(const std::string &class_name, const std::string &name, std::function<bool(CoreComponent*)> filter) = 0;
+
+  /**
+   * Instantiate object based on class_name
+   * @param class_name class to create
+   * @param uuid uuid of object
+   * @return nullptr or object created from class_name definition.
+   */
+  template<class T = CoreComponent>
+  [[nodiscard]] std::unique_ptr<T> instantiate(const std::string &class_name, const std::string &name);
+
+  /**
+   * Instantiate object based on class_name
+   * @param class_name class to create
+   * @param uuid uuid of object
+   * @return nullptr or object created from class_name definition.
+   */
+  template<class T = CoreComponent>
+  [[nodiscard]] std::unique_ptr<T> instantiate(const std::string &class_name, const utils::Identifier &uuid);
+
+  /**
+   * Instantiate object based on class_name
+   * @param class_name class to create
+   * @param uuid uuid of object
+   * @return nullptr or object created from class_name definition.
+   */
+  template<class T = CoreComponent>
+  [[nodiscard]] gsl::owner<T*> instantiateRaw(const std::string &class_name, const std::string &name);
+
+  template<class T = CoreComponent>
+  [[nodiscard]] std::unique_ptr<T> instantiate(const std::string &class_name, const std::string &name, const utils::Identifier &uuid);
+};
+
+}  // namespace org::apache::nifi::minifi::core

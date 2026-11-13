@@ -1,0 +1,66 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include <atomic>
+#include <memory>
+#include <string>
+#include <vector>
+
+#include "minifi-cpp/core/DynamicPropertyDefinition.h"
+#include "minifi-cpp/utils/Id.h"
+#include "minifi-cpp/core/OutputAttributeDefinition.h"
+#include "minifi-cpp/core/ProcessorMetadata.h"
+#include "FlowFile.h"
+#include "PublishedMetrics.h"
+#include "logging/Logger.h"
+#include "utils/SmallString.h"
+
+namespace org::apache::nifi::minifi::api {
+
+class Connection;
+
+namespace core {
+
+class ProcessContext;
+class ProcessSession;
+class ProcessSessionFactory;
+
+class ProcessorImpl {
+ public:
+  explicit ProcessorImpl(minifi::core::ProcessorMetadata metadata);
+
+  ProcessorImpl(const ProcessorImpl&) = delete;
+  ProcessorImpl(ProcessorImpl&&) = delete;
+  ProcessorImpl& operator=(const ProcessorImpl&) = delete;
+  ProcessorImpl& operator=(ProcessorImpl&&) = delete;
+
+  virtual ~ProcessorImpl();
+
+  minifi_status onTrigger(ProcessContext&, ProcessSession&);
+
+  minifi_status onSchedule(ProcessContext&);
+
+  virtual void onUnSchedule() {}
+
+  static constexpr auto DynamicProperties = std::array<minifi::core::DynamicPropertyDefinition, 0>{};
+
+  static constexpr auto OutputAttributes = std::array<minifi::core::OutputAttributeReference, 0>{};
+
+  [[nodiscard]] std::string getName() const;
+  [[nodiscard]] minifi::utils::Identifier getUUID() const;
+  [[nodiscard]] minifi::utils::SmallString<minifi::utils::Identifier::UUID_STR_LEN> getUUIDStr() const;
+
+ protected:
+  virtual minifi_status onTriggerImpl(ProcessContext&, ProcessSession&) {return MINIFI_STATUS_SUCCESS;}
+
+  virtual minifi_status onScheduleImpl(ProcessContext&) {return MINIFI_STATUS_SUCCESS;}
+
+  minifi::core::ProcessorMetadata metadata_;
+
+  std::shared_ptr<minifi::core::logging::Logger> logger_;
+};
+
+}  // namespace core
+}  // namespace org::apache::nifi::minifi::api

@@ -1,22 +1,6 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-
-#undef NDEBUG
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #include <chrono>
 #include <map>
 #include <memory>
@@ -26,14 +10,16 @@
 #include "core/Core.h"
 #include "core/repository/AtomicRepoEntries.h"
 #include "core/RepositoryFactory.h"
-#include "FlowFileRecord.h"
-#include "provenance/Provenance.h"
 #include "properties/Configure.h"
-#include "../unit/ProvenanceTestHelper.h"
-#include "../TestBase.h"
-#include "YamlConfiguration.h"
+#include "unit/ProvenanceTestHelper.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
 #include "CustomProcessors.h"
-#include "TestControllerWithFlow.h"
+#include "unit/TestControllerWithFlow.h"
+#include "unit/EmptyFlow.h"
+#include "unit/TestUtils.h"
+
+using namespace std::literals::chrono_literals;
 
 const char* yamlConfig =
     R"(
@@ -79,26 +65,15 @@ Connections:
 Remote Processing Groups:
 
 Controller Services:
-  - name: defaultstatemanagerprovider
+  - name: defaultstatestorage
     id: 2438e3c8-015a-1000-79ca-83af40ec1995
-    class: UnorderedMapPersistableKeyValueStoreService
+    class: PersistentMapStateStorage
     Properties:
       Auto Persistence Interval:
           - value: 0 sec
       File:
           - value: flowcontrollertests_state.txt
 )";
-
-template<typename Fn>
-bool verifyWithBusyWait(std::chrono::milliseconds timeout, Fn&& fn) {
-  auto start = std::chrono::steady_clock::now();
-  while (std::chrono::steady_clock::now() - start < timeout) {
-    if (fn()) {
-      return true;
-    }
-  }
-  return false;
-}
 
 TEST_CASE("Flow shutdown drains connections", "[TestFlow1]") {
   TestControllerWithFlow testController(yamlConfig);
@@ -107,11 +82,12 @@ TEST_CASE("Flow shutdown drains connections", "[TestFlow1]") {
 
   testController.configuration_->set(minifi::Configure::nifi_flowcontroller_drain_timeout, "100 ms");
 
-  auto sinkProc = std::static_pointer_cast<minifi::processors::TestProcessor>(root->findProcessorByName("TestProcessor"));
+  TypedProcessorWrapper<minifi::processors::TestProcessor> sinkProc = root->findProcessorByName("TestProcessor");
+  gsl_Assert(sinkProc);
   // prevent execution of the consumer processor
-  sinkProc->yield(10000);
+  sinkProc->yield(10s);
 
-  std::map<std::string, std::shared_ptr<minifi::Connection>> connectionMap;
+  std::map<std::string, minifi::Connection*> connectionMap;
 
   root->getConnections(connectionMap);
   // adds the single connection to the map both by name and id
@@ -128,7 +104,7 @@ TEST_CASE("Flow shutdown drains connections", "[TestFlow1]") {
 
   controller->stop();
 
-  REQUIRE(sinkProc->trigger_count == 0);
+  REQUIRE(sinkProc.get().trigger_count == 0);
 
   for (auto& it : connectionMap) {
     REQUIRE(it.second->isEmpty());
@@ -142,12 +118,12 @@ TEST_CASE("Flow shutdown waits for a while", "[TestFlow2]") {
 
   testController.configuration_->set(minifi::Configure::nifi_flowcontroller_drain_timeout, "10 s");
 
-  auto sourceProc = std::static_pointer_cast<minifi::processors::TestFlowFileGenerator>(root->findProcessorByName("Generator"));
-  auto sinkProc = std::static_pointer_cast<minifi::processors::TestProcessor>(root->findProcessorByName("TestProcessor"));
+  TypedProcessorWrapper<minifi::processors::TestFlowFileGenerator> sourceProc = root->findProcessorByName("Generator");
+  TypedProcessorWrapper<minifi::processors::TestProcessor> sinkProc = root->findProcessorByName("TestProcessor");
 
   std::promise<void> execSinkPromise;
   std::future<void> execSinkFuture = execSinkPromise.get_future();
-  sinkProc->onTriggerCb_ = [&] {
+  sinkProc.get().onTriggerCb_ = [&] {
     execSinkFuture.wait();
   };
 
@@ -155,15 +131,15 @@ TEST_CASE("Flow shutdown waits for a while", "[TestFlow2]") {
 
   // wait for the source processor to enqueue its flowFiles
   auto flowFilesEnqueued = [&] { return root->getTotalFlowFileCount() >= 3; };
-  REQUIRE(verifyWithBusyWait(std::chrono::milliseconds{500}, flowFilesEnqueued));
+  REQUIRE(minifi::test::utils::verifyEventHappenedInPollTime(500ms, flowFilesEnqueued));
 
-  REQUIRE(sourceProc->trigger_count.load() >= 1);
+  REQUIRE(sourceProc.get().trigger_count.load() >= 1);
 
   execSinkPromise.set_value();
   controller->stop();
 
-  REQUIRE(sourceProc->trigger_count.load() >= 1);
-  REQUIRE(sinkProc->trigger_count.load() >= 3);
+  REQUIRE(sourceProc.get().trigger_count.load() >= 1);
+  REQUIRE(sinkProc.get().trigger_count.load() >= 3);
 }
 
 TEST_CASE("Flow stopped after grace period", "[TestFlow3]") {
@@ -173,12 +149,12 @@ TEST_CASE("Flow stopped after grace period", "[TestFlow3]") {
 
   testController.configuration_->set(minifi::Configure::nifi_flowcontroller_drain_timeout, "1000 ms");
 
-  auto sourceProc = std::static_pointer_cast<minifi::processors::TestFlowFileGenerator>(root->findProcessorByName("Generator"));
-  auto sinkProc = std::static_pointer_cast<minifi::processors::TestProcessor>(root->findProcessorByName("TestProcessor"));
+  TypedProcessorWrapper<minifi::processors::TestFlowFileGenerator> sourceProc = root->findProcessorByName("Generator");
+  TypedProcessorWrapper<minifi::processors::TestProcessor> sinkProc = root->findProcessorByName("TestProcessor");
 
   std::promise<void> execSinkPromise;
   std::future<void> execSinkFuture = execSinkPromise.get_future();
-  sinkProc->onTriggerCb_ = [&]{
+  sinkProc.get().onTriggerCb_ = [&]{
     execSinkFuture.wait();
     static std::atomic<bool> first_onTrigger{true};
     bool isFirst = true;
@@ -192,15 +168,15 @@ TEST_CASE("Flow stopped after grace period", "[TestFlow3]") {
 
   // wait for the source processor to enqueue its flowFiles
   auto flowFilesEnqueued = [&] { return root->getTotalFlowFileCount() >= 3; };
-  REQUIRE(verifyWithBusyWait(std::chrono::milliseconds{500}, flowFilesEnqueued));
+  REQUIRE(minifi::test::utils::verifyEventHappenedInPollTime(500ms, flowFilesEnqueued));
 
-  REQUIRE(sourceProc->trigger_count.load() >= 1);
+  REQUIRE(sourceProc.get().trigger_count.load() >= 1);
 
   execSinkPromise.set_value();
   controller->stop();
 
-  REQUIRE(sourceProc->trigger_count.load() >= 1);
-  REQUIRE(sinkProc->trigger_count.load() >= 1);
+  REQUIRE(sourceProc.get().trigger_count.load() >= 1);
+  REQUIRE(sinkProc.get().trigger_count.load() >= 1);
 }
 
 TEST_CASE("Extend the waiting period during shutdown", "[TestFlow4]") {
@@ -208,16 +184,16 @@ TEST_CASE("Extend the waiting period during shutdown", "[TestFlow4]") {
   auto controller = testController.controller_;
   auto root = testController.root_;
 
-  unsigned int timeout_ms = 1000;
+  std::chrono::milliseconds timeout_ms = 1000ms;
 
-  testController.configuration_->set(minifi::Configure::nifi_flowcontroller_drain_timeout, std::to_string(timeout_ms) + " ms");
+  testController.configuration_->set(minifi::Configure::nifi_flowcontroller_drain_timeout, fmt::format("{}", timeout_ms));
 
-  auto sourceProc = std::static_pointer_cast<minifi::processors::TestFlowFileGenerator>(root->findProcessorByName("Generator"));
-  auto sinkProc = std::static_pointer_cast<minifi::processors::TestProcessor>(root->findProcessorByName("TestProcessor"));
+  TypedProcessorWrapper<minifi::processors::TestFlowFileGenerator> sourceProc = root->findProcessorByName("Generator");
+  TypedProcessorWrapper<minifi::processors::TestProcessor> sinkProc = root->findProcessorByName("TestProcessor");
 
   std::promise<void> execSinkPromise;
   std::future<void> execSinkFuture = execSinkPromise.get_future();
-  sinkProc->onTriggerCb_ = [&]{
+  sinkProc.get().onTriggerCb_ = [&]{
     execSinkFuture.wait();
     static std::atomic<bool> first_onTrigger{true};
     bool isFirst = true;
@@ -231,9 +207,9 @@ TEST_CASE("Extend the waiting period during shutdown", "[TestFlow4]") {
 
   // wait for the source processor to enqueue its flowFiles
   auto flowFilesEnqueued = [&] { return root->getTotalFlowFileCount() >= 3; };
-  REQUIRE(verifyWithBusyWait(std::chrono::milliseconds{500}, flowFilesEnqueued));
+  REQUIRE(minifi::test::utils::verifyEventHappenedInPollTime(500ms, flowFilesEnqueued));
 
-  REQUIRE(sourceProc->trigger_count.load() >= 1);
+  REQUIRE(sourceProc.get().trigger_count.load() >= 1);
 
   std::thread shutdownThread([&]{
     execSinkPromise.set_value();
@@ -245,10 +221,10 @@ TEST_CASE("Extend the waiting period during shutdown", "[TestFlow4]") {
 
   std::this_thread::sleep_for(std::chrono::milliseconds{500});
   while (shutdownDuration() < std::chrono::milliseconds(5000) && controller->isRunning()) {
-    timeout_ms += 500;
-    testController.getLogger()->log_info("Controller still running after %u ms, extending the waiting period to %u ms, ff count: %u",
-        static_cast<unsigned int>(shutdownDuration().count()), timeout_ms, static_cast<unsigned int>(root->getTotalFlowFileCount()));
-    testController.configuration_->set(minifi::Configure::nifi_flowcontroller_drain_timeout, std::to_string(timeout_ms) + " ms");
+    timeout_ms += 500ms;
+    testController.getLogger()->log_info("Controller still running after {}, extending the waiting period to {}, ff count: {}",
+        shutdownDuration(), timeout_ms, static_cast<unsigned int>(root->getTotalFlowFileCount()));
+    testController.configuration_->set(minifi::Configure::nifi_flowcontroller_drain_timeout, fmt::format("{}", timeout_ms));
     std::this_thread::sleep_for(std::chrono::milliseconds{500});
   }
 
@@ -257,6 +233,40 @@ TEST_CASE("Extend the waiting period during shutdown", "[TestFlow4]") {
 
   shutdownThread.join();
 
-  REQUIRE(sourceProc->trigger_count.load() >= 1);
-  REQUIRE(sinkProc->trigger_count.load() >= 3);
+  REQUIRE(sourceProc.get().trigger_count.load() >= 1);
+  REQUIRE(sinkProc.get().trigger_count.load() >= 3);
+}
+
+TEST_CASE("FlowController destructor releases resources", "[TestFlow5]") {
+  TestControllerWithFlow controller(R"(
+Flow Controller:
+  name: Banana Bread
+Processors:
+- name: GenFF
+  id: 00000000-0000-0000-0000-000000000001
+  class: GenerateFlowFile
+  scheduling strategy: TIMER_DRIVEN
+  scheduling period: 10 sec
+Connections: []
+Remote Processing Groups: []
+Controller Services: []
+)");
+
+  controller.startFlow();
+
+  REQUIRE(LogTestController::getInstance().countOccurrences("Creating scheduling agent") == 3);
+  LogTestController::getInstance().clear();
+
+  bool update_successful = controller.controller_->applyConfiguration("/flows/1", empty_flow).has_value();
+  REQUIRE(update_successful);
+
+  REQUIRE(LogTestController::getInstance().countOccurrences("Creating scheduling agent") == 3);
+  REQUIRE(LogTestController::getInstance().countOccurrences("Destroying scheduling agent") == 3);
+  LogTestController::getInstance().clear();
+
+  // manually destroy the controller
+  controller.controller_.reset();
+
+  REQUIRE(minifi::test::utils::verifyLogLinePresenceInPollTime(0s, "Destroying FlowController"));
+  REQUIRE(LogTestController::getInstance().countOccurrences("Destroying scheduling agent") == 3);
 }

@@ -1,0 +1,16 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+sources:
+  "4.1.4":
+    url: "https://github.com/SOCI/soci/archive/v4.1.4.tar.gz"
+    sha256: "144f017cccc2e2d806badb3313d6ab3c67a1925bccaa747a46fb3907108a615d"
+patches:
+  "4.1.4":
+    - patch_file: "patches/disable-sqlwchar-support.patch"
+      patch_description: "Disable SQLWCHAR support for iODBC"
+      patch_type: "portability"
+    - patch_file: "patches/odbc-get-parameter-name-bounds-safe.patch"
+      patch_description: "Return empty name for positional use elements instead of throwing (fixes out_of_range on execute with positional binds)"
+      patch_type: "portability"

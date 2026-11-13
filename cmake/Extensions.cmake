@@ -1,97 +1,179 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 
 define_property(GLOBAL PROPERTY EXTENSION-OPTIONS
-  BRIEF_DOCS "Global extension list"
-  FULL_DOCS "Global extension list")
+    BRIEF_DOCS "Global extension list"
+    FULL_DOCS "Global extension list")
 
 set_property(GLOBAL PROPERTY EXTENSION-OPTIONS "")
 
-macro(register_extension extension-name)
-  get_property(extensions GLOBAL PROPERTY EXTENSION-OPTIONS)
-  set_property(GLOBAL APPEND PROPERTY EXTENSION-OPTIONS ${extension-name})
-  target_compile_definitions(${extension-name} PRIVATE "MODULE_NAME=${extension-name}")
-  set_target_properties(${extension-name} PROPERTIES
-          ENABLE_EXPORTS True
-          POSITION_INDEPENDENT_CODE ON)
-  if (WIN32)
-    set_target_properties(${extension-name} PROPERTIES
-        RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-        ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
-        WINDOWS_EXPORT_ALL_SYMBOLS TRUE)
-  else()
-    set_target_properties(${extension-name} PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
-  endif()
-
-  if (WIN32)
-    install(TARGETS ${extension-name} RUNTIME DESTINATION extensions COMPONENT bin)
-  else()
-    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
-      target_link_options(${extension-name} PRIVATE "-Wl,--disable-new-dtags")
+macro(register_extension extension-name extension-display-name extension-guard description)
+    set(${extension-guard} ${extension-name} PARENT_SCOPE)
+    get_property(extensions GLOBAL PROPERTY EXTENSION-OPTIONS)
+    set_property(GLOBAL APPEND PROPERTY EXTENSION-OPTIONS ${extension-name})
+    get_target_property(has_custom_initializer ${extension-name} HAS_CUSTOM_INITIALIZER)
+    if (NOT has_custom_initializer)
+        target_sources(${extension-name} PRIVATE ${CMAKE_SOURCE_DIR}/extensions/ExtensionInitializer.cpp)
     endif()
-    set_target_properties(${extension-name} PROPERTIES INSTALL_RPATH "$ORIGIN")
-    install(TARGETS ${extension-name} LIBRARY DESTINATION extensions COMPONENT bin)
-  endif()
+    target_compile_definitions(${extension-name}
+        PRIVATE "MODULE_NAME=${extension-name}")
+    target_compile_definitions(${extension-name}
+        PRIVATE "MINIFI_EXTENSION_GROUP_NAME=org.apache.nifi.minifi")
+    set_target_properties(${extension-name} PROPERTIES
+        ENABLE_EXPORTS True
+        POSITION_INDEPENDENT_CODE ON)
+    if(WIN32)
+        set_target_properties(${extension-name} PROPERTIES
+            RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+            ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+            WINDOWS_EXPORT_ALL_SYMBOLS TRUE)
+    else()
+        set_target_properties(${extension-name} PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    endif()
+
+    if (${ARGC} GREATER 5)
+        set(ARG_FLAGS ${ARGV5})
+    endif()
+
+    if (NOT "CI_ONLY_INSTALL" IN_LIST ARG_FLAGS OR CI_BUILD)
+        get_component_name(${extension-name} component-name)
+
+        if(WIN32)
+            install(TARGETS ${extension-name} RUNTIME DESTINATION extensions COMPONENT ${component-name})
+        else()
+            if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" AND NOT APPLE)
+                target_link_options(${extension-name} PRIVATE "-Wl,--disable-new-dtags")
+            endif()
+            if (APPLE)
+                set_target_properties(${extension-name} PROPERTIES INSTALL_RPATH "@loader_path")
+            else()
+                set_target_properties(${extension-name} PROPERTIES INSTALL_RPATH "$ORIGIN")
+            endif()
+            if (MINIFI_PACKAGING_TYPE STREQUAL "RPM")
+                install(TARGETS ${extension-name}
+                        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}/extensions/
+                        COMPONENT ${component-name})
+                set(RPM_EXPECTED_EXTENSION_LIST ${RPM_EXPECTED_EXTENSION_LIST} /usr/${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}/extensions/lib${extension-name}.so)
+                set(RPM_EXPECTED_EXTENSION_LIST ${RPM_EXPECTED_EXTENSION_LIST} PARENT_SCOPE)
+            elseif (MINIFI_PACKAGING_TYPE STREQUAL "TGZ")
+                install(TARGETS ${extension-name} LIBRARY DESTINATION extensions COMPONENT ${component-name})
+            else()
+                message(FATAL_ERROR "Invalid MINIFI_PACKAGING_TYPE")
+            endif()
+        endif()
+    endif()
+
+    ADD_FEATURE_INFO("${extension-display-name}" ${extension-guard} "${description}")
+    mark_as_advanced(${extension-guard})
+    # check for test directory
+    if(${ARGC} GREATER 4 AND NOT "${ARGV4}" STREQUAL "")
+        register_extension_test(${ARGV4})
+    endif()
+endmacro()
+
+macro(register_c_api_extension extension-name extension-display-name extension-guard description)
+    set(${extension-guard} ${extension-name} PARENT_SCOPE)
+    get_property(extensions GLOBAL PROPERTY EXTENSION-OPTIONS)
+    set_property(GLOBAL APPEND PROPERTY EXTENSION-OPTIONS ${extension-name})
+    target_compile_definitions(${extension-name}
+            PRIVATE "EXTENSION_NAME=${extension-name}" "EXTENSION_VERSION=${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}" "MINIFI_EXTENSION_GROUP_NAME=org.apache.nifi.minifi")
+    set_target_properties(${extension-name} PROPERTIES
+            ENABLE_EXPORTS True
+            POSITION_INDEPENDENT_CODE ON)
+    if(WIN32)
+        set_target_properties(${extension-name} PROPERTIES
+                RUNTIME_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+                ARCHIVE_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin"
+                WINDOWS_EXPORT_ALL_SYMBOLS TRUE)
+    else()
+        set_target_properties(${extension-name} PROPERTIES LIBRARY_OUTPUT_DIRECTORY "${CMAKE_BINARY_DIR}/bin")
+    endif()
+
+    if (${ARGC} GREATER 5)
+        set(ARG_FLAGS ${ARGV5})
+    endif()
+
+    if (NOT "CI_ONLY_INSTALL" IN_LIST ARG_FLAGS OR CI_BUILD)
+        get_component_name(${extension-name} component-name)
+
+        if(WIN32)
+            install(TARGETS ${extension-name} RUNTIME DESTINATION extensions COMPONENT ${component-name})
+        else()
+            if("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU" AND NOT APPLE)
+                target_link_options(${extension-name} PRIVATE "-Wl,--disable-new-dtags")
+            endif()
+            if (APPLE)
+                set_target_properties(${extension-name} PROPERTIES INSTALL_RPATH "@loader_path")
+            else()
+                set_target_properties(${extension-name} PROPERTIES INSTALL_RPATH "$ORIGIN")
+            endif()
+            if (MINIFI_PACKAGING_TYPE STREQUAL "RPM")
+                install(TARGETS ${extension-name}
+                        LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}/extensions/
+                        COMPONENT ${component-name})
+                set(RPM_EXPECTED_EXTENSION_LIST ${RPM_EXPECTED_EXTENSION_LIST} /usr/${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}/extensions/lib${extension-name}.so)
+                set(RPM_EXPECTED_EXTENSION_LIST ${RPM_EXPECTED_EXTENSION_LIST} PARENT_SCOPE)
+            elseif (MINIFI_PACKAGING_TYPE STREQUAL "TGZ")
+                install(TARGETS ${extension-name} LIBRARY DESTINATION extensions COMPONENT ${component-name})
+            else()
+                message(FATAL_ERROR "Invalid MINIFI_PACKAGING_TYPE")
+            endif()
+        endif()
+    endif()
+
+    ADD_FEATURE_INFO("${extension-display-name}" ${extension-guard} "${description}")
+    mark_as_advanced(${extension-guard})
+    # check for test directory
+    if(${ARGC} GREATER 4 AND NOT "${ARGV4}" STREQUAL "")
+        register_extension_test(${ARGV4})
+    endif()
+endmacro()
+
+macro(register_rust_extension crate-name extension-display-name extension-guard description)
+    set_property(GLOBAL APPEND PROPERTY EXTENSION-OPTIONS ${crate-name})
+    get_component_name(${crate-name} component-name)
+
+    if(WIN32)
+        install(IMPORTED_RUNTIME_ARTIFACTS ${crate-name}-shared
+                RUNTIME DESTINATION extensions
+                COMPONENT ${component-name})
+    elseif (MINIFI_PACKAGING_TYPE STREQUAL "RPM")
+        install(IMPORTED_RUNTIME_ARTIFACTS ${crate-name}-shared
+                LIBRARY DESTINATION ${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}/extensions/
+                COMPONENT ${component-name})
+        set(RPM_EXPECTED_EXTENSION_LIST ${RPM_EXPECTED_EXTENSION_LIST} /usr/${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}/extensions/lib${crate-name}.so)
+        set(RPM_EXPECTED_EXTENSION_LIST ${RPM_EXPECTED_EXTENSION_LIST} PARENT_SCOPE)
+    elseif (MINIFI_PACKAGING_TYPE STREQUAL "TGZ")
+        install(IMPORTED_RUNTIME_ARTIFACTS ${crate-name}-shared
+                LIBRARY DESTINATION extensions
+                COMPONENT ${component-name})
+    else()
+        message(FATAL_ERROR "Invalid MINIFI_PACKAGING_TYPE")
+    endif()
+
+    ADD_FEATURE_INFO("${extension-display-name}" ${extension-guard} "${description}")
 endmacro()
 
 ### TESTING MACROS
 
 define_property(GLOBAL PROPERTY EXTENSION-TESTS
-  BRIEF_DOCS "Global extension tests"
-  FULL_DOCS "Global extension tests")
+    BRIEF_DOCS "Global extension tests"
+    FULL_DOCS "Global extension tests")
 
 set_property(GLOBAL PROPERTY EXTENSION-TESTS "")
 
 macro(register_extension_test extension-dir)
-  if (NOT SKIP_TESTS)
-    get_property(extensions GLOBAL PROPERTY EXTENSION-TESTS)
-    set_property(GLOBAL APPEND PROPERTY EXTENSION-TESTS "${extension-dir}")
-  endif()
-endmacro()
-
-function(registerTest dirName)
-  if (NOT SKIP_TESTS)
-    add_subdirectory(${dirName})
-  endif()
-endfunction(registerTest)
-
-### FUNCTION TO CREATE AN EXTENSION
-
-function(createExtension extensionGuard extensionName description dirName)
-  add_subdirectory(${dirName})
-  ADD_FEATURE_INFO("${extensionName}" ${extensionGuard} "${description}")
-  mark_as_advanced(${extensionGuard})
-  if (ARGV4)
-    register_extension_test(${ARGV4})
-  endif(ARGV4)
-  if (ARGV5 AND ARGV6)
-    if (${ARGV5})
-      add_subdirectory(${ARGV6})
+    if(NOT SKIP_TESTS)
+        get_property(extensions GLOBAL PROPERTY EXTENSION-TESTS)
+        set_property(GLOBAL APPEND PROPERTY EXTENSION-TESTS "${extension-dir}")
     endif()
-  endif()
-endfunction()
-
-
-macro(register_extension_linter target-name)
-  if (ENABLE_LINTER)
-    get_property(extensions GLOBAL PROPERTY EXTENSION-LINTERS)
-    set_property(GLOBAL APPEND PROPERTY EXTENSION-LINTERS "${target-name}")
-    add_custom_target(${target-name}
-    COMMAND python ${CMAKE_SOURCE_DIR}/thirdparty/google-styleguide/run_linter.py -q -i ${CMAKE_CURRENT_LIST_DIR}/)
-  endif()
 endmacro()
+
+function(get_component_name extension-name output)
+    # component names can only contain [a-zA-Z_]
+    string(REPLACE "-" "_" result ${extension-name})
+    string(REPLACE "minifi_" "" result "${result}")
+    set("${output}" "${result}" PARENT_SCOPE)
+endfunction()

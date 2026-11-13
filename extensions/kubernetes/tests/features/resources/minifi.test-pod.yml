@@ -1,0 +1,37 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+apiVersion: v1
+kind: Pod
+metadata:
+  namespace: daemon
+  name: minifi
+spec:
+  securityContext:
+    runAsUser: 0
+  containers:
+  - name: minifi
+    image: apacheminificpp:docker_test
+    imagePullPolicy: Never
+    securityContext:
+      allowPrivilegeEscalation: false
+    volumeMounts:
+    - name: var-log-pods
+      mountPath: /var/log/pods
+      readOnly: true
+    - name: minifi-conf
+      mountPath: /opt/minifi/minifi-current/conf
+      readOnly: false
+    - name: tmp-output
+      mountPath: /tmp/output
+  volumes:
+  - name: var-log-pods
+    hostPath:
+      path: /var/log/pods
+  - name: minifi-conf
+    hostPath:
+      path: /tmp/minifi_conf
+  - name: tmp-output
+    hostPath:
+      path: /tmp/output

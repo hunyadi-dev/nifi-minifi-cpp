@@ -1,0 +1,143 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include <memory>
+#include <optional>
+#include <string>
+#include <utility>
+#include <vector>
+
+#include "core/ProcessGroup.h"
+#include "FlowController.h"
+#include "properties/Configure.h"
+#include "utils/file/AssetManager.h"
+#include "utils/file/FileUtils.h"
+#include "core/BulletinStore.h"
+#include "unit/TestBase.h"
+#include "unit/TestUtils.h"
+
+namespace minifi = org::apache::nifi::minifi;
+namespace core = minifi::core;
+namespace utils = minifi::utils;
+
+namespace org::apache::nifi::minifi::test {
+
+struct FlowConfigPath {
+  std::unique_ptr<TempDirectory> temp_dir;
+  std::optional<std::filesystem::path> config_path;
+};
+
+class IntegrationBase {
+ public:
+  static constexpr auto DefaultWaitTime = 10s;
+
+  explicit IntegrationBase(const std::optional<std::filesystem::path>& test_file_location = {}, const std::optional<std::filesystem::path>& home_path = {},
+      std::chrono::milliseconds waitTime = DefaultWaitTime);
+  IntegrationBase(const IntegrationBase&) = delete;
+  IntegrationBase(IntegrationBase&& other) noexcept
+      : logger_properties_{std::move(other.logger_properties_)},
+        configuration{std::move(other.configuration)},
+        flowController_{std::move(other.flowController_)},
+        wait_time_{other.wait_time_},
+        port{std::move(other.port)},
+        scheme{std::move(other.scheme)},
+        key_dir{std::move(other.key_dir)},
+        state_dir{std::move(other.state_dir)},
+        restart_requested_count_{other.restart_requested_count_.load()},
+        shutdown_requested_count_{other.shutdown_requested_count_.load()},
+        last_shutdown_exit_code_{other.last_shutdown_exit_code_.load()},
+        home_path_{std::move(other.home_path_)},
+        flow_config_path_{std::move(other.flow_config_path_)}
+  {}
+  IntegrationBase& operator=(const IntegrationBase&) = delete;
+  IntegrationBase& operator=(IntegrationBase&& other) noexcept {
+    if (&other == this) return *this;
+    logger_properties_ = std::move(other.logger_properties_);
+    configuration = std::move(other.configuration);
+    flowController_ = std::move(other.flowController_);
+    wait_time_ = other.wait_time_;
+    port = std::move(other.port);
+    scheme = std::move(other.scheme);
+    key_dir = std::move(other.key_dir);
+    state_dir = std::move(other.state_dir);
+    restart_requested_count_ = other.restart_requested_count_.load();
+    shutdown_requested_count_ = other.shutdown_requested_count_.load();
+    last_shutdown_exit_code_ = other.last_shutdown_exit_code_.load();
+    home_path_ = std::move(other.home_path_);
+    flow_config_path_ = std::move(other.flow_config_path_);
+    return *this;
+  }
+  virtual ~IntegrationBase() = default;
+
+  virtual void run();
+
+  void setKeyDir(const std::filesystem::path& key_dir) {
+    this->key_dir = key_dir;
+    configureSecurity();
+  }
+
+  virtual void testSetup() = 0;
+
+  virtual void shutdownBeforeFlowController() {
+  }
+
+  const std::shared_ptr<minifi::Configure>& getConfiguration() const {
+    return configuration;
+  }
+
+  const std::shared_ptr<core::logging::LoggerProperties>& getLoggerProperties() const {
+    return logger_properties_;
+  }
+
+  void setConfiguration(std::shared_ptr<minifi::Configure> configuration) {
+    this->configuration = std::move(configuration);
+  }
+
+  virtual void cleanup() {
+    if (!state_dir.empty()) {
+      minifi::utils::file::delete_dir(state_dir);
+    }
+  }
+
+  virtual void runAssertions() = 0;
+
+  std::optional<std::filesystem::path> getFlowConfigPath() const {
+    return flow_config_path_.config_path;
+  }
+
+ protected:
+  virtual void configureC2() {
+  }
+
+  virtual void queryRootProcessGroup(std::shared_ptr<core::ProcessGroup> /*pg*/) {
+  }
+
+  virtual void configureFullHeartbeat() {
+  }
+
+  virtual void updateProperties(minifi::FlowController& /*fc*/) {
+  }
+
+  void configureSecurity();
+  std::shared_ptr<core::logging::LoggerProperties> logger_properties_;
+  std::shared_ptr<minifi::Configure> configuration;
+  std::unique_ptr<minifi::utils::file::AssetManager> asset_manager_;
+  std::unique_ptr<core::BulletinStore> bulletin_store_;
+  std::unique_ptr<minifi::state::response::ResponseNodeLoader> response_node_loader_;
+  std::unique_ptr<minifi::FlowController> flowController_;
+  std::chrono::milliseconds wait_time_;
+  std::string port, scheme;
+  std::filesystem::path key_dir;
+  std::filesystem::path state_dir;
+  std::atomic<int> restart_requested_count_{0};
+  std::atomic<int> shutdown_requested_count_{0};
+  std::atomic<int32_t> last_shutdown_exit_code_{0};
+  std::optional<std::filesystem::path> home_path_;
+  FlowConfigPath flow_config_path_;
+};
+
+std::string parseUrl(std::string url);
+
+}  // namespace org::apache::nifi::minifi::test

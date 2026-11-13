@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#include "../PostElasticsearch.h"
+#include "../ElasticsearchCredentialsControllerService.h"
+#include "MockElastic.h"
+#include "unit/SingleProcessorTestController.h"
+#include "unit/Catch.h"
+#include "minifi-cpp/core/FlowFile.h"
+#include "unit/TestUtils.h"
+
+namespace org::apache::nifi::minifi::extensions::elasticsearch::test {
+
+TEST_CASE("PostElasticsearch", "[elastic]") {
+  MockElastic mock_elastic("10433");
+  minifi::test::SingleProcessorTestController test_controller{minifi::test::utils::make_processor<PostElasticsearch>("PostElasticsearch")};
+  auto post_elasticsearch_json = test_controller.getProcessor();
+  auto elasticsearch_credentials_controller_service = test_controller.plan->addController("ElasticsearchCredentialsControllerService", "elasticsearch_credentials_controller_service");
+  CHECK(test_controller.plan->setProperty(post_elasticsearch_json,
+                                     PostElasticsearch::ElasticCredentials,
+                                     "elasticsearch_credentials_controller_service"));
+  CHECK(test_controller.plan->setProperty(post_elasticsearch_json,
+                                    PostElasticsearch::Hosts,
+                                    "localhost:10433"));
+  CHECK(test_controller.plan->setProperty(post_elasticsearch_json,
+                                    PostElasticsearch::Action,
+                                    "${elastic_action}"));
+  CHECK(test_controller.plan->setProperty(post_elasticsearch_json,
+                                    PostElasticsearch::Index,
+                                    "test_index"));
+
+  SECTION("Index with valid basic authentication") {
+    CHECK(test_controller.plan->setProperty(elasticsearch_credentials_controller_service,
+                                            ElasticsearchCredentialsControllerService::Username,
+                                            MockElasticAuthHandler::USERNAME));
+    CHECK(test_controller.plan->setProperty(elasticsearch_credentials_controller_service,
+                                            ElasticsearchCredentialsControllerService::Password,
+                                            MockElasticAuthHandler::PASSWORD));
+
+    auto results = test_controller.trigger({{R"({"field1":"value1"}")", {{"elastic_action", "index"}}},
+                                            {R"({"field1":"value2"}")", {{"elastic_action", "index"}}}});
+    REQUIRE(results[PostElasticsearch::Success].size() == 2);
+    for (const auto& result : results[PostElasticsearch::Success]) {
+      auto attributes = result->getAttributes();
+      CHECK(attributes.contains("elasticsearch.index._id"));
+      CHECK(attributes.contains("elasticsearch.index._index"));
+    }
+  }
+
+  SECTION("Update with valid ApiKey") {
+    CHECK(test_controller.plan->setProperty(elasticsearch_credentials_controller_service,
+                                            ElasticsearchCredentialsControllerService::ApiKey,
+                                            MockElasticAuthHandler::API_KEY));
+    CHECK(test_controller.plan->setProperty(post_elasticsearch_json,
+                                            PostElasticsearch::Identifier,
+                                            "${filename}"));
+
+    auto results = test_controller.trigger(R"({"field1":"value1"}")", {{"elastic_action", "upsert"}});
+    REQUIRE(results[PostElasticsearch::Success].size() == 1);
+    auto attributes = results[PostElasticsearch::Success][0]->getAttributes();
+    CHECK(attributes.contains("elasticsearch.update._id"));
+    CHECK(attributes.contains("elasticsearch.update._index"));
+  }
+
+  SECTION("Update error") {
+    CHECK(test_controller.plan->setProperty(elasticsearch_credentials_controller_service,
+                                            ElasticsearchCredentialsControllerService::ApiKey,
+                                            MockElasticAuthHandler::API_KEY));
+    CHECK(test_controller.plan->setProperty(post_elasticsearch_json,
+                                            PostElasticsearch::Identifier,
+                                            "${filename}"));
+    mock_elastic.returnErrors(true);
+    auto results = test_controller.trigger(R"({"field1":"value1"}")", {{"elastic_action", "upsert"}});
+    REQUIRE(results[PostElasticsearch::Error].size() == 1);
+    auto attributes = results[PostElasticsearch::Error][0]->getAttributes();
+    CHECK(attributes.contains("elasticsearch.update._id"));
+    CHECK(attributes.contains("elasticsearch.update._index"));
+    CHECK(attributes.contains("elasticsearch.update.error.type"));
+    CHECK(attributes.contains("elasticsearch.update.error.reason"));
+  }
+
+  SECTION("Invalid ApiKey") {
+    CHECK(test_controller.plan->setProperty(elasticsearch_credentials_controller_service,
+                                            ElasticsearchCredentialsControllerService::ApiKey,
+                                            "invalid_api_key"));
+
+    auto results = test_controller.trigger(R"({"field1":"value1"}")", {{"elastic_action", "create"}});
+    CHECK(results[PostElasticsearch::Failure].size() == 1);
+  }
+
+  SECTION("Invalid basic authentication") {
+    CHECK(test_controller.plan->setProperty(elasticsearch_credentials_controller_service,
+                                            ElasticsearchCredentialsControllerService::Username,
+                                            MockElasticAuthHandler::USERNAME));
+    CHECK(test_controller.plan->setProperty(elasticsearch_credentials_controller_service,
+                                            ElasticsearchCredentialsControllerService::Password,
+                                            "wrong_password"));
+
+    auto results = test_controller.trigger(R"({"field1":"value1"}")", {{"elastic_action", "index"}});
+    CHECK(results[PostElasticsearch::Failure].size() == 1);
+  }
+}
+
+}  // namespace org::apache::nifi::minifi::extensions::elasticsearch::test

@@ -1,25 +1,12 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include <string>
 
 #include "utils/StringUtils.h"
-#include "../TestBase.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
 #include "utils/StagingQueue.h"
 
 using org::apache::nifi::minifi::utils::StagingQueue;
@@ -36,7 +23,7 @@ class MockItem {
     return std::move(*this);
   }
 
-  size_t size() const {
+  [[nodiscard]] size_t size() const {
     return data_.size();
   }
 
@@ -91,7 +78,7 @@ TEST_CASE("Modify and overflow triggered automatic commit", "[TestStagingQueue4]
   }
   queue.modify([] (MockItem& item) {
     // a new item has been allocated
-    REQUIRE(item.data_ == "");
+    REQUIRE(item.data_.empty());
   });
   REQUIRE(queue.size() == 11);
   MockItem out;
@@ -104,7 +91,7 @@ TEST_CASE("Discard overflow", "[TestStagingQueue5]") {
   StagingQueue<MockItem> queue(30, 10);
   for (size_t idx = 0; idx < 5; ++idx) {
     queue.modify([&] (MockItem& item) {
-      item.data_ = utils::StringUtils::repeat(std::to_string(idx), 10);
+      item.data_ = utils::string::repeat(std::to_string(idx), 10);
     });
     queue.commit();
   }
@@ -115,7 +102,7 @@ TEST_CASE("Discard overflow", "[TestStagingQueue5]") {
   // idx 0 and 1 have been discarded
   for (size_t idx = 2; idx < 5; ++idx) {
     REQUIRE(queue.tryDequeue(out));
-    REQUIRE(out.data_ == utils::StringUtils::repeat(std::to_string(idx), 10));
+    REQUIRE(out.data_ == utils::string::repeat(std::to_string(idx), 10));
   }
   REQUIRE(queue.size() == 0);
 }

@@ -1,0 +1,67 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#include <cinttypes>
+
+#include "utils/AutoPersistor.h"
+
+using namespace std::literals::chrono_literals;
+
+namespace org::apache::nifi::minifi::controllers {
+
+AutoPersistor::~AutoPersistor() {
+  stop();
+}
+
+void AutoPersistor::stop() {
+  std::unique_lock<std::mutex> lock(persisting_mutex_);
+  if (persisting_thread_.joinable()) {
+    running_ = false;
+    lock.unlock();
+    persisting_cv_.notify_one();
+    persisting_thread_.join();
+  }
+}
+
+void AutoPersistor::start(bool always_persist, std::chrono::milliseconds auto_persistence_interval, std::function<bool()> persist) {
+  std::unique_lock<std::mutex> lock(persisting_mutex_);
+
+  always_persist_ = always_persist;
+  auto_persistence_interval_ = auto_persistence_interval;
+  persist_ = std::move(persist);
+
+  if (!always_persist_ && auto_persistence_interval_ != 0s) {
+    if (!persisting_thread_.joinable()) {
+      logger_->log_trace("Starting auto persistence thread");
+      running_ = true;
+      persisting_thread_ = std::thread(&AutoPersistor::persistingThreadFunc, this);
+    }
+  }
+
+  logger_->log_trace("Enabled AutoPersistor");
+}
+
+void AutoPersistor::persistingThreadFunc() {
+  std::unique_lock<std::mutex> lock(persisting_mutex_);
+
+  while (true) {
+    logger_->log_trace("Persisting thread is going to sleep for {}", auto_persistence_interval_);
+    persisting_cv_.wait_for(lock, auto_persistence_interval_, [this] {
+      return !running_;
+    });
+
+    if (!running_) {
+      logger_->log_trace("Stopping persistence thread");
+      return;
+    }
+
+    if (!persist_) {
+      logger_->log_error("Persist function is empty");
+    } else if (!persist_()) {
+      logger_->log_error("Persisting failed");
+    }
+  }
+}
+
+}  // namespace org::apache::nifi::minifi::controllers

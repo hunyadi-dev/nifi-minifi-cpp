@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+[Unit]
+Description=Starts and stops the MiNiFi C++ Agent
+After=network.target
+
+[Service]
+Type=simple
+Environment=MINIFI_HOME=@MINIFI_HOME_ENV_VALUE@
+Environment=MINIFI_INSTALLATION_TYPE=@MINIFI_INSTALLATION_TYPE_ENV_VALUE@
+ExecStart=@MINIFI_EXEC_PATH@
+Restart=on-failure
+RestartSec=3
+KillSignal=SIGTERM
+TimeoutStopSec=20
+RestartForceExitStatus=3
+RestartPreventExitStatus=90
+
+[Install]
+WantedBy=multi-user.target

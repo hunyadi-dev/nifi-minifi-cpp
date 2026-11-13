@@ -1,168 +1,120 @@
-/**
- * @file GenerateFlowFile.cpp
- * GenerateFlowFile class implementation
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include "GenerateFlowFile.h"
 
-#include <time.h>
-
-#include <chrono>
 #include <limits>
-#include <map>
 #include <memory>
-#include <queue>
 #include <random>
-#include <set>
 #include <string>
-#include <thread>
-#include <utility>
 #include <vector>
 
-#include "utils/gsl.h"
-#include "utils/StringUtils.h"
-#include "core/ProcessContext.h"
+#include "minifi-cpp/core/ProcessContext.h"
 #include "core/ProcessSession.h"
-#include "core/PropertyValidation.h"
-#include "core/TypedValues.h"
 #include "core/Resource.h"
+#include "utils/OptionalUtils.h"
+#include "minifi-cpp/utils/gsl.h"
+#include "utils/ProcessorConfigUtils.h"
+#include "minifi-cpp/core/ProcessorDescriptor.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace processors {
+namespace org::apache::nifi::minifi::processors {
 const char *GenerateFlowFile::DATA_FORMAT_TEXT = "Text";
-core::Property GenerateFlowFile::FileSize(
-    core::PropertyBuilder::createProperty("File Size")->withDescription("The size of the file that will be used")->isRequired(false)->withDefaultValue<core::DataSizeValue>("1 kB")->build());
-
-core::Property GenerateFlowFile::BatchSize(
-    core::PropertyBuilder::createProperty("Batch Size")->withDescription("The number of FlowFiles to be transferred in each invocation")->isRequired(false)->withDefaultValue<int>(1)->build());
-
-core::Property GenerateFlowFile::DataFormat(
-    core::PropertyBuilder::createProperty("Data Format")->withDescription("Specifies whether the data should be Text or Binary")->isRequired(false)->withAllowableValue<std::string>("Text")
-        ->withAllowableValue("Binary")->withDefaultValue("Binary")->build());
-
-core::Property GenerateFlowFile::UniqueFlowFiles(
-    core::PropertyBuilder::createProperty("Unique FlowFiles")->withDescription("If true, each FlowFile that is generated will be unique. If false, a random value will be generated and all FlowFiles")
-        ->isRequired(false)->withDefaultValue<bool>(true)->build());
-
-core::Property GenerateFlowFile::CustomText(
-    core::PropertyBuilder::createProperty("Custom Text")
-      ->withDescription("If Data Format is text and if Unique FlowFiles is false, then this custom text will be used as content of the generated FlowFiles and the File Size will be ignored. "
-                        "Finally, if Expression Language is used, evaluation will be performed only once per batch of generated FlowFiles")
-      ->supportsExpressionLanguage(true)
-      ->build());
-
-core::Relationship GenerateFlowFile::Success("success", "success operational on the flow record");
 
 constexpr const char * TEXT_CHARS = "abcdefghijklmnopqrstuvwxyzABCDEFGHIJKLMNOPQRSTUVWXYZ1234567890!@#$%^&*()-_=+/?.,';:\"?<>\n\t ";
 
 void GenerateFlowFile::initialize() {
-  // Set the supported properties
-  std::set<core::Property> properties;
-  properties.insert(FileSize);
-  properties.insert(BatchSize);
-  properties.insert(DataFormat);
-  properties.insert(UniqueFlowFiles);
-  properties.insert(CustomText);
-  setSupportedProperties(properties);
-  // Set the supported relationships
-  std::set<core::Relationship> relationships;
-  relationships.insert(Success);
-  setSupportedRelationships(relationships);
+  setSupportedProperties(Properties);
+  setSupportedRelationships(Relationships);
 }
 
-void generateData(std::vector<char>& data, bool textData = false) {
+void generateData(std::vector<char>& data, const bool text_data = false) {
   std::random_device rd;
   std::mt19937 eng(rd());
-  if (textData) {
+  if (text_data) {
     const int index_of_last_char = gsl::narrow<int>(strlen(TEXT_CHARS)) - 1;
     std::uniform_int_distribution<> distr(0, index_of_last_char);
     std::generate_n(data.begin(), data.size(), [&] { return TEXT_CHARS[static_cast<uint8_t>(distr(eng))]; });
   } else {
     std::uniform_int_distribution<> distr(std::numeric_limits<char>::min(), std::numeric_limits<char>::max());
-    auto rand = std::bind(distr, eng);
+    auto rand = [&distr, &eng] { return distr(eng); };
     std::generate_n(data.begin(), data.size(), rand);
   }
 }
 
-void GenerateFlowFile::onSchedule(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSessionFactory>& /*sessionFactory*/) {
-  if (context->getProperty(FileSize.getName(), fileSize_)) {
-    logger_->log_trace("File size is configured to be %d", fileSize_);
-  }
+GenerateFlowFile::Mode GenerateFlowFile::getMode(bool is_unique, bool is_text, bool has_custom_text, uint64_t file_size) {
+  if (is_text && !is_unique && has_custom_text)
+    return Mode::CustomText;
 
-  if (context->getProperty(BatchSize.getName(), batchSize_)) {
-    logger_->log_trace("Batch size is configured to be %d", batchSize_);
-  }
+  if (file_size == 0)
+    return Mode::Empty;
 
-  std::string value;
-  if (context->getProperty(DataFormat.getName(), value)) {
-    textData_ = (value == GenerateFlowFile::DATA_FORMAT_TEXT);
-  }
-  if (context->getProperty(UniqueFlowFiles.getName(), uniqueFlowFile_)) {
-    logger_->log_trace("Unique Flow files is configured to be %i", uniqueFlowFile_);
-  }
-
-  std::string custom_text;
-  context->getProperty(CustomText, custom_text, nullptr);
-  if (!custom_text.empty()) {
-    if (textData_ && !uniqueFlowFile_) {
-      data_.assign(custom_text.begin(), custom_text.end());
-      return;
-    } else {
-      logger_->log_warn("Custom Text property is set, but not used!");
-    }
-  }
-
-  if (!uniqueFlowFile_) {
-    data_.resize(gsl::narrow<size_t>(fileSize_));
-    generateData(data_, textData_);
+  if (is_unique) {
+    if (is_text)
+      return Mode::UniqueText;
+    else
+      return Mode::UniqueByte;
+  } else {
+    if (is_text)
+      return Mode::NotUniqueText;
+    else
+      return Mode::NotUniqueByte;
   }
 }
 
-void GenerateFlowFile::onTrigger(core::ProcessContext* /*context*/, core::ProcessSession *session) {
-  for (uint64_t i = 0; i < batchSize_; i++) {
-    // For each batch
-    std::shared_ptr<core::FlowFile> flowFile = session->create();
-    if (!flowFile) {
+void GenerateFlowFile::onSchedule(core::ProcessContext& context, core::ProcessSessionFactory&) {
+  bool is_text = context.getProperty(DataFormat)
+      | utils::transform([](const std::string& data_format) { return data_format == DATA_FORMAT_TEXT;})
+      | utils::valueOrElse([]() {return false;});
+  bool is_unique = utils::parseOptionalBoolProperty(context, UniqueFlowFiles).value_or(true);
+
+  const bool has_custom_text = context.hasNonEmptyProperty(CustomText.name);
+
+  file_size_ = utils::parseDataSizeProperty(context, FileSize);
+  batch_size_ = utils::parseU64Property(context, BatchSize);
+
+  mode_ = getMode(is_unique, is_text, has_custom_text, file_size_);
+
+  if (!isUnique(mode_)) {
+    non_unique_data_.resize(gsl::narrow<size_t>(file_size_));
+    generateData(non_unique_data_, isText(mode_));
+  }
+
+  logger_->log_trace("GenerateFlowFile is configured in {} mode", magic_enum::enum_name(mode_));
+  if (mode_ != Mode::CustomText && has_custom_text)
+    logger_->log_warn("Custom Text property is set but not used. "
+      "For Custom Text to be used, Data Format needs to be Text, and Unique FlowFiles needs to be false.");
+}
+
+// The custom text has to be reevaluated once per batch
+void GenerateFlowFile::refreshNonUniqueData(core::ProcessContext& context) {
+  if (mode_ != Mode::CustomText)
+    return;
+  std::string custom_text = context.getProperty(CustomText).value_or("");
+  non_unique_data_.assign(custom_text.begin(), custom_text.end());
+}
+
+void GenerateFlowFile::onTrigger(core::ProcessContext& context, core::ProcessSession& session) {
+  refreshNonUniqueData(context);
+  for (uint64_t i = 0; i < batch_size_; i++) {
+    std::shared_ptr<core::FlowFile> flow_file = session.create();
+    if (!flow_file) {
       logger_->log_error("Failed to create flowfile!");
       return;
     }
-    if (uniqueFlowFile_) {
-      std::vector<char> data(gsl::narrow<size_t>(fileSize_));
-      if (fileSize_ > 0) {
-        generateData(data, textData_);
-      }
-      GenerateFlowFile::WriteCallback callback(data);
-      session->write(flowFile, &callback);
+    if (mode_ == Mode::Empty) {
+      // the newly created flowfile is empty by default
+    } else if (isUnique(mode_)) {
+      std::vector<char> unique_data(gsl::narrow<size_t>(file_size_));
+      generateData(unique_data, isText(mode_));
+      session.writeBuffer(flow_file, unique_data);
     } else {
-      GenerateFlowFile::WriteCallback callback(data_);
-      session->write(flowFile, &callback);
+      session.writeBuffer(flow_file, non_unique_data_);
     }
-    session->transfer(flowFile, Success);
+    session.transfer(flow_file, Success);
   }
 }
 
-REGISTER_RESOURCE(GenerateFlowFile, "This processor creates FlowFiles with random data or custom content. GenerateFlowFile is useful for load testing, configuration, and simulation.");
+REGISTER_RESOURCE(GenerateFlowFile, Processor);
 
-}  // namespace processors
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+}  // namespace org::apache::nifi::minifi::processors

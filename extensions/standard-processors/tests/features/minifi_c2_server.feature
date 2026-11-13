@@ -1,0 +1,66 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+@CORE
+Feature: MiNiFi can communicate with Apache NiFi MiNiFi C2 server
+
+  Scenario: MiNiFi flow config is updated from MiNiFi C2 server
+    Given a GetFile processor with the name "GetFile1" and the "Input Directory" property set to "/tmp/non-existent"
+    And C2 is enabled in MiNiFi
+    And a directory at "/tmp/input" has a file with the content "test"
+    And a MiNiFi C2 server is set up
+    When all instances start up
+    Then the MiNiFi C2 server logs contain the following message: "acknowledged with a state of FULLY_APPLIED(DONE)" in less than 30 seconds
+    And a single file with the content "test" is placed in the "/tmp/output" directory in less than 10 seconds
+    And the Minifi logs do not contain the following message: "Failed to parse json response: The document is empty. at 0" after 0 seconds
+
+  Scenario: MiNiFi can get flow config from C2 server through flow url when it is not available at start
+    Given the C2 flow URL property is configured
+    And C2 is enabled in MiNiFi
+    And a directory at "/tmp/input" has a file with the content "test"
+    And a MiNiFi C2 server is started
+    When the MiNiFi instance starts up
+    Then the MiNiFi C2 server logs contain the following message: "acknowledged with a state of FULLY_APPLIED(DONE)" in less than 30 seconds
+    And a single file with the content "test" is placed in the "/tmp/output" directory in less than 10 seconds
+
+  Scenario: MiNiFi flow config is updated from MiNiFi C2 server through SSL with SSL properties
+    Given a directory at "/tmp/input" has a file with the content "test"
+    And a GenerateFlowFile processor
+    And ssl properties are set up for MiNiFi C2 server
+    And a MiNiFi C2 server is set up with SSL
+    When all instances start up
+    Then the MiNiFi C2 server logs contain the following message: "acknowledged with a state of FULLY_APPLIED(DONE)" in less than 60 seconds
+    And a single file with the content "test" is placed in the "/tmp/output" directory in less than 10 seconds
+
+  Scenario: MiNiFi flow config is updated from MiNiFi C2 server with overriden parameter context
+    Given a GetFile processor with the name "GetFile1" and the "Input Directory" property set to "${INPUT_DIR}"
+    And parameter context name is set to 'my-context'
+    And a non-sensitive parameter in the flow config called 'INPUT_DIR' with the value '/tmp/non-existent' in the parameter context 'my-context'
+    And C2 is enabled in MiNiFi
+    And a directory at "/tmp/input" has a file with the content "test"
+    And a MiNiFi C2 server is set up
+    When all instances start up
+    Then the MiNiFi C2 server logs contain the following message: "acknowledged with a state of FULLY_APPLIED(DONE)" in less than 30 seconds
+    And a single file with the content "test" is placed in the "/tmp/output" directory in less than 10 seconds
+    And the Minifi logs do not contain the following message: "Failed to parse json response: The document is empty. at 0" after 0 seconds
+
+  Scenario: MiNiFi shuts down when the connection to the MiNiFi C2 server is lost
+    Given a GenerateFlowFile processor
+    And C2 is enabled in MiNiFi
+    And MiNiFi configuration "nifi.c2.connection.timeout" is set to "10 sec"
+    And a MiNiFi C2 server is started
+    When the MiNiFi instance starts up
+    Then the MiNiFi C2 server logs contain the following message: "acknowledged with a state of FULLY_APPLIED(DONE)" in less than 30 seconds
+    And the Minifi logs do not contain the following message: "C2 connection timeout exceeded, shutting down..." after 15 seconds
+    When the MiNiFi C2 server is stopped
+    Then MiNiFi exits with exit code 90 in less than 60 seconds
+    And the logs of the exited Minifi container contain the following message: "C2 connection timeout exceeded, shutting down..."
+
+  Scenario: MiNiFi shuts down when the connection to the MiNiFi C2 server is not available
+    Given a GenerateFlowFile processor
+    And C2 is enabled in MiNiFi
+    And MiNiFi configuration "nifi.c2.connection.timeout" is set to "10 sec"
+    When the MiNiFi instance starts up
+    Then MiNiFi exits with exit code 90 in less than 60 seconds
+    And the logs of the exited Minifi container contain the following message: "C2 connection timeout exceeded, shutting down..."

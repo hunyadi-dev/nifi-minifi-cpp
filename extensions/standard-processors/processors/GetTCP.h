@@ -1,286 +1,175 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_GETTCP_H_
-#define EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_GETTCP_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
 
+#include <array>
 #include <map>
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 #include <atomic>
+#include <asio/io_context.hpp>
+#include "minifi-cpp/utils/Literals.h"
 
-#include "../core/state/nodes/MetricsBase.h"
-#include "FlowFileRecord.h"
-#include "core/Processor.h"
+#include "minifi-cpp/core/OutputAttributeDefinition.h"
+#include "core/ProcessorImpl.h"
 #include "core/ProcessSession.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "minifi-cpp/core/PropertyValidator.h"
 #include "core/Core.h"
-#include "concurrentqueue.h"
+#include "moodycamel/concurrentqueue.h"
 #include "utils/ThreadPool.h"
-#include "core/logging/LoggerConfiguration.h"
-#include "controllers/SSLContextService.h"
-#include "utils/gsl.h"
-#include "utils/Export.h"
+#include "core/logging/LoggerFactory.h"
+#include "minifi-cpp/controllers/SSLContextServiceInterface.h"
+#include "minifi-cpp/utils/gsl.h"
+#include "minifi-cpp/utils/Export.h"
+#include "utils/net/AsioSocketUtils.h"
+#include "utils/net/Message.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace processors {
+namespace org::apache::nifi::minifi::processors {
 
-class SocketAfterExecute : public utils::AfterExecute<int> {
+class GetTCP : public core::ProcessorImpl {
  public:
-  explicit SocketAfterExecute(std::atomic<bool> &running, std::string endpoint, std::map<std::string, std::future<int>*> *list, std::mutex *mutex)
-      : running_(running.load()),
-        endpoint_(std::move(endpoint)),
-        mutex_(mutex),
-        list_(list) {
-  }
+  using ProcessorImpl::ProcessorImpl;
 
-  SocketAfterExecute(const SocketAfterExecute&) = delete;
-  SocketAfterExecute(SocketAfterExecute&&) = delete;
-
-  SocketAfterExecute& operator=(const SocketAfterExecute&) = delete;
-  SocketAfterExecute& operator=(SocketAfterExecute&&) = delete;
-
-  ~SocketAfterExecute() override = default;
-
-  bool isFinished(const int &result) override {
-    if (result == -1 || result == 0 || !running_) {
-      std::lock_guard<std::mutex> lock(*mutex_);
-      list_->erase(endpoint_);
-      return true;
-    } else {
-      return false;
+  ~GetTCP() override {
+    if (client_) {
+      client_->stop();
     }
-  }
-  bool isCancelled(const int& /*result*/) override {
-    if (!running_)
-      return true;
-    else
-      return false;
+    if (client_thread_.joinable()) {
+      client_thread_.join();
+    }
+    client_.reset();
   }
 
-  std::chrono::milliseconds wait_time() override {
-    // wait 500ms
-    return std::chrono::milliseconds(500);
-  }
+  EXTENSIONAPI static constexpr const char* Description = "Establishes a TCP Server that defines and retrieves one or more byte messages from clients";
 
- protected:
-  std::atomic<bool> running_;
-  std::string endpoint_;
-  std::mutex *mutex_;
-  std::map<std::string, std::future<int>*> *list_;
-};
+  EXTENSIONAPI static constexpr auto EndpointList = core::PropertyDefinitionBuilder<>::createProperty("Endpoint List")
+      .withDescription("A comma delimited list of the endpoints to connect to. The format should be <server_address>:<port>.")
+      .isRequired(true)
+      .build();
+  EXTENSIONAPI static constexpr auto SSLContextService = core::PropertyDefinitionBuilder<>::createProperty("SSL Context Service")
+      .withDescription("SSL Context Service Name")
+      .withAllowedTypes<minifi::controllers::SSLContextServiceInterface>()
+      .build();
+  EXTENSIONAPI static constexpr auto MessageDelimiter = core::PropertyDefinitionBuilder<>::createProperty("Message Delimiter")
+      .withDescription("Character that denotes the end of the message.")
+      .withDefaultValue("\\n")
+      .build();
+  EXTENSIONAPI static constexpr auto MaxQueueSize = core::PropertyDefinitionBuilder<>::createProperty("Max Size of Message Queue")
+      .withDescription("Maximum number of messages allowed to be buffered before processing them when the processor is triggered. "
+          "If the buffer is full, the message is ignored. If set to zero the buffer is unlimited.")
+      .withValidator(core::StandardPropertyValidators::UNSIGNED_INTEGER_VALIDATOR)
+      .withDefaultValue("10000")
+      .isRequired(true)
+      .build();
+  EXTENSIONAPI static constexpr auto MaxBatchSize = core::PropertyDefinitionBuilder<>::createProperty("Max Batch Size")
+      .withDescription("The maximum number of messages to process at a time.")
+      .withValidator(core::StandardPropertyValidators::UNSIGNED_INTEGER_VALIDATOR)
+      .withDefaultValue("500")
+      .isRequired(true)
+      .build();
+  EXTENSIONAPI static constexpr auto MaxMessageSize = core::PropertyDefinitionBuilder<>::createProperty("Maximum Message Size")
+      .withDescription("Optional size of the buffer to receive data in.")
+      .build();
+  EXTENSIONAPI static constexpr auto Timeout = core::PropertyDefinitionBuilder<>::createProperty("Timeout")
+      .withDescription("The timeout for connecting to and communicating with the destination.")
+      .withValidator(core::StandardPropertyValidators::TIME_PERIOD_VALIDATOR)
+      .withDefaultValue("1s")
+      .isRequired(true)
+      .build();
+  EXTENSIONAPI static constexpr auto ReconnectInterval = core::PropertyDefinitionBuilder<>::createProperty("Reconnection Interval")
+      .withDescription("The duration to wait before attempting to reconnect to the endpoints.")
+      .withValidator(core::StandardPropertyValidators::TIME_PERIOD_VALIDATOR)
+      .withDefaultValue("1 min")
+      .isRequired(true)
+      .build();
+  EXTENSIONAPI static constexpr auto Properties = std::to_array<core::PropertyReference>({
+      EndpointList,
+      SSLContextService,
+      MessageDelimiter,
+      MaxQueueSize,
+      MaxMessageSize,
+      MaxBatchSize,
+      Timeout,
+      ReconnectInterval
+  });
 
-class DataHandlerCallback : public OutputStreamCallback {
- public:
-  DataHandlerCallback(uint8_t *message, size_t size)
-      : message_(message),
-        size_(size) {
-  }
+  EXTENSIONAPI static constexpr auto Success = core::RelationshipDefinition{"success", "All files are routed to success"};
+  EXTENSIONAPI static constexpr auto Partial = core::RelationshipDefinition{"partial", "Indicates an incomplete message as a result of encountering the end of message byte trigger"};
+  EXTENSIONAPI static constexpr auto Relationships = std::array{Success, Partial};
 
-  ~DataHandlerCallback() override = default;
+  EXTENSIONAPI static constexpr bool SupportsDynamicProperties = false;
+  EXTENSIONAPI static constexpr bool SupportsDynamicRelationships = false;
+  EXTENSIONAPI static constexpr core::annotation::Input InputRequirement = core::annotation::Input::INPUT_ALLOWED;
+  EXTENSIONAPI static constexpr bool IsSingleThreaded = false;
 
-  int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
-    const auto write_ret = stream->write(message_, size_);
-    return io::isError(write_ret) ? -1 : gsl::narrow<int64_t>(write_ret);
-  }
+  EXTENSIONAPI static constexpr auto SourceEndpoint = core::OutputAttributeDefinition<2>{"source.endpoint", {Success, Partial}, "The address of the source endpoint the message came from"};
+  EXTENSIONAPI static constexpr auto OutputAttributes = std::array<core::OutputAttributeReference, 1>{SourceEndpoint};
 
- private:
-  uint8_t *message_;
-  size_t size_;
-};
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_PROCESSORS
 
-class DataHandler {
- public:
-  DataHandler(std::shared_ptr<core::ProcessSessionFactory> sessionFactory) // NOLINT
-      : sessionFactory_(std::move(sessionFactory)) {
-  }
-  static const char *SOURCE_ENDPOINT_ATTRIBUTE;
-
-  int16_t handle(std::string source, uint8_t *message, size_t size, bool partial);
-
- private:
-  std::shared_ptr<core::ProcessSessionFactory> sessionFactory_;
-};
-
-class GetTCPMetrics : public state::response::ResponseNode {
- public:
-  GetTCPMetrics()
-      : state::response::ResponseNode("GetTCPMetrics") {
-  }
-
-  GetTCPMetrics(const std::string& name, const utils::Identifier& uuid)
-      : state::response::ResponseNode(name, uuid) {
-  }
-  ~GetTCPMetrics() override = default;
-  std::string getName() const override {
-    return core::Connectable::getName();
-  }
-
-  std::vector<state::response::SerializedResponseNode> serialize() override {
-    std::vector<state::response::SerializedResponseNode> resp;
-
-    state::response::SerializedResponseNode iter;
-    iter.name = "OnTriggerInvocations";
-    iter.value = (uint32_t)iterations_.load();
-
-    resp.push_back(iter);
-
-    state::response::SerializedResponseNode accepted_files;
-    accepted_files.name = "AcceptedFiles";
-    accepted_files.value = (uint32_t)accepted_files_.load();
-
-    resp.push_back(accepted_files);
-
-    state::response::SerializedResponseNode input_bytes;
-    input_bytes.name = "InputBytes";
-    input_bytes.value = (uint32_t)input_bytes_.load();
-
-    resp.push_back(input_bytes);
-
-    return resp;
-  }
-
- protected:
-  friend class GetTCP;
-
-  std::atomic<size_t> iterations_{0};
-  std::atomic<size_t> accepted_files_{0};
-  std::atomic<size_t> input_bytes_{0};
-};
-
-// GetTCP Class
-class GetTCP : public core::Processor, public state::response::MetricsNodeSource {
- public:
-// Constructor
-  /*!
-   * Create a new processor
-   */
-  explicit GetTCP(const std::string& name, const utils::Identifier& uuid = {})
-      : Processor(name, uuid),
-        running_(false),
-        stay_connected_(true),
-        concurrent_handlers_(2),
-        endOfMessageByte(13),
-        reconnect_interval_(5000),
-        receive_buffer_size_(16 * 1024 * 1024),
-        connection_attempt_limit_(3),
-        ssl_service_(nullptr),
-        logger_(logging::LoggerFactory<GetTCP>::getLogger()) {
-    metrics_ = std::make_shared<GetTCPMetrics>();
-  }
-// Destructor
-  ~GetTCP() override = default;
-// Processor Name
-  EXTENSIONAPI static constexpr char const* ProcessorName = "GetTCP";
-
-  // Supported Properties
-  EXTENSIONAPI static core::Property EndpointList;
-  EXTENSIONAPI static core::Property ConcurrentHandlers;
-  EXTENSIONAPI static core::Property ReconnectInterval;
-  EXTENSIONAPI static core::Property StayConnected;
-  EXTENSIONAPI static core::Property ReceiveBufferSize;
-  EXTENSIONAPI static core::Property SSLContextService;
-  EXTENSIONAPI static core::Property ConnectionAttemptLimit;
-  EXTENSIONAPI static core::Property EndOfMessageByte;
-
-  // Supported Relationships
-  EXTENSIONAPI static core::Relationship Success;
-  EXTENSIONAPI static core::Relationship Partial;
-
- public:
-  /**
-   * Function that's executed when the processor is scheduled.
-   * @param context process context.
-   * @param sessionFactory process session factory that is used when creating
-   * ProcessSession objects.
-   */
-  void onSchedule(const std::shared_ptr<core::ProcessContext> &processContext, const std::shared_ptr<core::ProcessSessionFactory> &sessionFactory) override;
-
-  void onSchedule(core::ProcessContext* /*processContext*/, core::ProcessSessionFactory* /*sessionFactory*/) override {
-    throw std::logic_error{"GetTCP::onSchedule(ProcessContext*, ProcessSessionFactory*) is unimplemented"};
-  }
-  /**
-   * Execution trigger for the GetTCP Processor
-   * @param context processor context
-   * @param session processor session reference.
-   */
-  void onTrigger(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSession> &session) override;
-
-  void onTrigger(core::ProcessContext* /*context*/, core::ProcessSession* /*session*/) override {
-    throw std::logic_error{"GetTCP::onTrigger(ProcessContext*, ProcessSession*) is unimplemented"};
-  }
-
-  // Initialize, over write by NiFi GetTCP
+  void onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& session_factory) override;
+  void onTrigger(core::ProcessContext& context, core::ProcessSession& session) override;
   void initialize() override;
-
-  int16_t getMetricNodes(std::vector<std::shared_ptr<state::response::ResponseNode>> &metric_vector) override;
-
- protected:
   void notifyStop() override;
 
  private:
-  std::function<int()> f_ex;
+  static void transferAsFlowFile(const utils::net::Message& message, core::ProcessSession& session);
 
-  std::atomic<bool> running_;
+  std::vector<utils::net::ConnectionId> parseEndpointList(core::ProcessContext& context);
+  static char parseDelimiter(core::ProcessContext& context);
+  static uint64_t parseMaxBatchSize(core::ProcessContext& context);
 
-  std::unique_ptr<DataHandler> handler_;
+  class TcpClient {
+   public:
+    TcpClient(char delimiter,
+        asio::steady_timer::duration timeout_duration,
+        asio::steady_timer::duration reconnection_interval,
+        std::optional<asio::ssl::context> ssl_context,
+        std::optional<size_t> max_queue_size,
+        std::optional<size_t> max_message_size,
+        std::vector<utils::net::ConnectionId> connections,
+        std::shared_ptr<core::logging::Logger> logger);
+    TcpClient(const TcpClient&) = delete;
+    TcpClient(TcpClient&&) = delete;
+    TcpClient& operator=(const TcpClient&) = delete;
+    TcpClient& operator=(TcpClient&&) = delete;
+    ~TcpClient();
 
-  std::vector<std::string> endpoints;
+    void run();
+    void stop();
 
-  std::map<std::string, std::future<int>*> live_clients_;
+    bool queueEmpty() const;
+    std::optional<utils::net::Message> tryDequeue();
 
-  utils::ThreadPool<int> client_thread_pool_;
+   private:
+    asio::awaitable<void> doReceiveFrom(const utils::net::ConnectionId& connection_id);
 
-  moodycamel::ConcurrentQueue<std::unique_ptr<io::Socket>> socket_ring_buffer_;
+    template<class SocketType>
+    asio::awaitable<std::error_code> doReceiveFromEndpoint(const asio::ip::tcp::endpoint& endpoint, SocketType& socket);
 
-  bool stay_connected_;
+    asio::awaitable<std::error_code> readLoop(auto& socket);
 
-  uint16_t concurrent_handlers_;
+    utils::ConcurrentQueue<utils::net::Message> concurrent_queue_;
+    asio::io_context io_context_;
 
-  int8_t endOfMessageByte;
+    char delimiter_;
+    asio::steady_timer::duration timeout_duration_;
+    asio::steady_timer::duration reconnection_interval_;
+    std::optional<asio::ssl::context> ssl_context_;
+    std::optional<size_t> max_queue_size_;
+    std::optional<size_t> max_message_size_;
+    std::vector<utils::net::ConnectionId> connections_;
+    std::shared_ptr<core::logging::Logger> logger_;
+  };
 
-  uint64_t reconnect_interval_;
-
-  uint64_t receive_buffer_size_;
-
-  uint16_t connection_attempt_limit_;
-
-  std::shared_ptr<GetTCPMetrics> metrics_;
-
-  // Mutex for ensuring clients are running
-
-  std::mutex mutex_;
-
-  std::shared_ptr<minifi::controllers::SSLContextService> ssl_service_;
-
-  // last listing time for root directory ( if recursive, we will consider the root
-  // as the top level time.
-
-  std::shared_ptr<logging::Logger> logger_;
+  std::optional<TcpClient> client_;
+  size_t max_batch_size_{500};
+  std::thread client_thread_;
 };
 
-}  // namespace processors
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_GETTCP_H_
+}  // namespace org::apache::nifi::minifi::processors

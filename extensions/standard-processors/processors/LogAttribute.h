@@ -1,144 +1,110 @@
-/**
- * @file LogAttribute.h
- * LogAttribute class declaration
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_LOGATTRIBUTE_H_
-#define EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_LOGATTRIBUTE_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
 
 #include <memory>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "FlowFileRecord.h"
-#include "core/Processor.h"
-#include "core/ProcessSession.h"
 #include "core/Core.h"
-#include "core/logging/LoggerConfiguration.h"
-#include "utils/gsl.h"
-#include "utils/Export.h"
+#include "core/ProcessSession.h"
+#include "core/ProcessorImpl.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "minifi-cpp/core/ProcessContext.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "minifi-cpp/core/PropertyValidator.h"
+#include "minifi-cpp/core/RelationshipDefinition.h"
+#include "minifi-cpp/core/logging/AdvancedLogger.h"
+#include "minifi-cpp/utils/Export.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace processors {
+namespace org::apache::nifi::minifi::processors {
 
-// LogAttribute Class
-class LogAttribute : public core::Processor {
+class LogAttribute : public core::ProcessorImpl {
  public:
-  // Constructor
-  /*!
-   * Create a new processor
-   */
-  explicit LogAttribute(const std::string& name, const utils::Identifier& uuid = {})
-      : Processor(name, uuid),
-        flowfiles_to_log_(1),
-        hexencode_(false),
-        max_line_length_(80U),
-        logger_(logging::LoggerFactory<LogAttribute>::getLogger()) {
+  explicit LogAttribute(core::ProcessorMetadata metadata)
+      : ProcessorImpl(metadata) {
+    gsl_Assert(core::logging::AdvancedLogger::setMaxLogSize(logger_.get(), -1));
   }
-  // Destructor
+
   ~LogAttribute() override = default;
-  // Processor Name
-  EXTENSIONAPI static constexpr char const* ProcessorName = "LogAttribute";
-  // Supported Properties
-  EXTENSIONAPI static core::Property LogLevel;
-  EXTENSIONAPI static core::Property AttributesToLog;
-  EXTENSIONAPI static core::Property AttributesToIgnore;
-  EXTENSIONAPI static core::Property LogPayload;
-  EXTENSIONAPI static core::Property HexencodePayload;
-  EXTENSIONAPI static core::Property MaxPayloadLineLength;
-  EXTENSIONAPI static core::Property LogPrefix;
-  EXTENSIONAPI static core::Property FlowFilesToLog;
-  // Supported Relationships
-  EXTENSIONAPI static core::Relationship Success;
-  enum LogAttrLevel {
-    LogAttrLevelTrace,
-    LogAttrLevelDebug,
-    LogAttrLevelInfo,
-    LogAttrLevelWarn,
-    LogAttrLevelError
-  };
-  // Convert log level from string to enum
-  bool logLevelStringToEnum(const std::string &logStr, LogAttrLevel &level) {
-    if (logStr == "trace") {
-      level = LogAttrLevelTrace;
-      return true;
-    } else if (logStr == "debug") {
-      level = LogAttrLevelDebug;
-      return true;
-    } else if (logStr == "info") {
-      level = LogAttrLevelInfo;
-      return true;
-    } else if (logStr == "warn") {
-      level = LogAttrLevelWarn;
-      return true;
-    } else if (logStr == "error") {
-      level = LogAttrLevelError;
-      return true;
-    } else {
-      return false;
-    }
-  }
-  // Nest Callback Class for read stream
-  class ReadCallback : public InputStreamCallback {
-   public:
-    ReadCallback(std::shared_ptr<logging::Logger> logger, size_t size)
-        : logger_(std::move(logger))
-        , buffer_(size)  {
-    }
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
-      if (buffer_.empty()) return 0U;
-      const auto ret = stream->read(buffer_.data(), buffer_.size());
-      if (ret != buffer_.size()) {
-        logger_->log_error("%zu bytes were requested from the stream but %zu bytes were read. Rolling back.", buffer_.size(), size_t{ret});
-        throw Exception(PROCESSOR_EXCEPTION, "Failed to read the entire FlowFile.");
-      }
-      return gsl::narrow<int64_t>(buffer_.size());
-    }
-    std::shared_ptr<logging::Logger> logger_;
-    std::vector<uint8_t> buffer_;
-  };
 
- public:
-  void onSchedule(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSessionFactory> &factory) override;
-  // OnTrigger method, implemented by NiFi LogAttribute
-  void onTrigger(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSession> &session) override;
-  // Initialize, over write by NiFi LogAttribute
+  EXTENSIONAPI static constexpr const char* Description = "Logs attributes of flow files in the MiNiFi application log.";
+
+  EXTENSIONAPI static constexpr auto LogLevel = core::PropertyDefinitionBuilder<6>::createProperty("Log Level")
+      .withDescription("The Log Level to use when logging the Attributes")
+      .withAllowedValues({"trace", "debug", "info", "warn", "error", "critical"})
+      .build();
+  EXTENSIONAPI static constexpr auto AttributesToLog = core::PropertyDefinitionBuilder<>::createProperty("Attributes to Log")
+      .withDescription("A comma-separated list of Attributes to Log. If not specified, all attributes will be logged.")
+      .withValidator(core::StandardPropertyValidators::NON_BLANK_VALIDATOR)
+      .build();
+  EXTENSIONAPI static constexpr auto AttributesToIgnore = core::PropertyDefinitionBuilder<>::createProperty("Attributes to Ignore")
+      .withDescription("A comma-separated list of Attributes to ignore. If not specified, no attributes will be ignored.")
+      .withValidator(core::StandardPropertyValidators::NON_BLANK_VALIDATOR)
+      .build();
+  EXTENSIONAPI static constexpr auto LogPayload = core::PropertyDefinitionBuilder<>::createProperty("Log Payload")
+      .withDescription("If true, the FlowFile's payload will be logged, in addition to its attributes. Otherwise, just the Attributes will be logged.")
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("false")
+      .build();
+  EXTENSIONAPI static constexpr auto HexencodePayload = core::PropertyDefinitionBuilder<>::createProperty("Hexencode Payload")
+      .withDescription("If true, the FlowFile's payload will be logged in a hexencoded format")
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("false")
+      .build();
+  EXTENSIONAPI static constexpr auto MaxPayloadLineLength = core::PropertyDefinitionBuilder<>::createProperty("Maximum Payload Line Length")
+      .withDescription("The logged payload will be broken into lines this long. 0 means no newlines will be added.")
+      .withValidator(core::StandardPropertyValidators::UNSIGNED_INTEGER_VALIDATOR)
+      .withDefaultValue("0")
+      .build();
+  EXTENSIONAPI static constexpr auto LogPrefix = core::PropertyDefinitionBuilder<>::createProperty("Log Prefix")
+      .withDescription("Log prefix appended to the log lines. It helps to distinguish the output of multiple LogAttribute processors.")
+      .withValidator(core::StandardPropertyValidators::NON_BLANK_VALIDATOR)
+      .build();
+  EXTENSIONAPI static constexpr auto FlowFilesToLog = core::PropertyDefinitionBuilder<>::createProperty("FlowFiles To Log")
+      .withDescription("Number of flow files to log. If set to zero all flow files will be logged. Please note that this may block other threads from running if not used judiciously.")
+      .withValidator(core::StandardPropertyValidators::UNSIGNED_INTEGER_VALIDATOR)
+      .withDefaultValue("1")
+      .build();
+  EXTENSIONAPI static constexpr auto Properties = std::to_array<core::PropertyReference>({
+      LogLevel,
+      AttributesToLog,
+      AttributesToIgnore,
+      LogPayload,
+      HexencodePayload,
+      MaxPayloadLineLength,
+      LogPrefix,
+      FlowFilesToLog
+  });
+
+
+  EXTENSIONAPI static constexpr auto Success = core::RelationshipDefinition{"success", "success operational on the flow record"};
+  EXTENSIONAPI static constexpr auto Relationships = std::array{Success};
+
+  EXTENSIONAPI static constexpr bool SupportsDynamicProperties = false;
+  EXTENSIONAPI static constexpr bool SupportsDynamicRelationships = false;
+  EXTENSIONAPI static constexpr core::annotation::Input InputRequirement = core::annotation::Input::INPUT_REQUIRED;
+  EXTENSIONAPI static constexpr bool IsSingleThreaded = false;
+
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_PROCESSORS
+
+  void onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& session_factory) override;
+  void onTrigger(core::ProcessContext& context, core::ProcessSession& session) override;
   void initialize() override;
 
  private:
-  core::annotation::Input getInputRequirement() const override {
-    return core::annotation::Input::INPUT_REQUIRED;
-  }
+  std::string generateLogMessage(core::ProcessSession& session, const std::shared_ptr<core::FlowFile>& flow_file) const;
 
-  uint64_t flowfiles_to_log_;
-  bool hexencode_;
-  uint32_t max_line_length_;
-  // Logger
-  std::shared_ptr<logging::Logger> logger_;
+  uint64_t flowfiles_to_log_{1};
+  bool hexencode_{false};
+  uint64_t max_line_length_{80};
+  core::logging::LOG_LEVEL log_level_{core::logging::LOG_LEVEL::info};
+  std::string dash_line_ = "--------------------------------------------------";
+  bool log_payload_ = false;
+  std::optional<std::unordered_set<std::string>> attributes_to_log_;
+  std::optional<std::unordered_set<std::string>> attributes_to_ignore_;
 };
 
-}  // namespace processors
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_LOGATTRIBUTE_H_
+}  // namespace org::apache::nifi::minifi::processors

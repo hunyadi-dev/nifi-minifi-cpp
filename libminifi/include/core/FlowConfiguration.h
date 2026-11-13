@@ -1,52 +1,37 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef LIBMINIFI_INCLUDE_CORE_FLOWCONFIGURATION_H_
-#define LIBMINIFI_INCLUDE_CORE_FLOWCONFIGURATION_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
 
 #include <memory>
 #include <optional>
 #include <string>
+#include <string_view>
 #include <utility>
 #include <vector>
+#include <filesystem>
 
 #include "core/Core.h"
-#include "Connection.h"
-#include "RemoteProcessorGroupPort.h"
+#include "minifi-cpp/Connection.h"
+#include "RemoteProcessGroupPort.h"
 #include "core/controller/ControllerServiceNode.h"
 #include "core/controller/StandardControllerServiceProvider.h"
-#include "provenance/Provenance.h"
 #include "core/reporting/SiteToSiteProvenanceReportingTask.h"
 
 #include "core/Processor.h"
-#include "core/logging/LoggerConfiguration.h"
-#include "core/ProcessContext.h"
+#include "core/logging/LoggerFactory.h"
+#include "minifi-cpp/core/ProcessContext.h"
 #include "core/ProcessSession.h"
 #include "core/ProcessGroup.h"
-#include "io/StreamFactory.h"
 #include "core/state/nodes/FlowInformation.h"
+#include "utils/file/AssetManager.h"
 #include "utils/file/FileSystem.h"
 #include "utils/ChecksumCalculator.h"
+#include "ParameterContext.h"
+#include "ParameterProvider.h"
+#include "core/BulletinStore.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace core {
+namespace org::apache::nifi::minifi::core {
 
 class static_initializers {
  public:
@@ -56,55 +41,70 @@ class static_initializers {
 
 extern static_initializers &get_static_functions();
 
+struct ConfigurationContext {
+  std::shared_ptr<core::Repository> flow_file_repo;
+  std::shared_ptr<core::ContentRepository> content_repo;
+  std::shared_ptr<Configure> configuration;
+  std::optional<std::filesystem::path> path{std::nullopt};
+  std::shared_ptr<utils::file::FileSystem> filesystem{std::make_shared<utils::file::FileSystem>()};
+  std::optional<utils::crypto::EncryptionProvider> sensitive_values_encryptor{std::nullopt};
+  utils::file::AssetManager* asset_manager{nullptr};
+  core::BulletinStore* bulletin_store{nullptr};
+};
+
+enum class FlowSerializationType { Json, NifiJson, Yaml };
+
 /**
  * Purpose: Flow configuration defines the mechanism
  * by which we will configure our flow controller
  */
-class FlowConfiguration : public CoreComponent {
+class FlowConfiguration : public CoreComponentImpl {
  public:
   /**
    * Constructor that will be used for configuring
    * the flow controller.
    */
-  explicit FlowConfiguration(std::shared_ptr<core::Repository> repo, std::shared_ptr<core::Repository> flow_file_repo,
-                             std::shared_ptr<core::ContentRepository> content_repo, std::shared_ptr<io::StreamFactory> stream_factory,
-                             std::shared_ptr<Configure> configuration, const std::optional<std::string>& path,
-                             std::shared_ptr<utils::file::FileSystem> filesystem = std::make_shared<utils::file::FileSystem>());
+  explicit FlowConfiguration(ConfigurationContext ctx);
 
   ~FlowConfiguration() override;
 
   // Create Processor (Node/Input/Output Port) based on the name
-  std::shared_ptr<core::Processor> createProcessor(const std::string &name, const utils::Identifier &uuid);
-  std::shared_ptr<core::Processor> createProcessor(const std::string &name, const std::string &fullname, const utils::Identifier &uuid);
+  std::unique_ptr<core::Processor> createProcessor(const std::string &class_short, const std::string &fullclass, const std::string &object_name, const utils::Identifier &uuid);
   // Create Root Processor Group
 
-  std::unique_ptr<core::ProcessGroup> createRootProcessGroup(const std::string &name, const utils::Identifier &uuid, int version);
-  std::unique_ptr<core::ProcessGroup> createSimpleProcessGroup(const std::string &name, const utils::Identifier &uuid, int version);
-  std::unique_ptr<core::ProcessGroup> createRemoteProcessGroup(const std::string &name, const utils::Identifier &uuid);
+  static std::unique_ptr<core::ProcessGroup> createRootProcessGroup(const std::string &name, const utils::Identifier &uuid, int version);
+  static std::unique_ptr<core::ProcessGroup> createSimpleProcessGroup(const std::string &name, const utils::Identifier &uuid, int version);
+  static std::unique_ptr<core::ProcessGroup> createRemoteProcessGroup(const std::string &name, const utils::Identifier &uuid);
 
-  std::shared_ptr<core::controller::ControllerServiceNode> createControllerService(const std::string &class_name, const std::string &full_class_name, const std::string &name,
-      const utils::Identifier &uuid);
+  std::shared_ptr<core::controller::ControllerServiceNode> createControllerService(const std::string &class_name, const std::string &name, const utils::Identifier &uuid, ProcessGroup* parent);
 
   // Create Connection
-  std::shared_ptr<minifi::Connection> createConnection(const std::string &name, const utils::Identifier &uuid) const;
+  [[nodiscard]] std::unique_ptr<minifi::Connection> createConnection(const std::string &name, const utils::Identifier &uuid) const;
   // Create Provenance Report Task
-  std::shared_ptr<core::Processor> createProvenanceReportTask(void);
+  std::unique_ptr<core::Processor> createProvenanceReportTask();
 
-  std::shared_ptr<state::response::FlowVersion> getFlowVersion() const {
+  static std::unique_ptr<core::ParameterProvider> createParameterProvider(const std::string &class_name, const std::string &full_class_name, const utils::Identifier& uuid);
+
+  [[nodiscard]] std::shared_ptr<state::response::FlowVersion> getFlowVersion() const {
     return flow_version_;
+  }
+
+  virtual std::vector<std::string> getSupportedFormats() const {
+    return {};
   }
 
   std::shared_ptr<Configure> getConfiguration() {  // cannot be const as getters mutate the underlying map
     return configuration_;
   }
 
-  bool persist(const std::string& configuration);
+  bool persist(const core::ProcessGroup& process_group);
+  bool persist(const std::string& serialized_flow);
 
   /**
    * Returns the configuration path string
    * @return config_path_
    */
-  const std::optional<std::string> &getConfigurationPath() {
+  const std::optional<std::filesystem::path>& getConfigurationPath() {
     return config_path_;
   }
 
@@ -112,45 +112,41 @@ class FlowConfiguration : public CoreComponent {
     return nullptr;
   }
 
-  std::unique_ptr<core::ProcessGroup> updateFromPayload(const std::string& url, const std::string& yamlConfigPayload);
+  std::unique_ptr<core::ProcessGroup> updateFromPayload(const std::string& url, const std::string& yamlConfigPayload, const std::optional<std::string>& flow_id = std::nullopt);
 
   virtual std::unique_ptr<core::ProcessGroup> getRootFromPayload(const std::string& /*yamlConfigPayload*/) {
     return nullptr;
   }
 
-  std::shared_ptr<core::controller::StandardControllerServiceProvider> &getControllerServiceProvider() {
+  std::shared_ptr<core::controller::StandardControllerServiceProvider> getControllerServiceProvider() const {
     return service_provider_;
   }
 
   utils::ChecksumCalculator& getChecksumCalculator() { return checksum_calculator_; }
 
+  const std::unordered_map<std::string, gsl::not_null<std::unique_ptr<ParameterContext>>>& getParameterContexts() const {
+    return parameter_contexts_;
+  }
+
  protected:
-  // service provider reference.
-  std::shared_ptr<core::controller::StandardControllerServiceProvider> service_provider_;
-  // based, shared controller service map.
-  std::shared_ptr<core::controller::ControllerServiceMap> controller_services_;
-  // configuration path
-  std::optional<std::string> config_path_;
-  // flow file repo
+  std::unordered_map<std::string, gsl::not_null<std::unique_ptr<ParameterContext>>> parameter_contexts_;
+  std::vector<gsl::not_null<std::unique_ptr<ParameterProvider>>> parameter_providers_;
+  std::optional<std::filesystem::path> config_path_;
   std::shared_ptr<core::Repository> flow_file_repo_;
-  // content repository.
   std::shared_ptr<core::ContentRepository> content_repo_;
-  // stream factory
-  std::shared_ptr<io::StreamFactory> stream_factory_;
   std::shared_ptr<Configure> configuration_;
+  std::shared_ptr<core::controller::StandardControllerServiceProvider> service_provider_;
   std::shared_ptr<state::response::FlowVersion> flow_version_;
   std::shared_ptr<utils::file::FileSystem> filesystem_;
+  utils::crypto::EncryptionProvider sensitive_values_encryptor_;
   utils::ChecksumCalculator checksum_calculator_;
+  utils::file::AssetManager* asset_manager_{nullptr};
+  core::BulletinStore* bulletin_store_{nullptr};
 
  private:
+  virtual std::string serialize(const ProcessGroup&) { return ""; }
+
   std::shared_ptr<logging::Logger> logger_;
 };
 
-}  // namespace core
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // LIBMINIFI_INCLUDE_CORE_FLOWCONFIGURATION_H_
-
+}  // namespace org::apache::nifi::minifi::core

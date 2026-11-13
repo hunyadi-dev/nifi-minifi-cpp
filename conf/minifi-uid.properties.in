@@ -1,0 +1,22 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+###  NOTE: Changes to this file are overwritten on upgrade. Add your custom settings to new files     ###
+###  in the conf/minifi-uid.properties.d directory instead. These custom settings files should have   ###
+###  a name ending with ".properties", and they are applied in lexicographic order, after this file.  ###
+###  Example filename: conf/minifi-uid.properties.d/10-use-random.properties                          ###
+
+# Implementation for uid generation.
+# Valid values:
+# time - use uuid_generate_time
+# random - use uuid_generate_random
+# uuid_default - use uuid_generate (will attempt to use uuid_generate_random and fall back to uuid_generate_time if no high quality randomness is available)
+# minifi_uid - use custom uid algorthim consisting of first N bits device identifier, second M bits as bottom portion of a timestamp where N + M = 64, last 64 bits is an atomic incrementor
+uid.implementation=time
+
+#Number of bits at beginning of uid for device segment.
+uid.minifi.device.segment.bits=16
+
+# Hexadecimal representation of device segment.  Should be unique per instance of MiNiFi.
+#uid.minifi.device.segment=09AF

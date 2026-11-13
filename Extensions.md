@@ -1,51 +1,91 @@
 <!--
-  Licensed to the Apache Software Foundation (ASF) under one or more
-  contributor license agreements.  See the NOTICE file distributed with
-  this work for additional information regarding copyright ownership.
-  The ASF licenses this file to You under the Apache License, Version 2.0
-  (the "License"); you may not use this file except in compliance with
-  the License.  You may obtain a copy of the License at
-      http://www.apache.org/licenses/LICENSE-2.0
-  Unless required by applicable law or agreed to in writing, software
-  distributed under the License is distributed on an "AS IS" BASIS,
-  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-  See the License for the specific language governing permissions and
-  limitations under the License.
+  SPDX-License-Identifier: Apache-2.0
+  SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+  SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 -->
 # Apache MiNiFi Extensions Guide
 
 To enable all extensions for your platform, you may use -DENABLE_ALL=TRUE OR select the option to "Enable all Extensions" in the bootstrap script. [ReadMe](https://github.com/apache/nifi-minifi-cpp/#bootstrapping)
 
 # Extension internals
-Extensions are dynamic libraries loaded at runtime by the agent. An extension makes its 
-capabilities (classes) available to the system through registrars. Registration must happen in source files, not headers.
+Extensions are dynamic libraries loaded at runtime by the agent.
 
-``` C++
-// register user-facing classes as
-REGISTER_RESOURCE(InvokeHTTP, "An HTTP client processor which can interact with a configurable HTTP Endpoint. "
-    "The destination URL and HTTP Method are configurable. FlowFile attributes are converted to HTTP headers and the "
-    "FlowFile contents are included as the body of the request (if the HTTP Method is PUT, POST or PATCH).");
+## C extensions
+You can build shared libraries using the API defined in `minifi-api.h`
+For the shared library to be considered a valid extension, it must export a global symbol with the name `minifi_api_version`
+with its value equal to the uint32_t constant `MINIFI_API_VERSION` from `minifi-api.h`.
 
-// register internal resources as
-REGISTER_INTERNAL_RESOURCE(HTTPClient);
-```
+### Resource Lifetime
 
-Some extensions (e.g. `http-curl`) require initialization before use. 
-You need to create `init` and `deinit` functions and register them using `REGISTER_EXTENSION`.
+Unless otherwise specified, the following lifetime rules apply to all functions called by the agent (e.g., `minifi_init_extension`, `minifi_processor_callbacks::trigger`, or other callbacks):
+
+* Arguments: The lifetime of any resource provided as a function argument is limited to the duration of that function call.
+
+* Created Resources: The lifetime of resources created within these functions (e.g., a handle returned by `minifi_process_session_get` inside `minifi_processor_callbacks::trigger`)
+is limited to the scope of the innermost callback.
+(the return value of `minifi_register_extension` is only valid during the execution of `minifi_init_extension`).
+
+Because of these scoping rules, all processor and controller service registrations must occur within the `minifi_init_extension` call.
+One possible example of this is:
 
 ```C++
-static bool init(const core::extension::ExtensionConfig& /*config*/) override {
-  return curl_global_init(CURL_GLOBAL_DEFAULT) == CURLE_OK;
-}
+extern "C" const uint32_t minifi_api_version = MINIFI_API_VERSION;
 
-static void deinit() override {
-  curl_global_cleanup();
+extern "C" void minifi_init_extension(minifi_extension_context* extension_context) {
+  minifi_extension_definition extension_definition{
+    .name = minifi::api::utils::toStringView(MAKESTRING(EXTENSION_NAME)),
+    .version = minifi::api::utils::toStringView(MAKESTRING(EXTENSION_VERSION)),
+    .group_name = minifi::api::utils::minifiStringView(MAKESTRING(MINIFI_EXTENSION_GROUP_NAME)),
+    .deinit = nullptr,
+    .user_data = nullptr
+  };
+  auto* extension = minifi_register_extension(extension_context, &extension_definition);
+  minifi::api::core::useProcessorClassDefinition<minifi::extensions::llamacpp::processors::RunLlamaCppInference>([&] (const minifi_processor_definition& definition) {
+    minifi_register_processor(extension, &definition);
+  });
 }
-
-REGISTER_EXTENSION("HttpCurlExtension", init, deinit);
 ```
 
-If you don't use `REGISTER_EXTENSION`, the registered resources still become available, so make sure to register the extension if you need special initialization.
+## C++ extensions
+You can utilize the C++ api, linking to `minifi-api` and possibly using the helpers in `extension-framework`.
+No compatibilities are guaranteed beyond what extensions are built together with the agent at the same time.
+
+An extension makes its capabilities (classes) available to the system through registrars. Registration must happen in source files, not headers.
+
+```C++
+// register user-facing classes as
+REGISTER_RESOURCE(InvokeHTTP, Processor);
+// or
+REGISTER_RESOURCE(SSLContextService, ControllerService);
+
+// register internal resources as
+REGISTER_RESOURCE(HTTPClient, InternalResource);
+// or
+REGISTER_RESOURCE(RESTSender, DescriptionOnly);
+```
+
+Some extensions (e.g. `Python`) require initialization before use.
+You need to define an `minifi_init_cpp_extension` function with signature `void minifi_init_cpp_extension(minifi_extension_context*)` to be called.
+
+```C++
+extern "C" void minifi_init_cpp_extension(minifi_extension_context* extension_context) {
+  static PythonLibLoader python_lib_loader([&] (std::string_view key) -> std::optional<std::string> {
+    std::optional<std::string> result;
+    minifi_config_get(extension_context, minifi::utils::toStringView(key), [] (void* user_data, minifi_string_view value) {
+      *static_cast<std::optional<std::string>*>(user_data) = std::string{value.data, value.length};
+    }, &result);
+    return result;
+  });
+  minifi_extension_definition extension_definition{
+    .name = minifi::utils::toStringView(MAKESTRING(MODULE_NAME)),
+    .version = minifi::utils::toStringView(minifi::AgentBuild::VERSION),
+    .group_name = minifi::api::utils::minifiStringView(MAKESTRING(MINIFI_EXTENSION_GROUP_NAME)),
+    .deinit = nullptr,
+    .user_data = nullptr
+  };
+  minifi::utils::MinifiRegisterCppExtension(extension_context, &extension_definition);
+}
+```
 
 # Loading extensions
 
@@ -62,8 +102,8 @@ nifi.extension.path=../extensions/*
 ### Exlusion
 If you want to exclude some extensions from being loaded, without having to specify the rest, you can do so by prefixing the pattern with `!`.
 ```
-// This loads all extensions but the gps extension. (the exact name differs by platform: dylib, dll, so)
-nifi.extension.path=../extensions/*,!../extensions/libminifi-gps.so
+// This loads all extensions but the azure extension. (the exact name differs by platform: dylib, dll, so)
+nifi.extension.path=../extensions/*,!../extensions/libminifi-azure.so
 ```
 
 You could even exclude some subdirectory and then re-include specific extensions/subdirectories in that.

@@ -1,0 +1,129 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include <zlib.h>
+
+#include <algorithm>
+#include <memory>
+#include <utility>
+#include <vector>
+#include <cassert>
+
+#ifdef WIN32
+#include <winsock2.h>
+
+#else
+#include <arpa/inet.h>
+
+#endif
+#include "io/InputStream.h"
+#include "io/OutputStream.h"
+#include "minifi-cpp/Exception.h"
+
+namespace org::apache::nifi::minifi::io {
+namespace internal {
+
+template<typename StreamType>
+class CRCStreamBase : public virtual StreamImpl {
+ public:
+  StreamType *getstream() const {
+    return child_stream_;
+  }
+
+  void close() override { child_stream_->close(); }
+
+  int initialize() override {
+    child_stream_->initialize();
+    reset();
+    return 0;
+  }
+
+  void updateCRC(uint8_t *buffer, uint32_t length) {
+    crc_ = crc32(crc_, buffer, length);
+  }
+
+  uint64_t getCRC() const {
+    return gsl::narrow<uint64_t>(crc_);
+  }
+
+  void reset() {
+    crc_ = crc32(0L, Z_NULL, 0);
+  }
+
+  void setCrc(uint64_t crc) {
+    crc_ = gsl::narrow<uLong>(crc);
+  }
+
+ protected:
+  uLong crc_ = 0;
+  StreamType* child_stream_ = nullptr;
+};
+
+template<typename StreamType>
+class InputCRCStream : public virtual CRCStreamBase<StreamType>, public virtual InputStream {
+ protected:
+  using CRCStreamBase<StreamType>::child_stream_;
+  using CRCStreamBase<StreamType>::crc_;
+
+ public:
+  using InputStream::read;
+
+  size_t read(std::span<std::byte> buf) override {
+    const auto ret = child_stream_->read(buf);
+    if (ret > 0 && !io::isError(ret)) {
+      crc_ = crc32(crc_, reinterpret_cast<const unsigned char*>(buf.data()), gsl::narrow<uInt>(ret));
+    }
+    return ret;
+  }
+
+  size_t size() const override { return child_stream_->size(); }
+};
+
+template<typename StreamType>
+class OutputCRCStream : public virtual CRCStreamBase<StreamType>, public virtual OutputStream {
+ protected:
+  using CRCStreamBase<StreamType>::child_stream_;
+  using CRCStreamBase<StreamType>::crc_;
+
+ public:
+  using OutputStream::write;
+
+  size_t write(const uint8_t *value, size_t size) override {
+    const auto ret = child_stream_->write(value, size);
+    if (ret > 0 && !io::isError(ret)) {
+      crc_ = crc32(crc_, value, gsl::narrow<uInt>(ret));
+    }
+    return ret;
+  }
+};
+
+struct empty_class {};
+
+}  // namespace internal
+
+template<typename StreamType>
+class CRCStream : public std::conditional<std::is_base_of<InputStream, StreamType>::value, internal::InputCRCStream<StreamType>, internal::empty_class>::type
+                  , public std::conditional<std::is_base_of<OutputStream, StreamType>::value, internal::OutputCRCStream<StreamType>, internal::empty_class>::type {
+  using internal::CRCStreamBase<StreamType>::child_stream_;
+  using internal::CRCStreamBase<StreamType>::crc_;
+
+ public:
+  explicit CRCStream(gsl::not_null<StreamType*> child_stream) {
+    child_stream_ = child_stream;
+    crc_ = crc32(0L, Z_NULL, 0);
+  }
+
+  CRCStream(gsl::not_null<StreamType*> child_stream, uint64_t initial_crc) {
+    child_stream_ = child_stream;
+    crc_ = gsl::narrow<uLong>(initial_crc);
+  }
+
+  CRCStream(CRCStream &&stream) noexcept {
+    child_stream_ = std::exchange(stream.child_stream_, nullptr);
+    crc_ = std::exchange(stream.crc_, 0);
+  }
+};
+
+}  // namespace org::apache::nifi::minifi::io

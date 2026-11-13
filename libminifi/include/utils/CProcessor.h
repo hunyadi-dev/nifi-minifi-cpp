@@ -1,0 +1,166 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#pragma once
+
+#include <string>
+#include <utility>
+
+#include "core/ProcessorMetrics.h"
+#include "minifi-api.h"
+#include "minifi-cpp/agent/agent_docs.h"
+#include "minifi-cpp/core/Annotation.h"
+#include "minifi-cpp/core/ProcessContext.h"
+#include "minifi-cpp/core/ProcessorApi.h"
+#include "minifi-cpp/core/ProcessorDescriptor.h"
+#include "minifi-cpp/core/ProcessorMetadata.h"
+#include "utils/minifi-api-utils.h"
+
+namespace org::apache::nifi::minifi::utils {
+
+class CProcessor;
+
+class CProcessorMetricsWrapper : public minifi::core::ProcessorMetricsExtension {
+ public:
+  explicit CProcessorMetricsWrapper(const CProcessor& source_processor)
+      : source_processor_(source_processor) {
+  }
+
+  std::vector<minifi::state::response::SerializedResponseNode> serialize() override;
+
+  std::vector<minifi::state::PublishedMetric> calculateMetrics() override;
+
+ private:
+  const CProcessor& source_processor_;
+};
+
+struct CProcessorClassDescription {
+  std::string name;
+  std::vector<minifi::core::Property> class_properties;
+  std::vector<minifi::core::Relationship> class_relationships;
+  bool supports_dynamic_properties;
+  bool supports_dynamic_relationships;
+  minifi::core::annotation::Input input_requirement;
+  bool is_single_threaded;
+
+  minifi_processor_callbacks callbacks;
+};
+
+class CProcessor : public minifi::core::ProcessorApi {
+ public:
+  CProcessor(CProcessorClassDescription class_description, minifi::core::ProcessorMetadata metadata)
+      : class_description_(std::move(class_description)),
+        metadata_(std::move(metadata)),
+        metrics_extension_(std::make_shared<CProcessorMetricsWrapper>(*this)) {
+    minifi_processor_metadata c_metadata;
+    const auto uuid_str = metadata.uuid.to_string();
+    c_metadata.uuid = minifiStringView(uuid_str.view());
+    c_metadata.name = minifiStringView(metadata_.name);
+    c_metadata.logger = toC(&metadata_.logger);
+    impl_ = class_description_.callbacks.create(c_metadata);
+  }
+  CProcessor(CProcessorClassDescription class_description, minifi::core::ProcessorMetadata metadata, gsl::owner<void*> impl)
+      : class_description_(std::move(class_description)),
+        impl_(impl),
+        metadata_(std::move(metadata)),
+        metrics_extension_(std::make_shared<CProcessorMetricsWrapper>(*this)) {}
+  ~CProcessor() override {
+    class_description_.callbacks.destroy(impl_);
+  }
+
+  // C API doesnt yet expose isWorkAvailable
+  bool isWorkAvailable() override {
+    return false;
+  }
+
+  void restore(const std::shared_ptr<minifi::core::FlowFile>& /*file*/) override {
+    gsl_Assert(false && "Not implemented");
+  }
+
+  bool supportsDynamicProperties() const override {
+    return class_description_.supports_dynamic_properties;
+  }
+
+  bool supportsDynamicRelationships() const override {
+    return class_description_.supports_dynamic_relationships;
+  }
+
+  void initialize(minifi::core::ProcessorDescriptor& descriptor) override {
+    descriptor.setSupportedProperties(std::span(class_description_.class_properties));
+
+    std::vector<minifi::core::RelationshipDefinition> relationships;
+    for (auto& rel : class_description_.class_relationships) {relationships.push_back(rel.getDefinition());}
+    descriptor.setSupportedRelationships(relationships);
+  }
+
+  bool isSingleThreaded() const override {
+    return class_description_.is_single_threaded;
+  }
+
+  void onTrigger(minifi::core::ProcessContext& process_context, minifi::core::ProcessSession& process_session) override {
+    std::optional<std::string> error;
+    auto status = class_description_.callbacks.trigger(impl_, toC(&process_context), toC(&process_session));
+    if (status == MINIFI_STATUS_PROCESSOR_YIELD) {
+      process_context.yield();
+      return;
+    }
+    if (status != MINIFI_STATUS_SUCCESS) {
+      throw minifi::Exception(minifi::ExceptionType::PROCESSOR_EXCEPTION, "Error while triggering processor");
+    }
+  }
+
+  void onSchedule(minifi::core::ProcessContext& process_context, minifi::core::ProcessSessionFactory& /*process_session_factory*/) override {
+    std::optional<std::string> error;
+    auto status = class_description_.callbacks.schedule(impl_, toC(&process_context));
+    if (status != MINIFI_STATUS_SUCCESS) {
+      throw minifi::Exception(minifi::ExceptionType::PROCESS_SCHEDULE_EXCEPTION, "Error while scheduling processor");
+    }
+  }
+
+  void onUnSchedule() override {
+    class_description_.callbacks.unschedule(impl_);
+  }
+
+  void notifyStop() override {
+    class_description_.callbacks.unschedule(impl_);
+  }
+
+  minifi::core::annotation::Input getInputRequirement() const override {
+    return class_description_.input_requirement;
+  }
+
+  std::shared_ptr<minifi::core::ProcessorMetricsExtension> getMetricsExtension() const override {
+    return metrics_extension_;
+  }
+
+  std::vector<minifi::state::PublishedMetric> getCustomMetrics() const;
+
+  void forEachLogger(const std::function<void(std::shared_ptr<minifi::core::logging::Logger>)>&) override {}
+
+  std::string getName() const {
+    return metadata_.name;
+  }
+
+  minifi::utils::Identifier getUUID() const {
+    return metadata_.uuid;
+  }
+
+  void reportMetrics(std::vector<minifi::state::PublishedMetric> metrics) {
+    std::lock_guard guard(metrics_mutex_);
+    reported_metrics_ = std::move(metrics);
+  }
+
+ private:
+  CProcessorClassDescription class_description_;
+  gsl::owner<void*> impl_;
+  minifi::core::ProcessorMetadata metadata_;
+  gsl::not_null<std::shared_ptr<minifi::core::ProcessorMetricsExtension>> metrics_extension_;
+
+  mutable std::mutex metrics_mutex_;
+  std::vector<minifi::state::PublishedMetric> reported_metrics_;
+};
+
+void useCProcessorClassDescription(const minifi_processor_definition& class_description, const std::function<void(ClassDescription, CProcessorClassDescription)>& fn);
+
+}  // namespace org::apache::nifi::minifi::utils

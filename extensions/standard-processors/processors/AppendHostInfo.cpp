@@ -1,22 +1,6 @@
-/**
- * @file AppendHostInfo.cpp
- * AppendHostInfo class implementation
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #include "AppendHostInfo.h"
 
 #ifndef __USE_POSIX
@@ -27,55 +11,36 @@
 #include <string>
 #include <regex>
 #include <algorithm>
-#include "core/ProcessContext.h"
-#include "core/Property.h"
+#include "minifi-cpp/core/ProcessContext.h"
 #include "core/ProcessSession.h"
-#include "core/FlowFile.h"
+#include "minifi-cpp/core/FlowFile.h"
 #include "core/Resource.h"
-#include "io/ClientSocket.h"
-#include "utils/NetworkInterfaceInfo.h"
+#include "utils/net/NetworkInterfaceInfo.h"
+#include "utils/net/DNS.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace processors {
-
-core::Property AppendHostInfo::InterfaceNameFilter("Network Interface Filter", "A regular expression to filter ip addresses based on the name of the network interface", "");
-core::Property AppendHostInfo::HostAttribute("Hostname Attribute", "Flowfile attribute used to record the agent's hostname", "source.hostname");
-core::Property AppendHostInfo::IPAttribute("IP Attribute", "Flowfile attribute used to record the agent's IP addresses in a comma separated list", "source.ipv4");
-core::Property AppendHostInfo::RefreshPolicy(core::PropertyBuilder::createProperty("Refresh Policy")
-    ->withDescription("When to recalculate the host info")
-    ->withAllowableValues<std::string>({ REFRESH_POLICY_ON_SCHEDULE, REFRESH_POLICY_ON_TRIGGER })
-    ->withDefaultValue(REFRESH_POLICY_ON_SCHEDULE)->build());
-
-core::Relationship AppendHostInfo::Success("success", "success operational on the flow record");
+namespace org::apache::nifi::minifi::processors {
 
 void AppendHostInfo::initialize() {
-  setSupportedProperties({InterfaceNameFilter, HostAttribute, IPAttribute, RefreshPolicy});
-  setSupportedRelationships({Success});
+  setSupportedProperties(Properties);
+  setSupportedRelationships(Relationships);
 }
 
-void AppendHostInfo::onSchedule(const std::shared_ptr<core::ProcessContext>& context, const std::shared_ptr<core::ProcessSessionFactory>&) {
+void AppendHostInfo::onSchedule(core::ProcessContext& context, core::ProcessSessionFactory&) {
   std::unique_lock unique_lock(shared_mutex_);
-  context->getProperty(HostAttribute.getName(), hostname_attribute_name_);
-  context->getProperty(IPAttribute.getName(), ipaddress_attribute_name_);
-  std::string interface_name_filter_str;
-  if (context->getProperty(InterfaceNameFilter.getName(), interface_name_filter_str) && !interface_name_filter_str.empty())
-    interface_name_filter_.emplace(interface_name_filter_str);
-  else
-    interface_name_filter_ = std::nullopt;
+  hostname_attribute_name_ = context.getProperty(HostAttribute) | utils::orThrow("AppendHostInfo::HostAttribute is a required Property");
+  ipaddress_attribute_name_ = context.getProperty(IPAttribute) | utils::orThrow("AppendHostInfo::IPAttribute is a required Property");
+  interface_name_filter_ = context.getProperty(InterfaceNameFilter)
+      | utils::toOptional()
+      | utils::filter([](const std::string& inf) { return !inf.empty(); });
 
-  std::string refresh_policy;
-  context->getProperty(RefreshPolicy.getName(), refresh_policy);
-  if (refresh_policy == REFRESH_POLICY_ON_TRIGGER)
+  if (auto refresh_policy = context.getProperty(RefreshPolicy); refresh_policy && *refresh_policy == REFRESH_POLICY_ON_TRIGGER)
     refresh_on_trigger_ = true;
   else
     refreshHostInfo();
 }
 
-void AppendHostInfo::onTrigger(core::ProcessContext*, core::ProcessSession* session) {
-  std::shared_ptr<core::FlowFile> flow = session->get();
+void AppendHostInfo::onTrigger(core::ProcessContext&, core::ProcessSession& session) {
+  const std::shared_ptr<core::FlowFile> flow = session.get();
   if (!flow)
     return;
 
@@ -96,19 +61,19 @@ void AppendHostInfo::onTrigger(core::ProcessContext*, core::ProcessSession* sess
     }
   }
 
-  session->transfer(flow, Success);
+  session.transfer(flow, Success);
 }
 
 void AppendHostInfo::refreshHostInfo() {
-  hostname_ = org::apache::nifi::minifi::io::Socket::getMyHostName();
+  hostname_ = org::apache::nifi::minifi::utils::net::getMyHostName();
   auto filter = [this](const utils::NetworkInterfaceInfo& interface_info) -> bool {
-    bool has_ipv4_address = interface_info.hasIpV4Address();
-    bool matches_regex_or_empty_regex = (!interface_name_filter_.has_value()) || std::regex_match(interface_info.getName(), interface_name_filter_.value());
+    const bool has_ipv4_address = interface_info.hasIpV4Address();
+    const bool matches_regex_or_empty_regex = (!interface_name_filter_.has_value()) || std::regex_match(interface_info.getName(), interface_name_filter_.value());
     return has_ipv4_address && matches_regex_or_empty_regex;
   };
   auto network_interface_infos = utils::NetworkInterfaceInfo::getNetworkInterfaceInfos(filter);
   std::ostringstream oss;
-  if (network_interface_infos.size() == 0) {
+  if (network_interface_infos.empty()) {
     ipaddresses_ = std::nullopt;
   } else {
     for (auto& network_interface_info : network_interface_infos) {
@@ -120,10 +85,6 @@ void AppendHostInfo::refreshHostInfo() {
   }
 }
 
-REGISTER_RESOURCE(AppendHostInfo, "Appends host information such as IP address and hostname as an attribute to incoming flowfiles.");
+REGISTER_RESOURCE(AppendHostInfo, Processor);
 
-} /* namespace processors */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+}  // namespace org::apache::nifi::minifi::processors

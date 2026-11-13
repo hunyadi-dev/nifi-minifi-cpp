@@ -1,27 +1,18 @@
-# Licensed to the Apache Software Foundation (ASF) under one
-#
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
-#
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
-cmake_minimum_required(VERSION 3.16)
+cmake_minimum_required(VERSION 3.26)
 cmake_policy(SET CMP0096 NEW) # policy to preserve the leading zeros in PROJECT_VERSION_{MAJOR,MINOR,PATCH,TWEAK}
-cmake_policy(SET CMP0065 OLD) # default export policy, required for self-dlopen
-project(nifi-minifi-cpp VERSION 0.11.0)
+cmake_policy(SET CMP0135 NEW) # policy to set the timestamps of extracted contents to the time of extraction
+
+project(nifi-minifi-cpp VERSION 1.1.0)
 set(PROJECT_NAME "nifi-minifi-cpp")
+set(CMAKE_POLICY_VERSION_MINIMUM 3.5)
+
+if (NOT CMAKE_BUILD_TYPE)
+    set(CMAKE_BUILD_TYPE "Release" CACHE STRING "Build type" FORCE)
+endif()
 
 # Optional build number for linux distribution targets' tar.gz output
 set(BUILD_NUMBER "" CACHE STRING "Build number")
@@ -29,158 +20,114 @@ set(BUILD_NUMBER "" CACHE STRING "Build number")
 # Base Alpine image to be used in the Docker build instead of the default Alpine image
 set(DOCKER_BASE_IMAGE "" CACHE STRING "Docker build Alpine base image")
 set(DOCKER_CCACHE_DUMP_LOCATION "" CACHE STRING "Directory to dump ccache to after docker build for later reuse")
+set(DOCKER_PLATFORMS "" CACHE STRING "Build platforms for docker image build")
+set(DOCKER_TAGS "" CACHE STRING "Comma separated tags to override default docker build image:tag pairs with")
 
 include(CMakeDependentOption)
 include(CheckIncludeFile)
 include(FeatureSummary)
 include(ExternalProject)
+include(GNUInstallDirs)
 
 # Provide custom modules for the project
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake")
 include(WholeArchive)
 
-option(ENABLE_LINTER "Create linter components" ON)
-option(SKIP_TESTS "Skips building all tests." OFF)
-option(PORTABLE "Instructs the compiler to remove architecture specific optimizations" ON)
-option(USE_SHARED_LIBS "Builds using shared libraries" ON)
-option(ENABLE_PYTHON "Instructs the build system to enable building shared objects for the python lib" OFF)
-cmake_dependent_option(STATIC_BUILD "Attempts to statically link as many dependencies as possible." ON "NOT ENABLE_PYTHON; NOT USE_SHARED_LIBS" OFF)
-option(LIBC_STATIC "Instructs the build system to statically link libstdc++ and glibc into minifiexe. Experiemental" OFF)
-option(OPENSSL_OFF "Disables OpenSSL" OFF)
-option(ENABLE_OPS "Enable Operations/zlib Tools" ON)
-option(ENABLE_JNI "Instructs the build system to enable the JNI extension" OFF)
-option(ENABLE_OPENCV "Instructs the build system to enable the OpenCV extension" OFF)
-option(ENABLE_OPC "Instructs the build system to enable the OPC extension" OFF)
-option(ENABLE_NANOFI "Instructs the build system to enable nanofi library" OFF)
-option(BUILD_SHARED_LIBS "Build yaml cpp shared lib" OFF)
-
-option(BUILD_ROCKSDB "Instructs the build system to use RocksDB from the third party directory" ON)
-option(FORCE_WINDOWS "Instructs the build system to force Windows builds when WIN32 is specified" OFF)
-option(DISABLE_CURL "Disables libCurl Properties." OFF)
-
-option(USE_GOLD_LINKER "Use Gold Linker" OFF)
-option(INSTALLER_MERGE_MODULES "Creates installer with merge modules" OFF)
-option(FAIL_ON_WARNINGS "Treat warnings as errors" OFF)
-option(USE_REAL_ODBC_TEST_DRIVER "Use SQLite ODBC driver in SQL extenstion unit tests instead of a mock database" OFF)
-# This is needed for ninja:
-# By default, neither Clang or GCC will add ANSI-formatted colors to your output if they detect
-# the output medium is not a terminal. This means no coloring when using a generator
-# different than "GNU Makefiles".
-option (FORCE_COLORED_OUTPUT "Always produce ANSI-colored output (GNU/Clang only)." FALSE)
-option(AWS_ENABLE_UNITY_BUILD "If enabled, AWS SDK libraries will be built as a single, generated .cpp file. \
-	This can significantly reduce static library size as well as speed up a single compilation time, but it is regenerated \
-	and recompiled in every iterative build instance. Turn off to avoid recompilation." ON)
-
-cmake_dependent_option(ASAN_BUILD "Uses AddressSanitizer to instrument the code" OFF "NOT WIN32" OFF)
-
-# Option: STRICT_GSL_CHECKS
-# AUDIT: Enable all checks, including gsl_ExpectsAudit() and gsl_EnsuresAudit()
-# ON: Enable all checks, excluding gsl_ExpectsAudit() and gsl_EnsuresAudit() (GSL default)
-# DEBUG_ONLY: Like ON in the Debug configuration, OFF in others (MiNiFi C++ default)
-# OFF: Throw on contract checking and assertion failures instead of calling std::terminate()
-set(STRICT_GSL_CHECKS "DEBUG_ONLY" CACHE STRING "Contract checking and assertion failures call terminate")
-list(APPEND STRICT_GSL_CHECKS_Values AUDIT ON DEBUG_ONLY OFF)
-set_property(CACHE STRICT_GSL_CHECKS PROPERTY STRINGS ${STRICT_GSL_CHECKS_Values})
-
-if (WIN32)
-	option(MSI_REDISTRIBUTE_UCRT_NONASL "Redistribute Universal C Runtime DLLs with the MSI generated by CPack. The resulting MSI is not distributable under Apache 2.0." OFF)
-	option(ENABLE_WEL "Enables the suite of Windows Event Log extensions." OFF)
-	option(ENABLE_PDH "Enables PDH support." OFF)
-endif()
-
-if(CMAKE_SYSTEM_NAME STREQUAL "Linux")
-	option(ENABLE_SYSTEMD "Enables the systemd extension." ON)
-endif()
-
-option(DISABLE_EXPRESSION_LANGUAGE "Disables the scripting extensions." OFF)
-option(DISABLE_CIVET "Disables CivetWeb components." OFF)
-option(DISABLE_ROCKSDB "Disables the RocksDB extension." OFF)
-option(DISABLE_LIBARCHIVE "Disables the lib archive extensions." OFF)
-option(DISABLE_LZMA "Disables the liblzma build" OFF)
-option(DISABLE_BZIP2 "Disables the bzip2 build" OFF)
-option(ENABLE_GPS "Enables the GPS extension." OFF)
-option(ENABLE_COAP "Enables the CoAP extension." OFF)
-option(ENABLE_SQL "Enables the SQL Suite of Tools." OFF)
-option(ENABLE_MQTT "Enables the mqtt extension." OFF)
-option(ENABLE_PCAP "Enables the PCAP extension." OFF)
-option(ENABLE_LIBRDKAFKA "Enables the librdkafka extension." OFF)
-option(ENABLE_SCRIPTING "Enables the scripting extensions." OFF)
-option(ENABLE_SENSORS "Enables the Sensors package." OFF)
-option(ENABLE_USB_CAMERA "Enables USB camera support." OFF)
-option(ENABLE_TENSORFLOW "Enables the TensorFlow extensions." OFF)  ## Disabled by default because TF can be complex/environment-specific to build
-option(ENABLE_AWS "Enables AWS support." OFF)
-option(ENABLE_OPENCV "Enables the OpenCV extensions." OFF)
-option(ENABLE_BUSTACHE "Enables Bustache (ApplyTemplate) support." OFF)
-option(ENABLE_SFTP "Enables SFTP support." OFF)
-option(ENABLE_OPENWSMAN "Enables the Openwsman extensions." OFF)
-option(ENABLE_AZURE "Enables Azure support." OFF)
-option(ENABLE_ENCRYPT_CONFIG "Enables build of encrypt-config binary." ON)
-option(DOCKER_BUILD_ONLY "Disables all targets except docker build scripts. Ideal for systems without an up-to-date compiler." OFF)
-
-## Keep all option definitions above this line
+include(MiNiFiOptions)
 
 include(DockerConfig)
 if (DOCKER_BUILD_ONLY)
     return()
 endif()
 
-if (${FORCE_COLORED_OUTPUT})
-	message("CMAKE_CXX_COMPILER_ID is ${CMAKE_CXX_COMPILER_ID}")
-	if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
-		add_compile_options (-fdiagnostics-color=always)
-	elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
-		add_compile_options (-fcolor-diagnostics)
-	elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
-		add_compile_options (-fcolor-diagnostics)
-	endif ()
-endif ()
+# Find bash executable
+find_package(Bash REQUIRED)
 
-if (USE_REAL_ODBC_TEST_DRIVER)
-	add_definitions("-DUSE_REAL_ODBC_TEST_DRIVER")
+# Find patch executable
+find_package(Patch REQUIRED)
+
+include(CppLint)
+add_custom_target(linter COMMAND
+        python3 ${CPPLINT_DIR}/run_linter.py -q -i ${CMAKE_SOURCE_DIR}/controller/ ${CMAKE_SOURCE_DIR}/core-framework/ ${CMAKE_SOURCE_DIR}/encrypt-config/ ${CMAKE_SOURCE_DIR}/extension-framework/ ${CMAKE_SOURCE_DIR}/extensions/ ${CMAKE_SOURCE_DIR}/libminifi/ ${CMAKE_SOURCE_DIR}/minifi-api/ ${CMAKE_SOURCE_DIR}/minifi_main/)
+set_target_properties(linter PROPERTIES EXCLUDE_FROM_DEFAULT_BUILD TRUE)
+
+if(NOT WIN32)
+add_custom_target(shellcheck
+    COMMAND ${CMAKE_SOURCE_DIR}/run_shellcheck.sh ${CMAKE_SOURCE_DIR})
+endif(NOT WIN32)
+
+include(ApacheRAT)
+
+if (MINIFI_STATIC_ANALYSIS_ONLY)
+    return()
+endif()
+
+# Generate the build identifier if one is not provided
+if (NOT BUILD_IDENTIFIER)
+    string(RANDOM LENGTH 24 BUILD_IDENTIFIER)
+    set(BUILD_IDENTIFIER "${BUILD_IDENTIFIER}" CACHE STRING "Build identifier" FORCE)
+endif()
+
+message("BUILD_IDENTIFIER is ${BUILD_IDENTIFIER}")
+
+if (WIN32)
+    set(LEGAL_COPYRIGHT "Apache License v2.0" CACHE STRING "Used in Windows versioninfo.rc")
+    set(COMPANY_NAME "Apache Software Foundation" CACHE STRING "Used in Windows versioninfo.rc")
+    set(PRODUCT_NAME "MiNiFi C++" CACHE STRING "Used in Windows versioninfo.rc")
+endif()
+
+if (${FORCE_COLORED_OUTPUT})
+    message("CMAKE_CXX_COMPILER_ID is ${CMAKE_CXX_COMPILER_ID}")
+    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+        add_compile_options (-fdiagnostics-color=always)
+    elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "Clang")
+        add_compile_options (-fcolor-diagnostics)
+    elseif ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "AppleClang")
+        add_compile_options (-fcolor-diagnostics)
+    endif()
+endif()
+
+if (MINIFI_USE_REAL_ODBC_TEST_DRIVER)
+    add_definitions("-DMINIFI_USE_REAL_ODBC_TEST_DRIVER")
 endif()
 
 # Use ccache if present
 find_program(CCACHE_FOUND ccache)
 if(CCACHE_FOUND)
-	set_property(GLOBAL PROPERTY RULE_LAUNCH_COMPILE ccache)
-	set_property(GLOBAL PROPERTY RULE_LAUNCH_LINK ccache)
-	message("-- Found ccache: ${CCACHE_FOUND}")
+    if(NOT CMAKE_C_COMPILER_LAUNCHER)
+        set(CMAKE_C_COMPILER_LAUNCHER "${CCACHE_FOUND}")
+    endif()
+    if(NOT CMAKE_CXX_COMPILER_LAUNCHER)
+        set(CMAKE_CXX_COMPILER_LAUNCHER "${CCACHE_FOUND}")
+    endif()
+    message("-- Found ccache: ${CCACHE_FOUND}")
 endif(CCACHE_FOUND)
-
-# Use gold linker if instructed
-if (UNIX AND USE_GOLD_LINKER AND NOT APPLE )
-  execute_process(COMMAND ${CMAKE_C_COMPILER} -fuse-ld=gold -Wl,--version ERROR_QUIET OUTPUT_VARIABLE ld_version)
-  if ("${ld_version}" MATCHES "GNU gold")
-	set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -fuse-ld=gold -Wl,--disable-new-dtags")
-	set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -fuse-ld=gold -Wl,--disable-new-dtags")
-  endif()
-endif()
 
 # Check for exec info before we enable the backtrace features.
 CHECK_INCLUDE_FILE("execinfo.h" HAS_EXECINFO)
 if (ENABLE_OPS AND HAS_EXECINFO AND NOT WIN32)
-  add_definitions("-DHAS_EXECINFO=1")
+    add_definitions("-DHAS_EXECINFO=1")
 endif()
 
 #### Establish Project Configuration ####
 # Enable usage of the VERSION specifier
 if (WIN32)
     add_compile_definitions(WIN32_LEAN_AND_MEAN _CRT_SECURE_NO_WARNINGS NOMINMAX)
-    add_compile_options(/W3 /utf-8)
-endif()
-
-if (WIN32)
-	add_definitions(-DSERVICE_NAME="Apache NiFi MINiFi")
+    add_compile_options(/W3 /utf-8 /bigobj /MP /diagnostics:caret)
+    if (CMAKE_GENERATOR STREQUAL "Ninja")
+        # these flags are default on msbuild, but not on ninja
+        add_compile_options($<$<CONFIG:Debug>:/MDd> $<$<NOT:$<CONFIG:Debug>>:/MD> /GS /fp:precise /Zc:wchar_t /Zc:forScope /Zc:inline)
+    endif()
 endif()
 
 if (NOT PORTABLE)
-	if(MSVC)
-		set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /arch:AVX2")
-		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /arch:AVX2")
-	else()
-		set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
-		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
-	endif()
+    if(MSVC)
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /arch:AVX2")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /arch:AVX2")
+    else()
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -march=native")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -march=native")
+    endif()
 endif()
 
 include(CppVersion)
@@ -201,595 +148,576 @@ message("THREADS_HAVE_PTHREAD_ARG is ${THREADS_HAVE_PTHREAD_ARG}")
 set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 
 # Use ASAN if instructed
-if (ASAN_BUILD)
-	set(ASAN_FLAGS "-g -fsanitize=address -fsanitize-address-use-after-scope -fno-omit-frame-pointer")
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${ASAN_FLAGS}")
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${ASAN_FLAGS}")
-	set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${ASAN_FLAGS}")
-	set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${ASAN_FLAGS}")
+if (MINIFI_ADVANCED_ASAN_BUILD)
+    if (CUSTOM_MALLOC)
+        message(FATAL_ERROR "MINIFI_ADVANCED_ASAN_BUILD is incompatible with CUSTOM_MALLOC "
+            "(currently '${CUSTOM_MALLOC}'): AddressSanitizer supplies its own allocator. "
+            "Disable one of them.")
+    endif()
+    if (NOT CMAKE_BUILD_TYPE STREQUAL "Debug")
+        message(WARNING "MINIFI_ADVANCED_ASAN_BUILD is enabled but CMAKE_BUILD_TYPE is "
+            "'${CMAKE_BUILD_TYPE}', not Debug; a Debug build is recommended for the most "
+            "accurate AddressSanitizer diagnostics.")
+    endif()
+    set(ASAN_FLAGS "-g -fsanitize=address -fsanitize-address-use-after-scope -fno-omit-frame-pointer")
+    set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} ${ASAN_FLAGS}")
+    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} ${ASAN_FLAGS}")
+    set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} ${ASAN_FLAGS}")
+    set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} ${ASAN_FLAGS}")
+endif()
+
+if (MINIFI_ADVANCED_CODE_COVERAGE)
+    include(CodeCoverage)
+    append_coverage_compiler_flags()
+endif()
+
+if (MINIFI_ADVANCED_LINK_TIME_OPTIMIZATION)
+    if (WIN32)
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /GL")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /GL")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} /LTCG")
+        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} /LTCG")
+    else()
+        set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -flto")
+        set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -flto")
+        set(CMAKE_EXE_LINKER_FLAGS "${CMAKE_EXE_LINKER_FLAGS} -flto")
+        set(CMAKE_SHARED_LINKER_FLAGS "${CMAKE_SHARED_LINKER_FLAGS} -flto")
+    endif()
 endif()
 
 #### Third party dependencies ####
 
 # Define function for passing dependencies
 function(append_third_party_passthrough_args OUTPUT EXTERNALPROJECT_CMAKE_ARGS)
-	string(REPLACE ";" "%" CMAKE_MODULE_PATH_PASSTHROUGH "${CMAKE_MODULE_PATH}")
-	list(APPEND EXTERNALPROJECT_CMAKE_ARGS "-DCMAKE_MODULE_PATH=${CMAKE_MODULE_PATH_PASSTHROUGH}")
-	list(APPEND EXTERNALPROJECT_CMAKE_ARGS ${PASSTHROUGH_VARIABLES})
-	set(${OUTPUT} ${EXTERNALPROJECT_CMAKE_ARGS} PARENT_SCOPE)
+    string(REPLACE ";" "%" CMAKE_MODULE_PATH_PASSTHROUGH "${CMAKE_MODULE_PATH}")
+    list(APPEND EXTERNALPROJECT_CMAKE_ARGS "-DCMAKE_MODULE_PATH=${CMAKE_MODULE_PATH_PASSTHROUGH}")
+    list(APPEND EXTERNALPROJECT_CMAKE_ARGS ${PASSTHROUGH_VARIABLES})
+    set(${OUTPUT} ${EXTERNALPROJECT_CMAKE_ARGS} PARENT_SCOPE)
 endfunction()
-
-# Find bash executable
-find_package(Bash REQUIRED)
-
-# Find patch executable
-find_package(Patch REQUIRED)
 
 # Setup passthrough args used by third parties
 if (WIN32)
-	set(PASSTHROUGH_CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /w")
-	set(PASSTHROUGH_CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /w")
+    set(PASSTHROUGH_CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /w")
+    set(PASSTHROUGH_CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /w")
 else()
-	set(PASSTHROUGH_CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w")
-	set(PASSTHROUGH_CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -w")
+    set(PASSTHROUGH_CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w")
+    set(PASSTHROUGH_CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -w")
 endif()
 
 set(PASSTHROUGH_CMAKE_ARGS -DANDROID_ABI=${ANDROID_ABI}
-		-DANDROID_PLATFORM=${ANDROID_PLATFORM}
-		-DANDROID_STL=${ANDROID_STL}
-		-DCMAKE_LIBRARY_OUTPUT_DIRECTORY=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}
-		-DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
-		-DANDROID_NDK=${ANDROID_NDK}
-		-DCMAKE_POSITION_INDEPENDENT_CODE=${CMAKE_POSITION_INDEPENDENT_CODE}
-		-DCMAKE_C_FLAGS=${PASSTHROUGH_CMAKE_C_FLAGS}
-		-DCMAKE_CXX_FLAGS=${PASSTHROUGH_CMAKE_CXX_FLAGS}
-		-DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
-		-DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
-		-DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
-		-DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
-		-DCMAKE_EXE_LINKER_FLAGS=${CMAKE_EXE_LINKER_FLAGS}
-		-DCMAKE_SHARED_LINKER_FLAGS=${CMAKE_SHARED_LINKER_FLAGS}
-		-DCMAKE_FIND_ROOT_PATH=${CMAKE_FIND_ROOT_PATH}
-		-DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=${CMAKE_FIND_ROOT_PATH_MODE_PROGRAM}
-		-DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=${CMAKE_FIND_ROOT_PATH_MODE_LIBRARY}
-		-DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=${CMAKE_FIND_ROOT_PATH_MODE_INCLUDE}
-		-DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
-		-DCOMPILE_DEFINITIONS=${COMPILE_DEFINITIONS}
-		-DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD}
-		-DCMAKE_CXX_STANDARD_REQUIRED=${CMAKE_CXX_STANDARD_REQUIRED}
-		-G${CMAKE_GENERATOR}
-		)
+    -DANDROID_PLATFORM=${ANDROID_PLATFORM}
+    -DANDROID_STL=${ANDROID_STL}
+    -DCMAKE_LIBRARY_OUTPUT_DIRECTORY=${CMAKE_LIBRARY_OUTPUT_DIRECTORY}
+    -DCMAKE_BUILD_TYPE=${CMAKE_BUILD_TYPE}
+    -DANDROID_NDK=${ANDROID_NDK}
+    -DCMAKE_POSITION_INDEPENDENT_CODE=${CMAKE_POSITION_INDEPENDENT_CODE}
+    -DCMAKE_POLICY_VERSION_MINIMUM=${CMAKE_POLICY_VERSION_MINIMUM}
+    -DCMAKE_POLICY_DEFAULT_CMP0091=NEW
+    -DCMAKE_C_FLAGS=${PASSTHROUGH_CMAKE_C_FLAGS}
+    -DCMAKE_CXX_FLAGS=${PASSTHROUGH_CMAKE_CXX_FLAGS}
+    -DCMAKE_TOOLCHAIN_FILE=${CMAKE_TOOLCHAIN_FILE}
+    -DCMAKE_MAKE_PROGRAM=${CMAKE_MAKE_PROGRAM}
+    -DCMAKE_C_COMPILER=${CMAKE_C_COMPILER}
+    -DCMAKE_CXX_COMPILER=${CMAKE_CXX_COMPILER}
+    -DCMAKE_EXE_LINKER_FLAGS=${CMAKE_EXE_LINKER_FLAGS}
+    -DCMAKE_SHARED_LINKER_FLAGS=${CMAKE_SHARED_LINKER_FLAGS}
+    -DCMAKE_FIND_ROOT_PATH=${CMAKE_FIND_ROOT_PATH}
+    -DCMAKE_FIND_ROOT_PATH_MODE_PROGRAM=${CMAKE_FIND_ROOT_PATH_MODE_PROGRAM}
+    -DCMAKE_FIND_ROOT_PATH_MODE_LIBRARY=${CMAKE_FIND_ROOT_PATH_MODE_LIBRARY}
+    -DCMAKE_FIND_ROOT_PATH_MODE_INCLUDE=${CMAKE_FIND_ROOT_PATH_MODE_INCLUDE}
+    -DCMAKE_INSTALL_PREFIX=${CMAKE_INSTALL_PREFIX}
+    -DCOMPILE_DEFINITIONS=${COMPILE_DEFINITIONS}
+    -DCMAKE_CXX_STANDARD=${CMAKE_CXX_STANDARD}
+    -DCMAKE_CXX_STANDARD_REQUIRED=${CMAKE_CXX_STANDARD_REQUIRED}
+    -G${CMAKE_GENERATOR}
+    )
 
-# jemalloc
-if(NOT WIN32)
-	if (ENABLE_JNI)
-		if (NOT DISABLE_JEMALLOC)
-			include(BundledJemalloc)
-			use_bundled_jemalloc(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-			message("jemalloc found at ${JEMALLOC_LIBRARIES}")
-		endif()
-		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DENABLE_JNI")
-		set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DENABLE_JNI")
-	endif()
+set(MINIFI_CPP_COMPILE_OPTIONS "")
+set(MINIFI_CPP_COMPILE_DEFINITIONS "")
+
+if(CUSTOM_MALLOC)
+    if (CUSTOM_MALLOC STREQUAL jemalloc)
+        include(GetJemalloc)
+        get_jemalloc(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+        set(CUSTOM_MALLOC_LIB jemalloc::jemalloc)
+    elseif (CUSTOM_MALLOC STREQUAL mimalloc)
+        include(GetMiMalloc)
+        set(CUSTOM_MALLOC_LIB mimalloc-static)
+    elseif (CUSTOM_MALLOC STREQUAL rpmalloc)
+        include(GetRpMalloc)
+        set(CUSTOM_MALLOC_LIB rpmalloc)
+    else()
+        message(FATAL_ERROR "Invalid CUSTOM_MALLOC")
+    endif()
+else()
+    message(VERBOSE "No custom malloc implementation")
 endif()
 
-# Simple-Windows-Posix-Semaphore
-if (WIN32)
-  	add_subdirectory("thirdparty/Simple-Windows-Posix-Semaphore")
+# OpenSSL
+include(GetOpenSSL)
+
+# BZip2
+if (ENABLE_BZIP2 AND (ENABLE_LIBARCHIVE OR (ENABLE_ROCKSDB AND NOT WIN32)))
+    include(GetBZip2)
+    list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/bzip2/dummy")
 endif()
 
 # ossp-uuid
 if(NOT WIN32)
-	include(BundledOSSPUUID)
-	use_bundled_osspuuid(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-endif()
-
-# OpenSSL/LibreSSL
-if (NOT OPENSSL_OFF)
-	include(BundledLibreSSL)
-	use_libre_ssl("${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
-	list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/ssl")
-
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DOPENSSL_SUPPORT")
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DOPENSSL_SUPPORT")
+    include(GetOSSPUUID)
 endif()
 
 # libsodium
-include(BundledLibSodium)
-use_bundled_libsodium("${CMAKE_CURRENT_SOURCE_DIR}" "${CMAKE_CURRENT_BINARY_DIR}")
-set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DSODIUM_STATIC=1")
-set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DSODIUM_STATIC=1")
+include(GetLibSodium)
+
+list(APPEND MINIFI_CPP_COMPILE_DEFINITIONS SODIUM_STATIC=1)
+list(APPEND MINIFI_CPP_COMPILE_DEFINITIONS "RPM_CONFIG_DIR=\"/${CMAKE_INSTALL_SYSCONFDIR}/${PROJECT_NAME}\"")
+list(APPEND MINIFI_CPP_COMPILE_DEFINITIONS "RPM_LOG_DIR=\"/${CMAKE_INSTALL_LOCALSTATEDIR}/log/${PROJECT_NAME}\"")
+list(APPEND MINIFI_CPP_COMPILE_DEFINITIONS "RPM_WORK_DIR=\"/${CMAKE_INSTALL_LOCALSTATEDIR}/lib/${PROJECT_NAME}\"")
+list(APPEND MINIFI_CPP_COMPILE_DEFINITIONS "RPM_LIB_DIR=\"/usr/${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}\"")
 
 # zlib
-include(BundledZLIB)
-use_bundled_zlib(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+include(GetZLIB)
 list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/zlib/dummy")
 
-# uthash
-add_library(ut INTERFACE)
-target_include_directories(ut SYSTEM INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/ut")
-
 # cURL
-if(NOT DISABLE_CURL)
-	include(BundledLibcURL)
-	use_bundled_curl(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-	list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/curl/dummy")
-else()
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -DDISABLE_CURL")
-	set(CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -DDISABLE_CURL")
-endif()
+include(GetLibCURL)
+list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/curl/dummy")
 
 # spdlog
-include(BundledSpdlog)
-use_bundled_spdlog(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+include(GetSpdlog)
 
 # yaml-cpp
-include(BundledYamlCpp)
-use_bundled_yamlcpp(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
+include(GetYamlCpp)
 
 # concurrentqueue
-add_library(concurrentqueue INTERFACE)
-target_include_directories(concurrentqueue SYSTEM INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/concurrentqueue")
+include(GetConcurrentQueue)
 
 # RapidJSON
-add_library(RapidJSON INTERFACE)
-target_include_directories(RapidJSON SYSTEM INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/rapidjson-48fbd8cd202ca54031fe799db2ad44ffa8e77c13/include")
-
-# Cron
-add_library(cron INTERFACE)
-target_include_directories(cron SYSTEM INTERFACE "${CMAKE_CURRENT_SOURCE_DIR}/thirdparty/cron")
-
-# cxxopts
-include(CxxOpts)
+include(GetRapidJSON)
 
 # gsl-lite
-include(GslLite)
+include(GetGslLite)
 
 # Add necessary definitions based on the value of STRICT_GSL_CHECKS, see gsl-lite README for more details
 list(APPEND GslDefinitions gsl_CONFIG_DEFAULTS_VERSION=1)
-list(APPEND GslDefinitionsNonStrict gsl_CONFIG_CONTRACT_VIOLATION_THROWS gsl_CONFIG_NARROW_THROWS_ON_TRUNCATION=1)
+list(APPEND GslDefinitionsNonStrict gsl_CONFIG_CONTRACT_VIOLATION_THROWS)
+# Disable gsl-lite's direct __assert_fail() forward declaration on Linux to avoid conflicts
+# with the system assert.h declaration that includes noexcept (__THROW).
+if (UNIX AND NOT APPLE)
+    list(APPEND GslDefinitions gsl_CONFIG_USE_CRT_ASSERTION_HANDLER=0)
+endif()
 if (STRICT_GSL_CHECKS STREQUAL "AUDIT")
-	list(APPEND GslDefinitions gsl_CONFIG_CONTRACT_CHECKING_AUDIT)
+    list(APPEND GslDefinitions gsl_CONFIG_CONTRACT_CHECKING_AUDIT)
 endif()
 if (NOT STRICT_GSL_CHECKS)  # OFF (or any other falsey string) matches, AUDIT/ON/DEBUG_ONLY don't match
-	list(APPEND GslDefinitions ${GslDefinitionsNonStrict})
+    list(APPEND GslDefinitions ${GslDefinitionsNonStrict})
 endif()
 if (STRICT_GSL_CHECKS STREQUAL "DEBUG_ONLY")
-	list(APPEND GslDefinitions $<$<NOT:$<CONFIG:Debug>>:${GslDefinitionsNonStrict}>)
+    list(APPEND GslDefinitions $<$<NOT:$<CONFIG:Debug>>:${GslDefinitionsNonStrict}>)
 endif()
-target_compile_definitions(gsl-lite INTERFACE ${GslDefinitions})
 
-# date
-include(Date)
-
-# Update passthrough args used in configurations in patch commands
-if (WIN32)
-	set(PASSTHROUGH_CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /w")
-	set(PASSTHROUGH_CMAKE_C_FLAGS "${CMAKE_C_FLAGS} /w")
-else()
-	set(PASSTHROUGH_CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -w")
-	set(PASSTHROUGH_CMAKE_C_FLAGS "${CMAKE_C_FLAGS} -w")
+get_target_property(_gsl_lite_real_target gsl-lite::gsl-lite ALIASED_TARGET)
+if (NOT _gsl_lite_real_target)
+    set(_gsl_lite_real_target gsl-lite::gsl-lite)
 endif()
+target_compile_definitions(${_gsl_lite_real_target} INTERFACE ${GslDefinitions})
+
+include(GetDate)
+include(GetMagicEnum)
+include(GetRangeV3)
+include(GetAsio)
 
 # Setup warning flags
 if(MSVC)
-  if(FAIL_ON_WARNINGS)
-		set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} /WX")
-  endif()
+    list(APPEND MINIFI_CPP_COMPILE_OPTIONS /W3)
+    if(MINIFI_FAIL_ON_WARNINGS)
+        list(APPEND MINIFI_CPP_COMPILE_OPTIONS /WX)
+    endif()
 else()
-	set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Wall -Wextra")
-  if(FAIL_ON_WARNINGS)
-    set(CMAKE_CXX_FLAGS "${CMAKE_CXX_FLAGS} -Werror")
-  endif()
+    list(APPEND MINIFI_CPP_COMPILE_OPTIONS -Wall -Wextra)
+    if(MINIFI_FAIL_ON_WARNINGS)
+        list(APPEND MINIFI_CPP_COMPILE_OPTIONS -Werror)
+    endif()
+    if ("${CMAKE_CXX_COMPILER_ID}" STREQUAL "GNU")
+        # False positive in GCC 14: jsoncons/utility/bigint.hpp:299:13: error: '<anonymous>' may be used uninitialized
+        # Issue in GCC 15 and above https://gcc.gnu.org/bugzilla/show_bug.cgi?id=118634
+        if (CMAKE_CXX_COMPILER_VERSION VERSION_GREATER_EQUAL 14)
+            list(APPEND MINIFI_CPP_COMPILE_OPTIONS -Wno-maybe-uninitialized)
+        endif()
+    endif()
 endif()
+
+function(add_minifi_library LIBRARY_NAME LINK_TYPE)
+    add_library(${LIBRARY_NAME} ${LINK_TYPE} ${ARGN})
+    target_compile_options(${LIBRARY_NAME} PRIVATE ${MINIFI_CPP_COMPILE_OPTIONS})
+    target_compile_definitions(${LIBRARY_NAME} PRIVATE ${MINIFI_CPP_COMPILE_DEFINITIONS})
+endfunction()
+
+function(add_minifi_executable EXECUTABLE_NAME)
+    add_executable(${EXECUTABLE_NAME} ${ARGN})
+    target_compile_options(${EXECUTABLE_NAME} PRIVATE ${MINIFI_CPP_COMPILE_OPTIONS})
+    target_compile_definitions(${EXECUTABLE_NAME} PRIVATE ${MINIFI_CPP_COMPILE_DEFINITIONS})
+endfunction()
 
 #### Extensions ####
 SET(TEST_DIR ${CMAKE_SOURCE_DIR}/libminifi/test)
 include(Extensions)
 
-if(BOOTSTRAP)
-	# display an error message for those using the bootstrap
-	message(FATAL_ERROR "Bootstrapping is no longer needed within the agent")
-endif()
-
+add_subdirectory(minifi-api)
+add_subdirectory(core-framework)
+add_subdirectory(extension-framework)
 add_subdirectory(libminifi)
 
-createExtension(STANDARD-PROCESSORS "STANDARD PROCESSORS" "Provides standard processors" "extensions/standard-processors" "extensions/standard-processors/tests/")
-
-if ((DISABLE_CURL STREQUAL "OFF" OR NOT DISABLE_CURL) AND NOT DISABLE_CIVET)
-	createExtension(HTTP-CURL "HTTP CURL" "This enables RESTProtocol, InvokeHTTP, and the HTTPClient for Site to Site" "extensions/http-curl" "extensions/http-curl/tests/")
-	message("minifi-http-curl will depend on curl-external")
+if (ENABLE_ALL OR ENABLE_PROMETHEUS OR ENABLE_GRAFANA_LOKI OR ENABLE_CIVET)
+    include(GetCivetWeb)
+    list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/civetweb/dummy")
 endif()
 
-if (NOT DISABLE_EXPRESSION_LANGUAGE)
-	createExtension(EXPRESSION-LANGUAGE-EXTENSIONS "EXPRESSION LANGUAGE EXTENSIONS" "This enables NiFi expression language" "extensions/expression-language" "extensions/expression-language/tests")
+## Add extensions
 
-	message("minifi-expression-language-extensions will depend on curl-external")
-endif()
+# PugiXML required for standard processors and WEL extension
+include(GetPugiXml)
 
-if (NOT DISABLE_CIVET)
-	include(BundledCivetWeb)
-	use_bundled_civetweb(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-	list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/civetweb/dummy")
+file(GLOB extension-directories "extensions/*")
+foreach(extension-dir ${extension-directories})
+    if (IS_DIRECTORY ${extension-dir} AND EXISTS ${extension-dir}/CMakeLists.txt)
+        add_subdirectory(${extension-dir})
+    endif()
+endforeach()
 
-	createExtension(CIVETWEB CIVETWEB "This enables ListenHTTP" "extensions/civetweb" "extensions/civetweb/tests")
-endif()
-
-## Add the rocks DB extension
-if (NOT DISABLE_ROCKSDB)
-	if (BUILD_ROCKSDB)
-		include(BundledRocksDB)
-		use_bundled_rocksdb(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-	else()
-		list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/rocksdb/sys")
-		find_package(RocksDB REQUIRED)
-	endif()
-	createExtension(ROCKSDB-REPOS "ROCKSDB REPOS" "This Enables persistent provenance, flowfile, and content repositories using RocksDB" "extensions/rocksdb-repos" "${TEST_DIR}/rocksdb-tests")
-endif()
-
-## Create LibArchive Extension
-if (NOT DISABLE_LIBARCHIVE)
-	if (NOT DISABLE_LZMA)
-		include(BundledLibLZMA)
-		use_bundled_liblzma(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-		list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/liblzma/dummy")
-	endif()
-
-	if (NOT DISABLE_BZIP2)
-		include(BundledBZip2)
-		use_bundled_bzip2(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-		list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/bzip2/dummy")
-	endif()
-
-	include(BundledLibArchive)
-	use_bundled_libarchive(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-
-	createExtension(ARCHIVE-EXTENSIONS "ARCHIVE EXTENSIONS" "This Enables libarchive functionality including MergeContent, CompressContent, (Un)FocusArchiveEntry and ManipulateArchive." "extensions/libarchive" "${TEST_DIR}/archive-tests")
-endif()
-
-if (ENABLE_ALL OR ENABLE_GPS)
-	createExtension(GPS-EXTENSION "GPS EXTENSIONS" "Enables LibGPS Functionality and the GetGPS processor." "extensions/gps" "${TEST_DIR}/gps-tests")
-endif()
-
-if (ENABLE_ALL OR ENABLE_COAP STREQUAL "ON")
-	include(BundledLibCoAP)
-	use_bundled_libcoap(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-	createExtension(COAP-EXTENSION "COAP EXTENSIONS" "Enables LibCOAP Functionality." "extensions/coap" "extensions/coap/tests/")
-endif()
-
-if (WIN32 AND (ENABLE_ALL OR ENABLE_WEL))
-	include(BundledPugiXml)
-	use_bundled_pugixml(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-	createExtension(WEL-EXTENSION "WEL EXTENSIONS" "Enables the suite of Windows Event Log extensions." "extensions/windows-event-log" "extensions/windows-event-log/tests")
-endif()
-
-if (ENABLE_ALL OR ENABLE_SQL)
-	createExtension(SQL-EXTENSIONS "SQL EXTENSIONS" "Enables the SQL Suite of Tools" "extensions/sql" "${TEST_DIR}/sql-tests")
-endif()
-
-## Create MQTT Extension
-if(ENABLE_ALL OR ENABLE_MQTT)
-		createExtension(MQTT-EXTENSIONS "MQTT EXTENSIONS" "This Enables MQTT functionality including PublishMQTT/ConsumeMQTT" "extensions/mqtt" "${TEST_DIR}/mqtt-tests")
-endif()
-
-# Create JNI Extension
-if(ENABLE_ALL OR ENABLE_JNI)
-	createExtension(JNI-EXTENSION "JNI EXTENSIONS" "Enables JNI capabilities to support loading Java Classes." "extensions/jni" "${TEST_DIR}/jni-tests")
-endif()
-
-# Create PCAP Extension
-if(ENABLE_ALL OR ENABLE_PCAP)
-	createExtension(PCAP-EXTENSION "PCAP EXTENSIONS" "Enables libPCAP Functionality and the PacketCapture processor." "extensions/pcap" "${TEST_DIR}/pcap-tests")
-endif()
-
-## Create LibRdKafka Extension
-if (ENABLE_ALL OR ENABLE_LIBRDKAFKA)
-	include(BundledLibRdKafka)
-	use_bundled_librdkafka(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-	createExtension(RDKAFKA-EXTENSIONS "RDKAFKA EXTENSIONS" "This Enables librdkafka functionality including PublishKafka" "extensions/librdkafka" "extensions/librdkafka/tests" "extensions/librdkafka/docker-tests")
-endif()
-
-## Scripting extensions
-if (ENABLE_ALL OR ENABLE_SCRIPTING)
-	include(Sol2)
-	createExtension(SCRIPTING-EXTENSIONS "SCRIPTING EXTENSIONS" "This enables scripting" "extensions/script" "${TEST_DIR}/script-tests")
-endif()
-
-# Sensors extensions
-if(ENABLE_ALL OR ENABLE_SENSORS)
-	include(BundledRTIMULib)
-	use_bundled_rtimulib(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-	createExtension(SENSOR-EXTENSIONS "SENSOR EXTENSIONS" "Enables the package of sensor extensions." "extensions/sensors" "${TEST_DIR}/sensors-tests")
-endif()
-
-## USB camera extensions
-if (ENABLE_ALL OR ENABLE_USB_CAMERA)
-	include(BundledLibUvc)
-	use_bundled_libuvc(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-	createExtension(USB-CAMERA-EXTENSIONS "USB CAMERA EXTENSIONS" "This enables USB camera support" "extensions/usb-camera" "${TEST_DIR}/usb-camera-tests")
-endif()
-
-## TensorFlow extensions
-if (ENABLE_TENSORFLOW)
-	createExtension(TENSORFLOW-EXTENSIONS "TENSORFLOW EXTENSIONS" "This enables TensorFlow support" "extensions/tensorflow" "${TEST_DIR}/tensorflow-tests")
-endif()
-
-## AWS Extensions
-if (ENABLE_ALL OR ENABLE_AWS)
-	include(BundledAwsSdkCpp)
-	use_bundled_libaws(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-	createExtension(AWS-EXTENSIONS "AWS EXTENSIONS" "This enables AWS support" "extensions/aws" "${TEST_DIR}/aws-tests")
-endif()
-
-## PDH Extentsions
-if (WIN32 AND ENABLE_PDH)
-	createExtension(PDH-EXTENSIONS "PDH EXTENSIONS" "This enables PDH support" "extensions/pdh" "extensions/pdh/tests")
-endif()
-
-## OpenCV Extensions
-if (ENABLE_OPENCV)
-	include(BundledOpenCV)
-	use_bundled_opencv(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-	createExtension(OPENCV-EXTENSIONS "OPENCV EXTENSIONS" "This enables OpenCV support" "extensions/opencv" "extensions/opencv/tests")
-endif()
-
-## Bustache/template extensions
-if (ENABLE_BUSTACHE)
-	include(BundledBustache)
-	use_bundled_bustache(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-	createExtension(BUSTACHE-EXTENSIONS "BUSTACHE EXTENSIONS" "This enables bustache functionality including ApplyTemplate." "extensions/bustache" "${TEST_DIR}/bustache-tests")
-endif()
-
-## OPC Extensions
-if (ENABLE_OPC)
-	include(BundledMbedTLS)
-	use_bundled_mbedtls(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-	list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/mbedtls/dummy")
-
-	include(BundledOpen62541)
-	use_bundled_open62541(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-
-	createExtension(OPC-EXTENSIONS "OPC EXTENSIONS" "This enables OPC-UA support" "extensions/opc")
-endif()
-
-## SFTP extensions
-if ((ENABLE_ALL OR ENABLE_SFTP) AND NOT DISABLE_CURL)
-	include(BundledLibSSH2)
-	use_bundled_libssh2(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-	list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/libssh2/dummy")
-
-	createExtension(SFTP "SFTP EXTENSIONS" "This enables SFTP support" "extensions/sftp" "extensions/sftp/tests")
-endif()
-
-if ((ENABLE_OPENWSMAN AND NOT DISABLE_CIVET AND NOT DISABLE_CURL) OR ENABLE_ALL OR ENABLE_AZURE)
-	include(BundledLibXml2)
-	use_bundled_libxml2(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-	list(APPEND CMAKE_MODULE_PATH "${CMAKE_SOURCE_DIR}/cmake/libxml2/dummy")
-endif()
-
-## Openwsman Extensions
-if (ENABLE_OPENWSMAN AND NOT DISABLE_CIVET AND NOT DISABLE_CURL)
-	include(BundledOpenWSMAN)
-	use_bundled_openwsman(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-
-	createExtension(OPENWSMAN-EXTENSIONS "OPENWSMAN EXTENSIONS" "This enables Openwsman support" "extensions/openwsman")
-endif()
-
-## Azure Extensions
-if (ENABLE_ALL OR ENABLE_AZURE)
-	include(BundledAzureSdkCpp)
-	use_bundled_libazure(${CMAKE_CURRENT_SOURCE_DIR} ${CMAKE_CURRENT_BINARY_DIR})
-	createExtension(AZURE-EXTENSIONS "AZURE EXTENSIONS" "This enables Azure support" "extensions/azure" "${TEST_DIR}/azure-tests")
-endif()
-
-## Add the systemd extension
-if (ENABLE_SYSTEMD)
-	createExtension(SYSTEMD-EXTENSIONS "SYSTEMD EXTENSIONS" "Enabled log collection from journald" "extensions/systemd" "extensions/systemd/tests")
-endif()
+add_subdirectory(minifi_rust)
 
 ## NOW WE CAN ADD LIBRARIES AND EXTENSIONS TO MAIN
-add_subdirectory(main)
-
-if (ENABLE_NANOFI)
-	add_subdirectory(nanofi)
-endif()
+add_subdirectory(minifi_main)
 
 if (ENABLE_ENCRYPT_CONFIG)
-	add_subdirectory(encrypt-config)
+    add_subdirectory(encrypt-config)
 endif()
 
-if (NOT DISABLE_CURL AND NOT DISABLE_CONTROLLER)
-	add_subdirectory(controller)
+if (ENABLE_CONTROLLER)
+    add_subdirectory(controller)
 endif()
 
-
-if (NOT DISABLE_CURL AND ENABLE_PYTHON AND NOT WIN32)
-	if (ENABLE_NANOFI)
-		add_subdirectory(python/library)
-	else()
-		message(FATAL_ERROR "Nanofi, a dependency of the python extension is disabled, therefore Python extension cannot be enabled.")
-	endif()
-endif()
 
 get_property(selected_extensions GLOBAL PROPERTY EXTENSION-OPTIONS)
 
-# Generate the build identifier if one is not provided
-if (NOT BUILD_IDENTIFIER)
-	 string(RANDOM LENGTH 24 BUILD_IDENTIFIER)
-	 set(BUILD_IDENTIFIER "${BUILD_IDENTIFIER}" CACHE STRING "Build identifier" FORCE)
-endif()
-
-message("BUILD_IDENTIFIER is ${BUILD_IDENTIFIER}")
-
 if (WIN32)
-	# Get the latest abbreviated commit hash of the working branch
-	execute_process(
-			COMMAND git log -1 --format=%h
-			WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
-			OUTPUT_VARIABLE BUILD_REV
-			OUTPUT_STRIP_TRAILING_WHITESPACE)
-	execute_process(COMMAND
-			"${CMAKE_CURRENT_SOURCE_DIR}/generateVersion.bat"
-			"${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}"
-			${CMAKE_CURRENT_SOURCE_DIR}
-			${CMAKE_CURRENT_SOURCE_DIR}/libminifi/src/agent/
-			"${CMAKE_CXX_COMPILER}"
-			"${CMAKE_CXX_COMPILER_VERSION}"
-			"${CMAKE_CXX_FLAGS}"
-			\"${selected_extensions}\"
-			"${BUILD_IDENTIFIER}"
-			"${BUILD_REV}")
+    # Get the latest abbreviated commit hash of the working branch
+    execute_process(
+        COMMAND git log -1 --format=%h
+        WORKING_DIRECTORY ${CMAKE_SOURCE_DIR}
+        OUTPUT_VARIABLE BUILD_REV
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        COMMAND_ECHO STDOUT
+        ECHO_OUTPUT_VARIABLE)
+
+    execute_process(COMMAND powershell
+        "(New-Object -ComObject Scripting.FileSystemObject).GetFolder('${CMAKE_CURRENT_SOURCE_DIR}').ShortPath"
+        OUTPUT_VARIABLE CMAKE_CURRENT_SOURCE_DIR_SHORT_PATH
+        OUTPUT_STRIP_TRAILING_WHITESPACE
+        COMMAND_ECHO STDOUT
+        ECHO_OUTPUT_VARIABLE)
+
+    execute_process(COMMAND ${CMAKE_CURRENT_SOURCE_DIR_SHORT_PATH}/generateVersion.bat
+        "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}"
+        "${CMAKE_CURRENT_SOURCE_DIR}"
+        "${CMAKE_CURRENT_BINARY_DIR}/libminifi"
+        "${CMAKE_CXX_COMPILER}"
+        "${CMAKE_CXX_COMPILER_VERSION}"
+        "${CMAKE_CXX_FLAGS};${MINIFI_CPP_COMPILE_OPTIONS};${MINIFI_CPP_COMPILE_DEFINITIONS}"
+        "${BUILD_IDENTIFIER}"
+        "${BUILD_REV}"
+        COMMAND_ECHO STDOUT)
 else()
-	execute_process(COMMAND
-			"${CMAKE_CURRENT_SOURCE_DIR}/generateVersion.sh"
-			"${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}"
-			${CMAKE_CURRENT_SOURCE_DIR}
-			${CMAKE_CURRENT_SOURCE_DIR}/libminifi/src/agent/
-			"${CMAKE_CXX_COMPILER}"
-			"${CMAKE_CXX_COMPILER_VERSION}"
-			"${CMAKE_CXX_FLAGS}"
-			"${selected_extensions}"
-			"${BUILD_IDENTIFIER}")
+    execute_process(COMMAND
+        "${CMAKE_CURRENT_SOURCE_DIR}/generateVersion.sh"
+        "${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}"
+        ${CMAKE_CURRENT_SOURCE_DIR}
+        ${CMAKE_CURRENT_BINARY_DIR}/libminifi
+        "${CMAKE_CXX_COMPILER}"
+        "${CMAKE_CXX_COMPILER_VERSION}"
+        "${CMAKE_CXX_FLAGS};${MINIFI_CPP_COMPILE_OPTIONS};${MINIFI_CPP_COMPILE_DEFINITIONS}"
+        "${BUILD_IDENTIFIER}")
 endif()
 
 # Generate source assembly
 set(ASSEMBLY_BASE_NAME "${CMAKE_PROJECT_NAME}-${PROJECT_VERSION_MAJOR}.${PROJECT_VERSION_MINOR}.${PROJECT_VERSION_PATCH}")
 if(WIN32)
-	set(CPACK_ALL_INSTALL_TYPES Full Developer)
-	set(CPACK_COMPONENT_LIBRARIES_INSTALL_TYPES Developer Full)
-	set(CPACK_COMPONENT_HEADERS_INSTALL_TYPES Developer Full)
-	set(CPACK_COMPONENT_APPLICATIONS_INSTALL_TYPES Full)
-	set(CPACK_WIX_EXTENSIONS WixUtilExtension)
-	set(CPACK_WIX_UI_BANNER "${CMAKE_CURRENT_SOURCE_DIR}/msi/minifi-logo-png-banner.png")
-	set(CPACK_WIX_UI_DIALOG "${CMAKE_CURRENT_SOURCE_DIR}/msi/bgr.png")
+    set(CPACK_ALL_INSTALL_TYPES Full Developer)
+    set(CPACK_COMPONENT_LIBRARIES_INSTALL_TYPES Developer Full)
+    set(CPACK_COMPONENT_HEADERS_INSTALL_TYPES Developer Full)
+    set(CPACK_COMPONENT_APPLICATIONS_INSTALL_TYPES Full)
+    set(CPACK_WIX_EXTENSIONS WixUtilExtension)
+    set(CPACK_WIX_UI_BANNER "${CMAKE_CURRENT_SOURCE_DIR}/packaging/msi/minifi-logo-png-banner.png")
+    set(CPACK_WIX_UI_DIALOG "${CMAKE_CURRENT_SOURCE_DIR}/packaging/msi/bgr.png")
 
-	file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/conf/" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/conf/")
-	file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
-	file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/README.md" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
-	file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/NOTICE" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
+    file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/fips/" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/fips/")
+    file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
+    file(COPY "${CMAKE_CURRENT_SOURCE_DIR}/NOTICE" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
+    file(GLOB markdown_docs "${CMAKE_CURRENT_SOURCE_DIR}/*.md")
+    foreach(mddocfile ${markdown_docs})
+        file(COPY "${mddocfile}" DESTINATION "${CMAKE_CURRENT_BINARY_DIR}")
+    endforeach()
 
-	# Determine the path of the VC Redistributable Merge Modules
-	if (DEFINED ENV{VCToolsRedistDir})
-		# Just get the redist dir that has been set by the build environment
-		set(VCRUNTIME_REDIST_DIR $ENV{VCToolsRedistDir})
-	else()
-		# Try to fall back to a redist dir relative to the MSVC compiler
-		string(REGEX REPLACE "/VC/Tools/MSVC/([0-9]+\\.[0-9]+).*" "/VC/Redist/MSVC/\\1" VCRUNTIME_REDIST_BASE_DIR ${CMAKE_C_COMPILER})
-		file(GLOB VCRUNTIME_REDIST_VERSIONS "${VCRUNTIME_REDIST_BASE_DIR}*")
-		if (NOT VCRUNTIME_REDIST_VERSIONS)
-			message(FATAL_ERROR "Could not find the VC Redistributable Merge Modules. Please set VCRUNTIME_X86_MERGEMODULE_PATH and VCRUNTIME_X64_MERGEMODULE_PATH manually!")
-		endif()
-		# Sort the directories in descending order and take the first one - it should be the latest version
-		list(SORT VCRUNTIME_REDIST_VERSIONS)
-		list(REVERSE VCRUNTIME_REDIST_VERSIONS)
-		list(GET VCRUNTIME_REDIST_VERSIONS 0 VCRUNTIME_REDIST_DIR)
-	endif()
-	message("Using redist directory: ${VCRUNTIME_REDIST_DIR}")
+    # Determine the path of the VC Redistributable Merge Modules
+    if (DEFINED ENV{VCToolsRedistDir})
+        # Just get the redist dir that has been set by the build environment
+        set(VCRUNTIME_REDIST_DIR $ENV{VCToolsRedistDir})
+    else()
+        # Try to fall back to a redist dir relative to the MSVC compiler
+        string(REGEX REPLACE "/VC/Tools/MSVC/([0-9]+\\.[0-9]+).*" "/VC/Redist/MSVC/\\1" VCRUNTIME_REDIST_BASE_DIR ${CMAKE_C_COMPILER})
+        file(GLOB VCRUNTIME_REDIST_VERSIONS "${VCRUNTIME_REDIST_BASE_DIR}*")
+        if (NOT VCRUNTIME_REDIST_VERSIONS)
+            message(FATAL_ERROR "Could not find the VC Redistributable Merge Modules. Please set VCRUNTIME_X86_MERGEMODULE_PATH and VCRUNTIME_X64_MERGEMODULE_PATH manually!")
+        endif()
+        # Sort the directories in descending order and take the first one - it should be the latest version
+        list(SORT VCRUNTIME_REDIST_VERSIONS)
+        list(REVERSE VCRUNTIME_REDIST_VERSIONS)
+        list(GET VCRUNTIME_REDIST_VERSIONS 0 VCRUNTIME_REDIST_DIR)
+    endif()
+    message("Using redist directory: ${VCRUNTIME_REDIST_DIR}")
 
-	if (MSI_REDISTRIBUTE_UCRT_NONASL)
-		set(UCRT_DIR_NAT "$ENV{WindowsSdkDir}Redist\\ucrt\\DLLs\\$ENV{Platform}")
-		file(TO_CMAKE_PATH "${UCRT_DIR_NAT}" UCRT_DIR)
-		if (NOT EXISTS "${UCRT_DIR}")
-			set(UCRT_DIR_NAT "$ENV{WindowsSdkDir}Redist\\$ENV{WindowsSDKVersion}ucrt\\DLLs\\$ENV{Platform}")
-			file(TO_CMAKE_PATH "${UCRT_DIR_NAT}" UCRT_DIR)
-		endif()
-		if (NOT EXISTS "${UCRT_DIR}")
-			message(FATAL_ERROR "Couldn't find UCRT")
-		else()
-			message("Using UCRT from ${UCRT_DIR}")
-			file(GLOB UCRT_DLLS "${UCRT_DIR}/*.dll")
-			file(COPY ${UCRT_DLLS} DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/ucrt")
-			install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/ucrt/"
-					DESTINATION bin
-					COMPONENT bin
-					)
-		endif()
-	endif()
+    if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+        set(BUILD_PLATFORM "x64")
+    elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
+        set(BUILD_PLATFORM "x86")
+    else()
+        message(FATAL_ERROR "Could not determine architecture, CMAKE_SIZEOF_VOID_P is unexpected: ${CMAKE_SIZEOF_VOID_P}")
+    endif()
 
-	if (INSTALLER_MERGE_MODULES)
-		message("Creating installer with merge modules")
-		file(GLOB VCRUNTIME_X86_MERGEMODULES "${VCRUNTIME_REDIST_DIR}/MergeModules/Microsoft_VC*_CRT_x86.msm")
-		file(GLOB VCRUNTIME_X64_MERGEMODULES "${VCRUNTIME_REDIST_DIR}/MergeModules/Microsoft_VC*_CRT_x64.msm")
-		if (NOT VCRUNTIME_X86_MERGEMODULES OR NOT VCRUNTIME_X64_MERGEMODULES)
-			message(FATAL_ERROR "Could not find the VC Redistributable Merge Modules. Please set VCRUNTIME_X86_MERGEMODULE_PATH and VCRUNTIME_X64_MERGEMODULE_PATH manually!")
-		else()
-			list(GET VCRUNTIME_X86_MERGEMODULES 0 VCRUNTIME_X86_MERGEMODULE_PATH)
-			list(GET VCRUNTIME_X64_MERGEMODULES 0 VCRUNTIME_X64_MERGEMODULE_PATH)
-		endif()
+    set(WIX_EXTRA_FEATURES "")
+    set(WIX_EXTRA_COMPONENTS "")
+    if (MINIFI_INCLUDE_UCRT_DLLS)
+        message("Creating installer with Universal C Runtime DLLs")
+        set(UCRT_DIR_NAT "$ENV{WindowsSdkDir}Redist\\ucrt\\DLLs\\${BUILD_PLATFORM}")
+        file(TO_CMAKE_PATH "${UCRT_DIR_NAT}" UCRT_DIR)
+        if (NOT EXISTS "${UCRT_DIR}")
+            set(UCRT_DIR_NAT "$ENV{WindowsSdkDir}Redist\\$ENV{WindowsSDKVersion}ucrt\\DLLs\\${BUILD_PLATFORM}")
+            file(TO_CMAKE_PATH "${UCRT_DIR_NAT}" UCRT_DIR)
+        endif()
+        if (NOT EXISTS "${UCRT_DIR}")
+            message(FATAL_ERROR "Couldn't find UCRT")
+        else()
+            message("Using UCRT from ${UCRT_DIR}")
+            file(GLOB UCRT_DLLS "${UCRT_DIR}/*.dll")
+            file(COPY ${UCRT_DLLS} DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/ucrt")
+            install(DIRECTORY "${CMAKE_CURRENT_BINARY_DIR}/ucrt/"
+                    DESTINATION bin
+                    COMPONENT bin
+                    )
+        endif()
+    endif()
+    if(MINIFI_INCLUDE_VC_REDIST_MERGE_MODULES)
+        message("Creating installer with merge modules for Visual C++ Redistributable")
+        if(MINIFI_INCLUDE_VC_REDIST_DLLS)
+            message(WARNING "MINIFI_INCLUDE_VC_REDIST_MERGE_MODULES and MINIFI_INCLUDE_VC_REDIST_DLLS are both set, only MINIFI_INCLUDE_VC_REDIST_MERGE_MODULES will be used")
+        endif()
+        file(GLOB VCRUNTIME_X86_MERGEMODULES "${VCRUNTIME_REDIST_DIR}/MergeModules/Microsoft_VC*_CRT_x86.msm")
+        file(GLOB VCRUNTIME_X64_MERGEMODULES "${VCRUNTIME_REDIST_DIR}/MergeModules/Microsoft_VC*_CRT_x64.msm")
+        if (NOT VCRUNTIME_X86_MERGEMODULES OR NOT VCRUNTIME_X64_MERGEMODULES)
+            message(FATAL_ERROR "Could not find the VC Redistributable Merge Modules. Please set VCRUNTIME_X86_MERGEMODULE_PATH and VCRUNTIME_X64_MERGEMODULE_PATH manually!")
+        else()
+            list(GET VCRUNTIME_X86_MERGEMODULES 0 VCRUNTIME_X86_MERGEMODULE_PATH)
+            list(GET VCRUNTIME_X64_MERGEMODULES 0 VCRUNTIME_X64_MERGEMODULE_PATH)
+        endif()
 
-		if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-			message("Using ${VCRUNTIME_X64_MERGEMODULE_PATH} VC Redistributable Merge Module")
-			configure_file("msi/x64.wsi" "msi/x64.wsi" @ONLY)
-			list(APPEND CPACK_WIX_EXTRA_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/msi/x64.wsi")
-		elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
-			message("Using ${VCRUNTIME_X86_MERGEMODULE_PATH} VC Redistributable Merge Module")
-			configure_file("msi/x86.wsi" "msi/x86.wsi" @ONLY)
-			list(APPEND CPACK_WIX_EXTRA_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/msi/x86.wsi")
-		else()
-			message(FATAL_ERROR "Could not determine architecture, CMAKE_SIZEOF_VOID_P is unexpected: ${CMAKE_SIZEOF_VOID_P}")
-		endif()
-		set(CPACK_WIX_TEMPLATE "${CMAKE_CURRENT_SOURCE_DIR}/msi/WixWinMergeModules.wsi")
-	else()
-		message("Creating installer with redistributables")
-		if(CMAKE_VS_PLATFORM_TOOLSET STREQUAL "v141")
-			file(GLOB VCRUNTIME_X86_REDIST_CRT_DIR "${VCRUNTIME_REDIST_DIR}/x86/Microsoft.VC141.CRT")
-			file(GLOB VCRUNTIME_X64_REDIST_CRT_DIR "${VCRUNTIME_REDIST_DIR}/x64/Microsoft.VC141.CRT")
-		elseif(CMAKE_VS_PLATFORM_TOOLSET STREQUAL "v142")
-			file(GLOB VCRUNTIME_X86_REDIST_CRT_DIR "${VCRUNTIME_REDIST_DIR}/x86/Microsoft.VC142.CRT")
-			file(GLOB VCRUNTIME_X64_REDIST_CRT_DIR "${VCRUNTIME_REDIST_DIR}/x64/Microsoft.VC142.CRT")
-		endif()
+        if (BUILD_PLATFORM STREQUAL "x64")
+            message("Using ${VCRUNTIME_X64_MERGEMODULE_PATH} VC Redistributable Merge Module")
+            configure_file("packaging/msi/x64.wsi" "packaging/msi/x64.wsi" @ONLY)
+            list(APPEND CPACK_WIX_EXTRA_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/packaging/msi/x64.wsi")
+        else()
+            message("Using ${VCRUNTIME_X86_MERGEMODULE_PATH} VC Redistributable Merge Module")
+            configure_file("packaging/msi/x86.wsi" "packaging/msi/x86.wsi" @ONLY)
+            list(APPEND CPACK_WIX_EXTRA_SOURCES "${CMAKE_CURRENT_BINARY_DIR}/packaging/msi/x86.wsi")
+        endif()
 
-		if (NOT VCRUNTIME_X86_REDIST_CRT_DIR OR NOT VCRUNTIME_X64_REDIST_CRT_DIR)
-			message(FATAL_ERROR "Could not find the VC Redistributable. Please set VCRUNTIME_X86_REDIST_CRT_DIR and VCRUNTIME_X64_REDIST_CRT_DIR manually!")
-		endif()
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/packaging/msi/MergeModulesFeature.xml" WIX_EXTRA_FEATURES)
+    elseif(MINIFI_INCLUDE_VC_REDIST_DLLS)
+        message("Creating installer with Visual C++ Redistributable DLLs")
+        file(GLOB VC_RUNTIME_X86_REDIST_CRT_DIR_LIST LIST_DIRECTORIES true "${VCRUNTIME_REDIST_DIR}/x86/Microsoft.VC*.CRT")
+        file(GLOB VC_RUNTIME_X64_REDIST_CRT_DIR_LIST LIST_DIRECTORIES true "${VCRUNTIME_REDIST_DIR}/x64/Microsoft.VC*.CRT")
+        if (NOT VC_RUNTIME_X86_REDIST_CRT_DIR_LIST OR NOT VC_RUNTIME_X64_REDIST_CRT_DIR_LIST)
+            message(FATAL_ERROR "Could not find the VC Redistributable. Please set VCRUNTIME_X86_REDIST_CRT_DIR and VCRUNTIME_X64_REDIST_CRT_DIR manually!")
+        else()
+            list(GET VC_RUNTIME_X86_REDIST_CRT_DIR_LIST 0 VCRUNTIME_X86_REDIST_CRT_DIR)
+            list(GET VC_RUNTIME_X64_REDIST_CRT_DIR_LIST 0 VCRUNTIME_X64_REDIST_CRT_DIR)
+        endif()
 
-		if(CMAKE_SIZEOF_VOID_P EQUAL 8)
-			message("Using ${VCRUNTIME_X64_REDIST_CRT_DIR} VC Redistributables")
-			file(GLOB VCRUNTIME_X64_REDIST_CRT_FILES "${VCRUNTIME_X64_REDIST_CRT_DIR}/*.dll")
-			file(COPY ${VCRUNTIME_X64_REDIST_CRT_FILES} DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/redist")
-		elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
-			message("Using ${VCRUNTIME_X86_REDIST_CRT_DIR} VC Redistributables")
-			file(GLOB VCRUNTIME_X86_REDIST_CRT_FILES "${VCRUNTIME_X86_REDIST_CRT_DIR}/*.dll")
-			file(COPY ${VCRUNTIME_X86_REDIST_CRT_FILES} DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/redist")
-		else()
-			message(FATAL_ERROR "Could not determine architecture, CMAKE_SIZEOF_VOID_P is unexpected: ${CMAKE_SIZEOF_VOID_P}")
-		endif()
-		set(CPACK_WIX_TEMPLATE "${CMAKE_CURRENT_SOURCE_DIR}/msi/WixWin.wsi")
-	endif()
+        if(CMAKE_SIZEOF_VOID_P EQUAL 8)
+            message("Using ${VCRUNTIME_X64_REDIST_CRT_DIR} VC Redistributables")
+            file(GLOB VCRUNTIME_X64_REDIST_CRT_FILES "${VCRUNTIME_X64_REDIST_CRT_DIR}/*.dll")
+            file(COPY ${VCRUNTIME_X64_REDIST_CRT_FILES} DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/redist")
+        elseif(CMAKE_SIZEOF_VOID_P EQUAL 4)
+            message("Using ${VCRUNTIME_X86_REDIST_CRT_DIR} VC Redistributables")
+            file(GLOB VCRUNTIME_X86_REDIST_CRT_FILES "${VCRUNTIME_X86_REDIST_CRT_DIR}/*.dll")
+            file(COPY ${VCRUNTIME_X86_REDIST_CRT_FILES} DESTINATION "${CMAKE_CURRENT_BINARY_DIR}/redist")
+        else()
+            message(FATAL_ERROR "Could not determine architecture, CMAKE_SIZEOF_VOID_P is unexpected: ${CMAKE_SIZEOF_VOID_P}")
+        endif()
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/packaging/msi/VSRedistributablesComponent.xml" WIX_EXTRA_COMPONENTS)
+        file(READ "${CMAKE_CURRENT_SOURCE_DIR}/packaging/msi/VSRedistributablesFeature.xml" WIX_EXTRA_FEATURES)
+    else()
+        message("Creating installer without UCRT or VC Redistributable")
+    endif()
+    configure_file("${CMAKE_CURRENT_SOURCE_DIR}/packaging/msi/WixWin.wsi.in" "${CMAKE_CURRENT_SOURCE_DIR}/packaging/msi/WixWin.wsi")
+    set(CPACK_WIX_TEMPLATE "${CMAKE_CURRENT_SOURCE_DIR}/packaging/msi/WixWin.wsi")
 else()
-	set(CPACK_SOURCE_GENERATOR "TGZ")
+    set(CPACK_SOURCE_GENERATOR "TGZ")
 endif(WIN32)
 set(CPACK_SOURCE_PACKAGE_FILE_NAME "${ASSEMBLY_BASE_NAME}-source")
-set(CPACK_SOURCE_IGNORE_FILES "/docs/generated/;${CMAKE_SOURCE_DIR}/build/;~$;${CPACK_SOURCE_IGNORE_FILES};${CMAKE_SOURCE_DIR}/.git/;${CMAKE_SOURCE_DIR}/.idea/;${CMAKE_SOURCE_DIR}/cmake-build-debug/;${CMAKE_SOURCE_DIR}/extensions/expression-language/Scanner.h;${CMAKE_SOURCE_DIR}/extensions/expression-language/Scanner.cpp;${CMAKE_SOURCE_DIR}/extensions/expression-language/Parser.cpp;${CMAKE_SOURCE_DIR}/extensions/expression-language/Parser.hpp;${CMAKE_SOURCE_DIR}/extensions/expression-language/scanner.hh;${CMAKE_SOURCE_DIR}/extensions/expression-language/position.hh;${CMAKE_SOURCE_DIR}/extensions/expression-language/location.hh;${CMAKE_SOURCE_DIR}/extensions/expression-language/stack.hh")
+set(CPACK_SOURCE_IGNORE_FILES
+    "/.*build.*/"
+    "~"
+    "\\\\.git/"
+    "\\\\.idea"
+    "\\\\.kdev4"
+    "\\\\.project"
+    "\\\\.vscode"
+    "\\\\.swp"
+    "thirdparty/uuid/tst_uuid"
+    "assemblies"
+    "CMakeCache\\\\.txt"
+    "CMakeFiles"
+    "CMakeScripts"
+    "cmake_install\\\\.cmake"
+    "install_manifest\\\\.txt"
+    "CTestTestfile\\\\.cmake"
+    "\\\\.o\\$"
+    "\\\\.a\\$"
+    "/docs/generated/"
+    "flowfile_checkpoint"
+    "flowfile_repository"
+    "content_repository"
+    "provenance_repository"
+    "corecomponentstate"
+    "compile_commands\\\\.json"
+    "/venv/"
+    "__pycache__"
+    "\\\\.pyc"
+    "/logs/"
+    "behavex_output"
+    "\\\\.device_id"
+    "\\\\.cache"
+    "\\\\.ccache"
+    "\\\\.cproject"
+    "\\\\.settings"
+    "profraw"
+    "bootstrap/option_state\\\\.json"
+    "docker/test-env-py3"
+    "\\\\.ropeproject"
+    "CMakePresets\\\\.json"
+    "CMakeUserPresets\\\\.json"
+    "extensions/standard-processors/tests/conf/"
+    "libminifi/test/asset/"
+    "libminifi/test/conf/"
+)
 
-# Generate binary assembly. Exclude conf for windows since we'll be doing the work in the WiX template
+add_subdirectory(conf)
+add_subdirectory(bin)
 if (NOT WIN32)
-	install(FILES conf/minifi.properties conf/minifi-log.properties conf/minifi-uid.properties conf/config.yml
-			DESTINATION conf
-			COMPONENT bin)
-
-	install(DIRECTORY extensions/pythonprocessors/
-			DESTINATION minifi-python
-			COMPONENT bin)
-
-	install(PROGRAMS bin/minifi.sh
-			DESTINATION bin
-			COMPONENT bin)
+    if (MINIFI_PACKAGING_TYPE STREQUAL "RPM")
+        message(STATUS "Configuring for FHS/RPM package installation.")
+        install(FILES fips/openssl.cnf
+                DESTINATION /${CMAKE_INSTALL_SYSCONFDIR}/${PROJECT_NAME}/fips
+                COMPONENT bin)
+        install(DIRECTORY DESTINATION /${CMAKE_INSTALL_LOCALSTATEDIR}/lib/${PROJECT_NAME} COMPONENT bin)
+        install(DIRECTORY DESTINATION /${CMAKE_INSTALL_LOCALSTATEDIR}/log/${PROJECT_NAME} COMPONENT bin)
+        install(DIRECTORY extensions/python/pythonprocessors/
+                DESTINATION /${CMAKE_INSTALL_LOCALSTATEDIR}/lib/${PROJECT_NAME}/minifi-python
+                COMPONENT bin)
+        install(DIRECTORY extensions/python/pythonprocessor-examples/
+                DESTINATION ${CMAKE_INSTALL_DOCDIR}/pythonprocessor-examples
+                COMPONENT bin)
+    elseif (MINIFI_PACKAGING_TYPE STREQUAL "TGZ")
+        message(STATUS "Configuring for self-contained TGZ package installation.")
+        install(FILES fips/openssl.cnf fips/README.md
+                DESTINATION fips
+                COMPONENT bin)
+        install(DIRECTORY extensions/python/pythonprocessors/
+                DESTINATION minifi-python
+                COMPONENT bin)
+        install(DIRECTORY extensions/python/pythonprocessor-examples/
+                DESTINATION minifi-python-examples
+                COMPONENT bin)
+    else()
+        message(FATAL_ERROR "Invalid MINIFI_PACKAGING_TYPE")
+    endif()
 endif()
 
-install(FILES LICENSE README.md NOTICE
-		DESTINATION .
-		COMPONENT bin)
+file(GLOB markdown_docs "*.md")
+if (MINIFI_PACKAGING_TYPE STREQUAL "RPM")
+    install(FILES LICENSE NOTICE ${markdown_docs}
+            DESTINATION ${CMAKE_INSTALL_DOCDIR}
+            COMPONENT bin)
+    install(FILES fips/README.md
+            DESTINATION ${CMAKE_INSTALL_DOCDIR}
+            RENAME FIPS.md
+            COMPONENT bin)
+elseif (MINIFI_PACKAGING_TYPE STREQUAL "TGZ")
+    install(FILES LICENSE NOTICE ${markdown_docs}
+            DESTINATION .
+            COMPONENT bin)
+else()
+    message(FATAL_ERROR "Invalid MINIFI_PACKAGING_TYPE")
+endif()
 
+
+include(CPackComponent)
 
 if (WIN32)
-	set(CPACK_GENERATOR "WIX")
-	set(CPACK_WIX_UPGRADE_GUID "FE29F801-3486-4E9E-AFF9-838C1A5C8D59")
-	set(CPACK_WIX_PRODUCT_ICON "${CMAKE_CURRENT_SOURCE_DIR}/msi/minifi-logo-ico.ico")
+    set(CPACK_GENERATOR "WIX")
+    set(CPACK_WIX_UPGRADE_GUID "FE29F801-3486-4E9E-AFF9-838C1A5C8D59")
+    set(CPACK_WIX_PRODUCT_ICON "${CMAKE_CURRENT_SOURCE_DIR}/packaging/msi/minifi-logo-ico.ico")
+    set(CPACK_COMPONENT_INCLUDE_TOPLEVEL_DIRECTORY 1)
+elseif(APPLE)
+    set(CPACK_GENERATOR "TGZ")
 else()
-	set(CPACK_GENERATOR "TGZ")
+    if (MINIFI_PACKAGING_TYPE STREQUAL "RPM")
+        set(CPACK_GENERATOR "RPM")
+        set(CPACK_BINARY_RPM, "ON")
+
+        set(CPACK_RPM_PACKAGE_NAME "nifi-minifi-cpp")
+        set(CPACK_RPM_PACKAGE_VERSION ${PROJECT_VERSION})
+        set(CPACK_RPM_PACKAGE_LICENSE "Apache-2.0")
+        set(CPACK_RPM_PACKAGE_GROUP "System Environment/Daemons")
+        set(CPACK_RPM_PACKAGE_VENDOR "Apache Software Foundation")
+        set(CPACK_RPM_PACKAGE_URL "https://nifi.apache.org/projects/minifi/")
+        set(CPACK_RPM_PACKAGE_CONTACT "dev@nifi.apache.org")
+        set(CPACK_RPM_PACKAGE_SUMMARY "Apache NiFi MiNiFi C++, a lightweight data collection agent.")
+        set(CPACK_RPM_PACKAGE_DESCRIPTION "
+Apache NiFi - MiNiFi C++ is a complementary data collection approach that supplements the core tenets of NiFi in dataflow management, focusing on the collection of data at the source of its creation.
+The C++ implementation is an additional implementation to the one in Java with the aim of an even smaller resource footprint.
+
+Specific goals for MiNiFi comprise:
+
+  - small and lightweight footprint
+  - central management of agents
+  - generation of data provenance
+  - integration with NiFi for follow-on dataflow management and full chain of custody of information
+  - Perspectives of the role of MiNiFi should be from the perspective of the agent acting immediately at, or directly adjacent to, source sensors, systems, or servers.")
+
+        set(CPACK_RPM_PACKAGE_AUTOREQ OFF)
+        set(CPACK_RPM_PACKAGE_REQUIRES "")
+        set(CPACK_COMPONENT_INCLUDE_TOPLEVEL_DIRECTORY 0)
+        set(CPACK_RPM_SPEC_MORE_DEFINE "%define _build_id_links none")
+        set(CPACK_RPM_COMPONENT_INSTALL ON)
+        set(CMAKE_INSTALL_RPATH "${CMAKE_INSTALL_PREFIX}/${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}")
+        set(CPACK_RPM_DEFAULT_USER "minificpp")
+        set(CPACK_RPM_DEFAULT_GROUP "minificpp")
+        set(CPACK_RPM_PRE_INSTALL_SCRIPT_FILE "${CMAKE_CURRENT_SOURCE_DIR}/packaging/rpm/pre_install.sh")
+        list(APPEND CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION "/var")
+        list(APPEND CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION "/var/lib")
+        list(APPEND CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION "/var/log")
+        list(APPEND CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION "/usr/lib/systemd")
+        list(APPEND CPACK_RPM_EXCLUDE_FROM_AUTO_FILELIST_ADDITION "/usr/lib/systemd/system")
+    elseif (MINIFI_PACKAGING_TYPE STREQUAL "TGZ")
+        set(CPACK_GENERATOR "TGZ")
+        set(CPACK_COMPONENT_INCLUDE_TOPLEVEL_DIRECTORY 1)
+    else()
+        message(FATAL_ERROR "Invalid MINIFI_PACKAGING_TYPE")
+    endif()
 endif()
-set(CPACK_COMPONENT_INCLUDE_TOPLEVEL_DIRECTORY 1)
 set(CPACK_PACKAGE_DESCRIPTION_SUMMARY "Apache NiFi MiNiFi C++ version ${VERSION}")
 set(CPACK_PACKAGE_VENDOR "Apache NiFi")
 # set version information
@@ -800,66 +728,123 @@ set(CPACK_PACKAGE_DESCRIPTION_FILE "${CMAKE_CURRENT_SOURCE_DIR}/README.md")
 configure_file("${CMAKE_CURRENT_SOURCE_DIR}/LICENSE" "${CMAKE_CURRENT_BINARY_DIR}/LICENSE.txt" COPYONLY)
 set(CPACK_RESOURCE_FILE_LICENSE "${CMAKE_CURRENT_BINARY_DIR}/LICENSE.txt")
 if(NOT WIN32)
-	set(CPACK_PACKAGE_FILE_NAME "${ASSEMBLY_BASE_NAME}")
-	set(CPACK_GENERATOR "TGZ")
-	set(CPACK_BINARY_TGZ, "ON")
+    set(CPACK_PACKAGE_FILE_NAME "${ASSEMBLY_BASE_NAME}")
 else()
-	set(CPACK_PACKAGE_FILE_NAME "${CMAKE_PROJECT_NAME}")
+    set(CPACK_PACKAGE_FILE_NAME "${CMAKE_PROJECT_NAME}")
 endif()
 set(CPACK_PACKAGE_INSTALL_DIRECTORY "ApacheNiFiMiNiFi")
 set(CPACK_ARCHIVE_COMPONENT_INSTALL ON)
-set(CPACK_RDKAFKA_COMPONENT_INSTALL ON)
-set(CPACK_MQTT_COMPONENT_INSTALL ON)
-if(WIN32)
-	set(CPACK_COMPONENTS_ALL bin conf minifijni tzdata)
-else()
-	set(CPACK_COMPONENTS_ALL bin conf minifijni)
+set(CPACK_COMPONENTS_GROUPING "ALL_COMPONENTS_IN_ONE")
+
+
+# !WARNING! we need to manually add to CPACK_COMPONENTS_ALL otherwise
+# all components specified in "install" directives are added
+# (including thirdparties like range-v3)
+
+list(APPEND CPACK_COMPONENTS_ALL bin)
+cpack_add_component(bin DISPLAY_NAME "MiNiFi C++ executables" REQUIRED)
+if(NOT WIN32)
+    list(APPEND CPACK_COMPONENTS_ALL conf)
+    cpack_add_component(conf DISPLAY_NAME "Default configuration files" REQUIRED)
 endif()
 
+cpack_add_component_group(extensions DISPLAY_NAME "Extensions" EXPANDED)
+set(EXTENSIONS_ENABLED_BY_DEFAULT (
+    minifi-archive-extensions
+    minifi-aws
+    minifi-azure
+    minifi-civet-extensions
+    minifi-elasticsearch
+    minifi-gcp
+    minifi-grafana-loki
+    minifi-kafka
+    minifi-lmdb
+    minifi-mqtt-extensions
+    minifi-pdh
+    minifi-prometheus
+    minifi-rocksdb-repos
+    minifi-smb
+    minifi-splunk
+    minifi-sql
+    minifi-standard-processors
+    minifi-wel
+    minifi_pgp
+))
+foreach(extension ${selected_extensions})
+    get_component_name(${extension} component-name)
+    list(APPEND CPACK_COMPONENTS_ALL ${component-name})
+    if(${extension} IN_LIST EXTENSIONS_ENABLED_BY_DEFAULT)
+        set(attribute "")
+    elseif(${extension} STREQUAL "minifi-script-extension")
+        set(attribute HIDDEN)
+    else()
+        set(attribute DISABLED)
+    endif()
+    cpack_add_component(${component-name} DISPLAY_NAME ${extension} ${attribute} GROUP extensions DEPENDS bin)
+endforeach()
+if ("python_script_extension" IN_LIST CPACK_COMPONENTS_ALL)
+    if (WIN32)
+        set(CPACK_WIX_CANDLE_EXTRA_FLAGS "-dINCLUDE_PYTHON_PROCESSORS=yes")
+    else()
+        list(APPEND CPACK_COMPONENTS_ALL minifi_python_native_module)
+        cpack_add_component(minifi_python_native_module
+                DISPLAY_NAME "MiNiFi Python native module"
+                FILES "${CMAKE_BINARY_DIR}/bin/minifi_native.so"
+                GROUP extensions
+                DEPENDS bin)
+        set(RPM_EXPECTED_EXTENSION_LIST ${RPM_EXPECTED_EXTENSION_LIST} /usr/${CMAKE_INSTALL_LIBDIR}/${PROJECT_NAME}/extensions/minifi_native.so)
+    endif()
+endif()
 
 include(CPack)
 ### include modules
 
 if (NOT SKIP_TESTS)
-	include(BuildTests)
+    enable_testing()
+    set(BUILD_TESTING ON)
+    set(CTEST_NEW_FORMAT true)
+    set(MEMORYCHECK_SUPPRESSIONS_FILE "${CMAKE_CURRENT_SOURCE_DIR}/cmake/valgrind.supp" CACHE FILEPATH "Valgrind suppression file")
+    include(CTest)
+    include(BuildTests)
+
+    add_subdirectory("${TEST_DIR}/libtest")
+
+    add_subdirectory("${TEST_DIR}/unit")
+
+    add_subdirectory("${TEST_DIR}/integration")
+
+    ## Add KeyValueStorageService tests
+    add_subdirectory("${TEST_DIR}/keyvalue-tests")
+
+    add_subdirectory("${TEST_DIR}/flow-tests")
+
+    add_subdirectory("${TEST_DIR}/schema-tests")
+
+    if (ENABLE_ROCKSDB AND ENABLE_LIBARCHIVE)
+        add_subdirectory("${TEST_DIR}/persistence-tests")
+    endif()
+
+    add_subdirectory("minifi_main/tests")
+
+    add_subdirectory("encrypt-config/tests")
+
+    add_subdirectory("controller/tests")
 endif()
-
-## Add KeyValueStorageService tests
-registerTest("${TEST_DIR}/keyvalue-tests")
-
-registerTest("${TEST_DIR}/flow-tests")
-
-if (NOT DISABLE_ROCKSDB AND NOT DISABLE_LIBARCHIVE)
-	registerTest("${TEST_DIR}/persistence-tests")
-endif()
-
-registerTest("encrypt-config/tests")
 
 include(BuildDocs)
 
-
-# Create a custom build target that will run the linter.
-get_property(extensions GLOBAL PROPERTY EXTENSION-LINTERS)
-add_custom_target(linter
-	COMMAND python ${CMAKE_SOURCE_DIR}/thirdparty/google-styleguide/run_linter.py -q -i
-		${CMAKE_SOURCE_DIR}/libminifi/include/
-		${CMAKE_SOURCE_DIR}/libminifi/src/
-		${CMAKE_SOURCE_DIR}/libminifi/test/
-		${CMAKE_SOURCE_DIR}/encrypt-config/
-	DEPENDS ${extensions})
-
-if(NOT WIN32)
-add_custom_target(shellcheck
-	COMMAND ${CMAKE_SOURCE_DIR}/run_shellcheck.sh ${CMAKE_SOURCE_DIR})
-
-add_custom_target(flake8
-	COMMAND ${CMAKE_SOURCE_DIR}/run_flake8.sh ${CMAKE_SOURCE_DIR})
-endif(NOT WIN32)
-
-# Custom target to download and run Apache Release Audit Tool (RAT)
-add_custom_target(
-		apache-rat
-		${CMAKE_COMMAND} -P ${CMAKE_SOURCE_DIR}/cmake/RunApacheRAT.cmake
-		COMMAND java -jar ${CMAKE_SOURCE_DIR}/thirdparty/apache-rat/apache-rat-0.13/apache-rat-0.13.jar -E ${CMAKE_SOURCE_DIR}/thirdparty/apache-rat/.rat-excludes -d ${CMAKE_SOURCE_DIR} | grep -B 1 -A 15 Summary )
-
 feature_summary(WHAT ALL FILENAME ${CMAKE_BINARY_DIR}/all.log)
+
+if (MINIFI_ADVANCED_CODE_COVERAGE)
+    set(GCOVR_ADDITIONAL_ARGS --gcov-ignore-parse-errors=negative_hits.warn --gcov-ignore-errors=no_working_dir_found)
+    setup_target_for_coverage_gcovr_html(
+        NAME coverage
+        EXCLUDE "build/*" "cmake/*" "minifi_main/*" "thirdparty/*" "libminifi/test/*" "encrypt-config/tests/*" "extensions/aws/tests/*"
+            "extensions/civetweb/tests/*" "extensions/elasticsearch/tests/*" "extensions/gcp/tests/*" "extensions/grafana-loki/tests/*"
+            "extensions/kubernetes/tests/*" "extensions/kafka/tests/*" "extensions/lua/tests/*" "extensions/mqtt/tests/*" "extensions/procfs/tests/*" "extensions/prometheus/tests/*"
+            "extensions/script/tests/*" "extensions/sftp/tests/*" "extensions/splunk/tests/*" "extensions/standard-processors/tests/*" "extensions/systemd/tests/*" "extensions/test-processors/*"
+            "controller/MiNiFiController.cpp"
+    )
+endif()
+
+add_subdirectory(packaging)

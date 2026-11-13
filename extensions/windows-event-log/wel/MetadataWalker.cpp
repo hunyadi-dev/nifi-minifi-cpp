@@ -1,27 +1,11 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
-#include <windows.h>
 #include <strsafe.h>
 
 #include <map>
 #include <functional>
-#include <codecvt>
 #include <regex>
 #include <string>
 #include <utility>
@@ -30,33 +14,34 @@
 #include "MetadataWalker.h"
 #include "XMLString.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace wel {
+namespace org::apache::nifi::minifi::wel {
 
 bool MetadataWalker::for_each(pugi::xml_node &node) {
   // don't shortcut resolution here so that we can log attributes.
+  const auto idUpdate = [&](const std::string &input) {
+    if (resolve_) {
+      auto resolved = user_id_to_username_fn_(input);
+      replaced_identifiers_[input] = resolved;
+      return resolved;
+    }
+
+    replaced_identifiers_[input] = input;
+    return input;
+  };
+  for (pugi::xml_attribute attr : node.attributes())  {
+    if (sid_matcher_(attr.name())) {
+      updateAttributeValue(attr, attr.name(), idUpdate);
+    }
+  }
+
   const std::string node_name = node.name();
   if (node_name == "Data") {
     for (pugi::xml_attribute attr : node.attributes())  {
-      const auto idUpdate = [&](const std::string &input) {
-        if (resolve_) {
-          const auto resolved = utils::OsUtils::userIdToUsername(input);
-          replaced_identifiers_[input] = resolved;
-          return resolved;
-        }
-
-        replaced_identifiers_[input] = input;
-        return input;
-      };
-
-      if (std::regex_match(attr.name(), regex_)) {
+      if (sid_matcher_(attr.name())) {
         updateText(node, attr.name(), idUpdate);
       }
 
-      if (std::regex_match(attr.value(), regex_)) {
+      if (sid_matcher_(attr.value())) {
         updateText(node, attr.value(), idUpdate);
       }
     }
@@ -65,11 +50,11 @@ bool MetadataWalker::for_each(pugi::xml_node &node) {
       std::string nodeText = node.text().get();
       std::vector<std::string> ids = getIdentifiers(nodeText);
       for (const auto &id : ids) {
-        auto  resolved = utils::OsUtils::userIdToUsername(id);
+        auto  resolved = user_id_to_username_fn_(id);
         std::string replacement = "%{" + id + "}";
         replaced_identifiers_[id] = resolved;
         replaced_identifiers_[replacement] = resolved;
-        nodeText = utils::StringUtils::replaceAll(nodeText, replacement, resolved);
+        nodeText = utils::string::replaceAll(nodeText, replacement, resolved);
       }
       node.text().set(nodeText.c_str());
     }
@@ -90,7 +75,7 @@ bool MetadataWalker::for_each(pugi::xml_node &node) {
     if (it != formatFlagMap.end()) {
       std::function<std::string(const std::string &)> updateFunc = [&](const std::string &input) -> std::string {
         if (resolve_) {
-          auto resolved = windows_event_log_metadata_.getEventData(it->second);
+          auto resolved = windows_event_log_metadata_.getEventData(it->second, input);
           if (!resolved.empty()) {
             return resolved;
           }
@@ -106,11 +91,11 @@ bool MetadataWalker::for_each(pugi::xml_node &node) {
   return true;
 }
 
-std::vector<std::string> MetadataWalker::getIdentifiers(const std::string &text) const {
+std::vector<std::string> MetadataWalker::getIdentifiers(const std::string &text) {
   auto pos = text.find("%{");
   std::vector<std::string> found_strings;
   while (pos != std::string::npos) {
-    auto next_pos = text.find("}", pos);
+    auto next_pos = text.find('}', pos);
     if (next_pos != std::string::npos) {
       auto potential_identifier = text.substr(pos + 2, next_pos - (pos + 2));
       std::smatch match;
@@ -123,32 +108,42 @@ std::vector<std::string> MetadataWalker::getIdentifiers(const std::string &text)
   return found_strings;
 }
 
-std::string MetadataWalker::getMetadata(METADATA metadata) const {
-    switch (metadata) {
-      case LOG_NAME:
-        return log_name_;
-      case SOURCE:
-        return getString(metadata_, "Provider");
-      case TIME_CREATED:
-        return windows_event_log_metadata_.getEventTimestamp();
-      case EVENTID:
-        return getString(metadata_, "EventID");
-      case EVENT_RECORDID:
-        return getString(metadata_, "EventRecordID");
-      case OPCODE:
-        return getString(metadata_, "Opcode");
-      case TASK_CATEGORY:
-        return getString(metadata_, "Task");
-      case LEVEL:
-        return getString(metadata_, "Level");
-      case KEYWORDS:
-        return getString(metadata_, "Keywords");
-      case EVENT_TYPE:
-        return std::to_string(windows_event_log_metadata_.getEventTypeIndex());
-      case COMPUTER:
-        return windows_event_log_metadata_.getComputerName();
+std::string MetadataWalker::getMetadata(Metadata metadata) const {
+  static constexpr auto get_from_map = [](const std::map<std::string, std::string>& map, const std::string& field) {
+    auto it = map.find(field);
+    if (it != std::end(map)) {
+      return it->second;
     }
-    return "N/A";
+    return std::string{"N/A"};
+  };
+
+  switch (metadata) {
+    case Metadata::LOG_NAME:
+      return log_name_;
+    case Metadata::SOURCE:
+      return get_from_map(metadata_, "Provider");
+    case Metadata::TIME_CREATED:
+      return windows_event_log_metadata_.getEventTimestamp();
+    case Metadata::EVENTID:
+      return get_from_map(metadata_, "EventID");
+    case Metadata::EVENT_RECORDID:
+      return get_from_map(metadata_, "EventRecordID");
+    case Metadata::OPCODE:
+      return get_from_map(metadata_, "Opcode");
+    case Metadata::TASK_CATEGORY:
+      return get_from_map(metadata_, "Task");
+    case Metadata::LEVEL:
+      return get_from_map(metadata_, "Level");
+    case Metadata::KEYWORDS:
+      return get_from_map(metadata_, "Keywords");
+    case Metadata::EVENT_TYPE:
+      return std::to_string(windows_event_log_metadata_.getEventTypeIndex());
+    case Metadata::COMPUTER:
+      return WindowsEventLogMetadata::getComputerName();
+    case Metadata::USER:
+      break;
+  }
+  return "N/A";
 }
 
 std::map<std::string, std::string> MetadataWalker::getFieldValues() const {
@@ -159,30 +154,11 @@ std::map<std::string, std::string> MetadataWalker::getIdentifiers() const {
   return replaced_identifiers_;
 }
 
-std::string MetadataWalker::updateXmlMetadata(const std::string &xml, EVT_HANDLE metadata_ptr, EVT_HANDLE event_ptr, bool update_xml, bool resolve, const std::string &regex) {
-  WindowsEventLogMetadataImpl metadata{metadata_ptr, event_ptr};
-  MetadataWalker walker(metadata, "", update_xml, resolve, regex);
-
-  pugi::xml_document doc;
-  pugi::xml_parse_result result = doc.load_string(xml.c_str());
-
-  if (result) {
-    doc.traverse(walker);
-    wel::XmlString writer;
-    doc.print(writer, "", pugi::format_raw);  // no indentation or formatting
-    return writer.xml_;
-  } else {
-    throw std::runtime_error("Could not parse XML document");
-  }
-}
-
-std::string MetadataWalker::to_string(const wchar_t* pChar) {
-  return std::wstring_convert<std::codecvt_utf8<wchar_t>>().to_bytes(pChar);
-}
-
-void MetadataWalker::updateText(pugi::xml_node &node, const std::string &field_name, std::function<std::string(const std::string &)> &&fn) {
+template<typename Fn>
+requires std::is_convertible_v<std::invoke_result_t<Fn, std::string>, std::string>
+void MetadataWalker::updateText(pugi::xml_node &node, const std::string &field_name, Fn &&fn) {
   std::string previous_value = node.text().get();
-  auto new_field_value = fn(previous_value);
+  auto new_field_value = std::invoke(std::forward<Fn>(fn), previous_value);
   if (new_field_value != previous_value) {
     metadata_[field_name] = new_field_value;
     if (update_xml_) {
@@ -193,8 +169,19 @@ void MetadataWalker::updateText(pugi::xml_node &node, const std::string &field_n
   }
 }
 
-} /* namespace wel */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+template<typename Fn>
+requires std::is_convertible_v<std::invoke_result_t<Fn, std::string>, std::string>
+void MetadataWalker::updateAttributeValue(pugi::xml_attribute &attr, const std::string &field_name, Fn &&fn) {
+  std::string previous_value = attr.value();
+  auto new_field_value = std::invoke(std::forward<Fn>(fn), previous_value);
+  if (new_field_value != previous_value) {
+    metadata_[field_name] = new_field_value;
+    if (update_xml_) {
+      attr.set_value(new_field_value.c_str());
+    } else {
+      fields_values_[field_name] = new_field_value;
+    }
+  }
+}
+
+}  // namespace org::apache::nifi::minifi::wel

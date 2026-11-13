@@ -1,31 +1,19 @@
-/**
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include <cerrno>
 #include <memory>
 #include <string>
 #include <vector>
 
-#include "TestBase.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
 #include "ConsumeJournald.h"
 #include "libwrapper/LibWrapper.h"
-#include "utils/gsl.h"
+#include "minifi-cpp/utils/gsl.h"
 #include "utils/StringUtils.h"
-#include "Utils.h"
+#include "unit/TestUtils.h"
 
 namespace minifi = org::apache::nifi::minifi;
 namespace utils = minifi::utils;
@@ -35,22 +23,22 @@ using systemd::JournalType;
 using systemd::ConsumeJournald;
 
 namespace {
-namespace gsl = minifi::gsl;
 struct JournalEntry final {
   JournalEntry(const char* const identifier, const char* const message, const int pid = 0, std::vector<std::string> extra_fields = {}, const char* const hostname = "test-pc")
-    :fields{std::move(extra_fields)}
+    : fields{std::move(extra_fields)}
   {
+    auto extra_fields_size = fields.size();
     fields.reserve(fields.size() + 4);
-    fields.push_back(utils::StringUtils::join_pack("MESSAGE=", message));
-    fields.push_back(utils::StringUtils::join_pack("SYSLOG_IDENTIFIER=", identifier));
+    fields.push_back(utils::string::join_pack("MESSAGE=", message));
+    fields.push_back(utils::string::join_pack("SYSLOG_IDENTIFIER=", identifier));
     if (pid != 0) {
       // The intention of the long expression below is a simple pseudo-random to test both branches equally
       // without having to pull in complex random logic
       const char* const pid_key =
-          (int{message[0]} + int{identifier[0]} + static_cast<int>(extra_fields.size()) + pid + int{hostname[0]}) % 2 == 0 ? "_PID" : "SYSLOG_PID";
-      fields.push_back(utils::StringUtils::join_pack(pid_key, "=", std::to_string(pid)));
+          (int{message[0]} + int{identifier[0]} + static_cast<int>(extra_fields_size) + pid + int{hostname[0]}) % 2 == 0 ? "_PID" : "SYSLOG_PID";
+      fields.push_back(utils::string::join_pack(pid_key, "=", std::to_string(pid)));
     }
-    fields.push_back(utils::StringUtils::join_pack("_HOSTNAME=", hostname));
+    fields.push_back(utils::string::join_pack("_HOSTNAME=", hostname));
   }
 
   std::vector<std::string> fields;  // in KEY=VALUE format, like systemd
@@ -88,7 +76,7 @@ struct TestJournal final : libwrapper::Journal {
   }
 
   int getCursor(gsl::owner<char*>* const cursor_out) noexcept override {
-    *cursor_out = strdup(std::to_string(consumed).c_str());
+    *cursor_out = gsl::owner<char*>(strdup(std::to_string(consumed).c_str()));  // NOLINT(readability-redundant-casting)
     return *cursor_out ? 0 : -ENOMEM;
   }
 
@@ -138,12 +126,8 @@ struct TestLibWrapper final : libwrapper::LibWrapper {
 };
 }  // namespace
 
-namespace org { namespace apache { namespace nifi { namespace minifi { namespace extensions { namespace systemd {
-struct ConsumeJournaldTestAccessor {
-  FIELD_ACCESSOR(state_manager_);
-};
-}}}}}}  // namespace org::apache::nifi::minifi::extensions::systemd
-using org::apache::nifi::minifi::extensions::systemd::ConsumeJournaldTestAccessor;
+namespace org::apache::nifi::minifi::extensions::systemd {
+}  // namespace org::apache::nifi::minifi::extensions::systemd
 
 TEST_CASE("ConsumeJournald", "[consumejournald]") {
   TestController test_controller;
@@ -158,11 +142,12 @@ TEST_CASE("ConsumeJournald", "[consumejournald]") {
       {"systemd", "Starting Rule-based Manager for Device Events and Files...", 1},
   }});
   auto* const libwrapper_observer = libwrapper.get();
-  const auto consume_journald = plan->addProcessor(std::make_shared<ConsumeJournald>("ConsumeJournald", utils::Identifier{},
+  const TypedProcessorWrapper<ConsumeJournald> consume_journald = plan->addProcessor(minifi::test::utils::make_custom_processor<ConsumeJournald>(
+      minifi::core::ProcessorMetadata{utils::Identifier{}, "ConsumeJournald", core::logging::LoggerFactory<ConsumeJournald>::getLogger()},
       std::move(libwrapper)), "ConsumeJournald");
-  REQUIRE(consume_journald->setProperty(ConsumeJournald::TimestampFormat, "ISO8601"));
-  const auto get_cursor_position = [&consume_journald]() -> std::string {
-    return ConsumeJournaldTestAccessor::get_state_manager_(dynamic_cast<ConsumeJournald&>(*consume_journald))->get()->at("cursor");
+  REQUIRE(consume_journald->setProperty(ConsumeJournald::TimestampFormat.name, "ISO8601"));
+  const auto get_cursor_position = [&plan, &consume_journald]() -> std::string {
+    return plan->getProcessContextForProcessor(consume_journald)->createStateManager()->get()->at("cursor");
   };
 
   SECTION("defaults") {
@@ -187,9 +172,9 @@ TEST_CASE("ConsumeJournald", "[consumejournald]") {
     REQUIRE(!content.empty());
   }
   SECTION("Raw format, one-by-one") {
-    REQUIRE(consume_journald->setProperty(ConsumeJournald::BatchSize, "1"));
-    REQUIRE(consume_journald->setProperty(ConsumeJournald::PayloadFormat, "Raw"));
-    REQUIRE(consume_journald->setProperty(ConsumeJournald::ProcessOldMessages, "true"));
+    REQUIRE(consume_journald->setProperty(ConsumeJournald::BatchSize.name, "1"));
+    REQUIRE(consume_journald->setProperty(ConsumeJournald::PayloadFormat.name, "Raw"));
+    REQUIRE(consume_journald->setProperty(ConsumeJournald::ProcessOldMessages.name, "true"));
     {
       plan->runNextProcessor();
       REQUIRE("0" == get_cursor_position());
@@ -246,8 +231,8 @@ TEST_CASE("ConsumeJournald", "[consumejournald]") {
     REQUIRE("6" == get_cursor_position());
   }
   SECTION("Include Timestamp is honored") {
-    REQUIRE(consume_journald->setProperty(ConsumeJournald::BatchSize, "1"));
-    REQUIRE(consume_journald->setProperty(ConsumeJournald::IncludeTimestamp, "false"));
+    REQUIRE(consume_journald->setProperty(ConsumeJournald::BatchSize.name, "1"));
+    REQUIRE(consume_journald->setProperty(ConsumeJournald::IncludeTimestamp.name, "false"));
     plan->runNextProcessor();  // first run: seeks to the end, no flow files are created. Yields.
     REQUIRE(nullptr == plan->getCurrentFlowFile());
 
@@ -258,8 +243,8 @@ TEST_CASE("ConsumeJournald", "[consumejournald]") {
     REQUIRE(!plan->getCurrentFlowFile()->getAttribute("timestamp").has_value());
   }
   SECTION("Batch Size is honored") {
-    REQUIRE(consume_journald->setProperty(ConsumeJournald::BatchSize, "3"));
-    REQUIRE(consume_journald->setProperty(ConsumeJournald::ProcessOldMessages, "true"));
+    REQUIRE(consume_journald->setProperty(ConsumeJournald::BatchSize.name, "3"));
+    REQUIRE(consume_journald->setProperty(ConsumeJournald::ProcessOldMessages.name, "true"));
     libwrapper_observer->journal.emplace_back("systemd", "Mounted /boot.", 1);
     libwrapper_observer->journal.emplace_back("dbus-daemon", "[system] Successfully activated service 'org.freedesktop.UPower'", 2200);
 
@@ -276,20 +261,5 @@ TEST_CASE("ConsumeJournald", "[consumejournald]") {
     plan->runCurrentProcessor();
     REQUIRE(8 == plan->getNumFlowFileProducedByCurrentProcessor());
     REQUIRE(consume_journald->isYield());
-  }
-  SECTION("throw on invalid batch size") {
-    REQUIRE_THROWS(consume_journald->setProperty(ConsumeJournald::BatchSize, "asdf"));
-  }
-  SECTION("throw on invalid payload format") {
-    REQUIRE(consume_journald->setProperty(ConsumeJournald::PayloadFormat, "raw"));  // case-sensitive
-    REQUIRE_THROWS(plan->scheduleProcessor(consume_journald));
-  }
-  SECTION("throw on invalid journal type") {
-    REQUIRE(consume_journald->setProperty(ConsumeJournald::JournalType, "hello"));
-    REQUIRE_THROWS(plan->scheduleProcessor(consume_journald));
-  }
-  SECTION("throw on invalid journal type") {
-    REQUIRE(consume_journald->setProperty(ConsumeJournald::JournalType, "hello"));
-    REQUIRE_THROWS(plan->scheduleProcessor(consume_journald));
   }
 }

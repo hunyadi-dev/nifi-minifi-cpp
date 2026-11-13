@@ -1,0 +1,85 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#include "serialization/FlowFileV3Serializer.h"
+#include "io/StreamPipe.h"
+#include "minifi-cpp/utils/gsl.h"
+#include "minifi-cpp/core/FlowFile.h"
+
+namespace org::apache::nifi::minifi {
+
+size_t FlowFileV3Serializer::writeLength(std::size_t length, const std::shared_ptr<io::OutputStream>& out) {
+  if (length < MAX_2_BYTE_VALUE) {
+    return out->write(static_cast<uint16_t>(length));
+  }
+  size_t sum = 0;
+  {
+    const auto ret = out->write(static_cast<uint16_t>(MAX_2_BYTE_VALUE));
+    if (io::isError(ret)) return ret;
+    sum += ret;
+  }
+  {
+    const auto ret = out->write(static_cast<uint32_t>(length));
+    if (io::isError(ret)) return ret;
+    sum += ret;
+  }
+  return sum;
+}
+
+size_t FlowFileV3Serializer::writeString(const std::string &str, const std::shared_ptr<io::OutputStream> &out) {
+  size_t sum = 0;
+  {
+    const auto ret = writeLength(str.length(), out);
+    if (io::isError(ret)) return ret;
+    sum += ret;
+  }
+  {
+    const auto ret = out->write(reinterpret_cast<const uint8_t*>(str.data()), str.length());
+    if (io::isError(ret)) return ret;
+    if (ret != str.length()) return io::STREAM_ERROR;
+    sum += ret;
+  }
+  return sum;
+}
+
+io::IoResult FlowFileV3Serializer::serialize(const std::shared_ptr<core::FlowFile>& flowFile, const std::shared_ptr<io::OutputStream>& out) {
+  size_t sum = 0;
+  {
+    const auto ret = out->write(MAGIC_HEADER, sizeof(MAGIC_HEADER));
+    if (io::isError(ret)) return io::IoResult::error();
+    if (ret != sizeof(MAGIC_HEADER)) return io::IoResult::error();
+    sum += ret;
+  }
+  const auto& attributes = flowFile->getAttributes();
+  {
+    const auto ret = writeLength(attributes.size(), out);
+    if (io::isError(ret)) return io::IoResult::error();
+    sum += ret;
+  }
+  for (const auto& attrIt : attributes) {
+    {
+      const auto ret = writeString(attrIt.first, out);
+      if (io::isError(ret)) return io::IoResult::error();
+      sum += ret;
+    }
+    {
+      const auto ret = writeString(attrIt.second, out);
+      if (io::isError(ret)) return io::IoResult::error();
+      sum += ret;
+    }
+  }
+  {
+    const auto ret = out->write(flowFile->getSize());
+    if (io::isError(ret)) return io::IoResult::error();
+    sum += ret;
+  }
+  {
+    const auto ret = reader_(flowFile, InputStreamPipe{*out});
+    if (!ret) return ret;
+    sum += gsl::narrow<size_t>(ret.toI64());
+  }
+  return io::IoResult::from(sum);
+}
+
+}  // namespace org::apache::nifi::minifi

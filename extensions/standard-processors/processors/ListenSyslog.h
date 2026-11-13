@@ -1,234 +1,142 @@
-/**
- * @file ListenSyslog.h
- * ListenSyslog class declaration
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_LISTENSYSLOG_H_
-#define EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_LISTENSYSLOG_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
-#include <stdio.h>
-#include <sys/types.h>
 
-#include <memory>
-#include <queue>
+#pragma once
+
+#include <utility>
 #include <string>
-#include <vector>
+#include <memory>
+#include <regex>
 
-#ifndef WIN32
-#include <arpa/inet.h>
-#include <netinet/in.h>
-#include <sys/select.h>
-#include <sys/socket.h>
-#include <sys/time.h>
+#include "minifi-cpp/controllers/SSLContextServiceInterface.h"
+#include "NetworkListenerProcessor.h"
+#include "core/logging/LoggerFactory.h"
+#include "minifi-cpp/core/OutputAttributeDefinition.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "minifi-cpp/core/PropertyValidator.h"
+#include "minifi-cpp/core/RelationshipDefinition.h"
+#include "utils/net/Ssl.h"
 
-#else
-#include <WinSock2.h>
+namespace org::apache::nifi::minifi::processors {
 
-#endif
-#include <errno.h>
-
-#include <chrono>
-#include <thread>
-
-#include "core/Core.h"
-#include "core/logging/LoggerConfiguration.h"
-#include "core/Processor.h"
-#include "core/ProcessSession.h"
-#include "FlowFileRecord.h"
-#include "utils/gsl.h"
-
-#ifndef WIN32
-
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace processors {
-
-
-// SyslogEvent
-typedef struct {
-  char *payload;
-  uint64_t len;
-} SysLogEvent;
-
-// ListenSyslog Class
-class ListenSyslog : public core::Processor {
+class ListenSyslog : public NetworkListenerProcessor {
  public:
-  // Constructor
-  /*!
-   * Create a new processor
-   */
-  ListenSyslog(const std::string& name,  const utils::Identifier& uuid = {}) // NOLINT
-      : Processor(name, uuid),
-        logger_(logging::LoggerFactory<ListenSyslog>::getLogger()) {
-    _eventQueueByteSize = 0;
-    _serverSocket = 0;
-    _recvBufSize = 65507;
-    _maxSocketBufSize = 1024 * 1024;
-    _maxConnections = 2;
-    _maxBatchSize = 1;
-    _messageDelimiter = "\n";
-    _protocol = "UDP";
-    _port = 514;
-    _parseMessages = false;
-    _serverSocket = 0;
-    _maxFds = 0;
-    FD_ZERO(&_readfds);
-    _thread = nullptr;
-    _resetServerSocket = false;
-    _serverTheadRunning = false;
-  }
-  // Destructor
-  ~ListenSyslog() override {
-    _serverTheadRunning = false;
-    delete this->_thread;
-    // need to reset the socket
-    std::vector<int>::iterator it;
-    for (it = _clientSockets.begin(); it != _clientSockets.end(); ++it) {
-      int clientSocket = *it;
-      close(clientSocket);
-    }
-    _clientSockets.clear();
-    if (_serverSocket > 0) {
-      logger_->log_debug("ListenSysLog Server socket %d close", _serverSocket);
-      close(_serverSocket);
-      _serverSocket = 0;
-    }
-  }
-  // Processor Name
-  static constexpr char const *ProcessorName = "ListenSyslog";
-  // Supported Properties
-  static core::Property RecvBufSize;
-  static core::Property MaxSocketBufSize;
-  static core::Property MaxConnections;
-  static core::Property MaxBatchSize;
-  static core::Property MessageDelimiter;
-  static core::Property ParseMessages;
-  static core::Property Protocol;
-  static core::Property Port;
-  // Supported Relationships
-  static core::Relationship Success;
-  static core::Relationship Invalid;
-  // Nest Callback Class for write stream
-  class WriteCallback : public OutputStreamCallback {
-   public:
-    WriteCallback(char *data, uint64_t size)
-        : _data(reinterpret_cast<uint8_t*>(data)),
-          _dataSize(size) {
-    }
-    uint8_t *_data;
-    uint64_t _dataSize;
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
-      if (!_data || _dataSize <= 0) return 0;
-      const auto write_ret = stream->write(_data, _dataSize);
-      return io::isError(write_ret) ? -1 : gsl::narrow<int64_t>(write_ret);
-    }
+  using NetworkListenerProcessor::NetworkListenerProcessor;
+
+  EXTENSIONAPI static constexpr const char* Description = "Listens for Syslog messages being sent to a given port over TCP or UDP. "
+      "Incoming messages are optionally checked against regular expressions for RFC5424 and RFC3164 formatted messages. "
+      "With parsing enabled the individual parts of the message will be placed as FlowFile attributes and "
+      "valid messages will be transferred to success relationship, while invalid messages will be transferred to invalid relationship. "
+      "With parsing disabled all message will be routed to the success relationship, but it will only contain the sender, protocol, and port attributes";
+
+  EXTENSIONAPI static constexpr auto Port = core::PropertyDefinitionBuilder<>::createProperty("Listening Port")
+      .withDescription("The port for Syslog communication. (Well-known ports (0-1023) require root access)")
+      .isRequired(true)
+      .withValidator(core::StandardPropertyValidators::PORT_VALIDATOR)
+      .withDefaultValue("514")
+      .build();
+  EXTENSIONAPI static constexpr auto ProtocolProperty = core::PropertyDefinitionBuilder<magic_enum::enum_count<utils::net::IpProtocol>()>::createProperty("Protocol")
+      .withDescription("The protocol for Syslog communication.")
+      .isRequired(true)
+      .withAllowedValues(magic_enum::enum_names<utils::net::IpProtocol>())
+      .withDefaultValue(magic_enum::enum_name(utils::net::IpProtocol::UDP))
+      .build();
+  EXTENSIONAPI static constexpr auto MaxBatchSize = core::PropertyDefinitionBuilder<>::createProperty("Max Batch Size")
+      .withDescription("The maximum number of Syslog events to process at a time.")
+      .withValidator(core::StandardPropertyValidators::UNSIGNED_INTEGER_VALIDATOR)
+      .withDefaultValue("500")
+      .build();
+  EXTENSIONAPI static constexpr auto ParseMessages = core::PropertyDefinitionBuilder<>::createProperty("Parse Messages")
+      .withDescription("Indicates if the processor should parse the Syslog messages. "
+          "If set to false, each outgoing FlowFile will only contain the sender, protocol, and port, and no additional attributes.")
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("false")
+      .build();
+  EXTENSIONAPI static constexpr auto MaxQueueSize = core::PropertyDefinitionBuilder<>::createProperty("Max Size of Message Queue")
+      .withDescription("Maximum number of Syslog messages allowed to be buffered before processing them when the processor is triggered. "
+          "If the buffer is full, the message is ignored. If set to zero the buffer is unlimited.")
+      .withValidator(core::StandardPropertyValidators::UNSIGNED_INTEGER_VALIDATOR)
+      .withDefaultValue("10000")
+      .build();
+  EXTENSIONAPI static constexpr auto SSLContextService = core::PropertyDefinitionBuilder<>::createProperty("SSL Context Service")
+      .withDescription("The Controller Service to use in order to obtain an SSL Context. If this property is set, messages will be received over a secure connection. "
+          "This Property is only considered if the <Protocol> Property has a value of \"TCP\".")
+      .withAllowedTypes<minifi::controllers::SSLContextServiceInterface>()
+      .build();
+  EXTENSIONAPI static constexpr auto ClientAuth = core::PropertyDefinitionBuilder<magic_enum::enum_count<utils::net::ClientAuthOption>()>::createProperty("Client Auth")
+      .withDescription("The client authentication policy to use for the SSL Context. Only used if an SSL Context Service is provided.")
+      .withDefaultValue(magic_enum::enum_name(utils::net::ClientAuthOption::NONE))
+      .withAllowedValues(magic_enum::enum_names<utils::net::ClientAuthOption>())
+      .build();
+  EXTENSIONAPI static constexpr auto Properties = std::to_array<core::PropertyReference>({
+      Port,
+      ProtocolProperty,
+      MaxBatchSize,
+      ParseMessages,
+      MaxQueueSize,
+      SSLContextService,
+      ClientAuth
+  });
+
+
+  EXTENSIONAPI static constexpr auto Success = core::RelationshipDefinition{"success",
+      "Incoming messages that match the expected format when parsing will be sent to this relationship. "
+      "When Parse Messages is set to false, all incoming message will be sent to this relationship."};
+  EXTENSIONAPI static constexpr auto Invalid = core::RelationshipDefinition{"invalid",
+      "Incoming messages that do not match the expected format when parsing will be sent to this relationship."};
+  EXTENSIONAPI static constexpr auto Relationships = std::array{Success, Invalid};
+
+  EXTENSIONAPI static constexpr auto Protocol = core::OutputAttributeDefinition<0>{"syslog.protocol", {}, "The protocol over which the Syslog message was received."};
+  EXTENSIONAPI static constexpr auto PortOutputAttribute = core::OutputAttributeDefinition<0>{"syslog.port", {}, "The port over which the Syslog message was received."};
+  EXTENSIONAPI static constexpr auto Sender = core::OutputAttributeDefinition<0>{"syslog.sender", {}, "The hostname of the Syslog server that sent the message."};
+  EXTENSIONAPI static constexpr auto Valid = core::OutputAttributeDefinition<0>{"syslog.valid", {},
+      "An indicator of whether this message matched the expected formats. (requirement: parsing enabled)"};
+  EXTENSIONAPI static constexpr auto Priority = core::OutputAttributeDefinition<0>{"syslog.priority", {}, "The priority of the Syslog message. (requirement: parsed RFC5424/RFC3164)"};
+  EXTENSIONAPI static constexpr auto Severity = core::OutputAttributeDefinition<0>{"syslog.severity", {}, "The severity of the Syslog message. (requirement: parsed RFC5424/RFC3164)"};
+  EXTENSIONAPI static constexpr auto Facility = core::OutputAttributeDefinition<0>{"syslog.facility", {}, "The facility of the Syslog message. (requirement: parsed RFC5424/RFC3164)"};
+  EXTENSIONAPI static constexpr auto Timestamp = core::OutputAttributeDefinition<0>{"syslog.timestamp", {}, "The timestamp of the Syslog message. (requirement: parsed RFC5424/RFC3164)"};
+  EXTENSIONAPI static constexpr auto Hostname = core::OutputAttributeDefinition<0>{"syslog.hostname", {}, "The hostname of the Syslog message. (requirement: parsed RFC5424/RFC3164)"};
+  EXTENSIONAPI static constexpr auto Msg = core::OutputAttributeDefinition<0>{"syslog.msg", {}, "The free-form message of the Syslog message. (requirement: parsed RFC5424/RFC3164)"};
+  EXTENSIONAPI static constexpr auto Version = core::OutputAttributeDefinition<0>{"syslog.version", {}, "The version of the Syslog message. (requirement: parsed RFC5424)"};
+  EXTENSIONAPI static constexpr auto AppName = core::OutputAttributeDefinition<0>{"syslog.app_name", {}, "The app name of the Syslog message. (requirement: parsed RFC5424)"};
+  EXTENSIONAPI static constexpr auto ProcId = core::OutputAttributeDefinition<0>{"syslog.proc_id", {}, "The proc id of the Syslog message. (requirement: parsed RFC5424)"};
+  EXTENSIONAPI static constexpr auto MsgId = core::OutputAttributeDefinition<0>{"syslog.msg_id", {}, "The message id of the Syslog message. (requirement: parsed RFC5424)"};
+  EXTENSIONAPI static constexpr auto StructuredData = core::OutputAttributeDefinition<0>{"syslog.structured_data", {}, "The structured data of the Syslog message. (requirement: parsed RFC5424)"};
+  EXTENSIONAPI static constexpr auto OutputAttributes = std::array<core::OutputAttributeReference, 15>{
+      Protocol,
+      PortOutputAttribute,
+      Sender,
+      Valid,
+      Priority,
+      Severity,
+      Facility,
+      Timestamp,
+      Hostname,
+      Msg,
+      Version,
+      AppName,
+      ProcId,
+      MsgId,
+      StructuredData
   };
 
- public:
-  // OnTrigger method, implemented by NiFi ListenSyslog
-  void onTrigger(core::ProcessContext *context, core::ProcessSession *session) override;
-  // Initialize, over write by NiFi ListenSyslog
   void initialize() override;
+  void onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& session_factory) override;
+
+ protected:
+  core::PropertyReference getMaxBatchSizeProperty() override;
+  core::PropertyReference getMaxQueueSizeProperty() override;
+  core::PropertyReference getPortProperty() override;
 
  private:
-  core::annotation::Input getInputRequirement() const override {
-    return core::annotation::Input::INPUT_FORBIDDEN;
-  }
+  void transferAsFlowFile(const utils::net::Message& message, core::ProcessSession& session) override;
 
-  // Logger
-  std::shared_ptr<logging::Logger> logger_;
-  // Run function for the thread
-  static void run(ListenSyslog *process);
-  // Run Thread
-  void runThread();
-  // Queue for store syslog event
-  std::queue<SysLogEvent> _eventQueue;
-  // Size of Event queue in bytes
-  uint64_t _eventQueueByteSize;
-  // Get event queue size
-  uint64_t getEventQueueSize() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return _eventQueue.size();
-  }
-  // Get event queue byte size
-  uint64_t getEventQueueByteSize() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return _eventQueueByteSize;
-  }
-  // Whether the event queue  is empty
-  bool isEventQueueEmpty() {
-    std::lock_guard<std::mutex> lock(mutex_);
-    return _eventQueue.empty();
-  }
-  // Put event into directory listing
-  void putEvent(uint8_t *payload, uint64_t len) {
-    std::lock_guard<std::mutex> lock(mutex_);
-    SysLogEvent event;
-    event.payload = reinterpret_cast<char*>(payload);
-    event.len = len;
-    _eventQueue.push(event);
-    _eventQueueByteSize += len;
-  }
-  // Read \n terminated line from TCP socket
-  int readline(int fd, char *bufptr, size_t len);
-  // start server socket and handling client socket
-  void startSocketThread();
-  // Poll event
-  void pollEvent(std::queue<SysLogEvent> &list, int maxSize) {
-    std::lock_guard<std::mutex> lock(mutex_);
+  static const std::regex rfc5424_pattern_;
+  static const std::regex rfc3164_pattern_;
 
-    while (!_eventQueue.empty() && (maxSize == 0 || list.size() < static_cast<uint32_t>(maxSize))) {
-      SysLogEvent event = _eventQueue.front();
-      _eventQueue.pop();
-      _eventQueueByteSize -= event.len;
-      list.push(event);
-    }
-    return;
-  }
-  // Mutex for protection of the directory listing
-  std::mutex mutex_;
-  int64_t _recvBufSize;
-  int64_t _maxSocketBufSize;
-  int64_t _maxConnections;
-  int64_t _maxBatchSize;
-  std::string _messageDelimiter;
-  std::string _protocol;
-  int64_t _port;
-  bool _parseMessages;
-  int _serverSocket;
-  std::vector<int> _clientSockets;
-  int _maxFds;
-  fd_set _readfds;
-  // thread
-  std::thread *_thread;
-  // whether to reset the server socket
-  bool _resetServerSocket; bool _serverTheadRunning;
-  // buffer for read socket
-  char _buffer[2048];
+  bool parse_messages_ = false;
 };
-
-}  // namespace processors
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif
-
-#endif  // EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_LISTENSYSLOG_H_
+}  // namespace org::apache::nifi::minifi::processors

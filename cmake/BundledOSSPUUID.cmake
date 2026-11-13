@@ -1,31 +1,18 @@
-#
-# Licensed to the Apache Software Foundation (ASF) under one
-# or more contributor license agreements.  See the NOTICE file
-# distributed with this work for additional information
-# regarding copyright ownership.  The ASF licenses this file
-# to you under the Apache License, Version 2.0 (the
-# "License"); you may not use this file except in compliance
-# with the License.  You may obtain a copy of the License at
-#
-#   http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing,
-# software distributed under the License is distributed on an
-# "AS IS" BASIS, WITHOUT WARRANTIES OR CONDITIONS OF ANY
-# KIND, either express or implied.  See the License for the
-# specific language governing permissions and limitations
-# under the License.
-#
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
 
 function(use_bundled_osspuuid SOURCE_DIR BINARY_DIR)
     message("Using bundled ossp-uuid")
 
-    # Define patch step
-    # if already applied, reverse application should succeed
-    set(PC ${Bash_EXECUTABLE} -c "set -x && (\"${Patch_EXECUTABLE}\" -p1 -N -i \"${SOURCE_DIR}/thirdparty/ossp-uuid/ossp-uuid-mac-fix.patch\" &&\
-            \"${Patch_EXECUTABLE}\" -p1 -N -i \"${SOURCE_DIR}/thirdparty/ossp-uuid/ossp-uuid-no-prog.patch\") ||\
-            (\"${Patch_EXECUTABLE}\" -p1 -R --dry-run -i \"${SOURCE_DIR}/thirdparty/ossp-uuid/ossp-uuid-mac-fix.patch\" &&\
-            \"${Patch_EXECUTABLE}\" -p1 -R --dry-run -i \"${SOURCE_DIR}/thirdparty/ossp-uuid/ossp-uuid-no-prog.patch\")")
+    set(PATCH_FILE1 "${SOURCE_DIR}/thirdparty/ossp-uuid/all/patches/ossp-uuid-mac-fix.patch")
+    set(PATCH_FILE2 "${SOURCE_DIR}/thirdparty/ossp-uuid/all/patches/ossp-uuid-no-prog.patch")
+    set(PATCH_FILE3 "${SOURCE_DIR}/thirdparty/ossp-uuid/all/patches/ossp-uuid-update-config-guess.patch")
+    set(PC ${Bash_EXECUTABLE} -c "set -x &&\
+            (\"${Patch_EXECUTABLE}\" -p1 -R -s -f --dry-run -i \"${PATCH_FILE1}\" || \"${Patch_EXECUTABLE}\" -p1 -N -i \"${PATCH_FILE1}\") &&\
+            (\"${Patch_EXECUTABLE}\" -p1 -R -s -f --dry-run -i \"${PATCH_FILE2}\" || \"${Patch_EXECUTABLE}\" -p1 -N -i \"${PATCH_FILE2}\") &&\
+            (\"${Patch_EXECUTABLE}\" -p1 -R -s -f --dry-run -i \"${PATCH_FILE3}\" || \"${Patch_EXECUTABLE}\" -p1 -N -i \"${PATCH_FILE3}\") ")
 
     # Define byproducts
     set(BYPRODUCTS "lib/libuuid.a"
@@ -38,9 +25,16 @@ function(use_bundled_osspuuid SOURCE_DIR BINARY_DIR)
     ENDFOREACH(BYPRODUCT)
 
     # Build project
-    set(CONFIGURE_COMMAND ./configure "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}" "CFLAGS=${PASSTHROUGH_CMAKE_C_FLAGS} -fPIC" "CXXFLAGS=${PASSTHROUGH_CMAKE_CXX_FLAGS} -fPIC" --enable-shared=no --with-cxx --without-perl --without-php --without-pgsql "--prefix=${BINARY_DIR}/thirdparty/ossp-uuid-install")
+    if(NOT WIN32)
+        string(APPEND ADDITIONAL_COMPILER_FLAGS "-fPIC ")
+    endif()
+    if(APPLE)
+        string(APPEND ADDITIONAL_COMPILER_FLAGS "-isysroot ${CMAKE_OSX_SYSROOT} ")
+    endif()
+    set(CONFIGURE_COMMAND ./configure "CC=${CMAKE_C_COMPILER}" "CXX=${CMAKE_CXX_COMPILER}" "CFLAGS=${PASSTHROUGH_CMAKE_C_FLAGS} ${ADDITIONAL_COMPILER_FLAGS}" "CXXFLAGS=${PASSTHROUGH_CMAKE_CXX_FLAGS} ${ADDITIONAL_COMPILER_FLAGS}" --enable-shared=no --with-cxx --without-perl --without-php --without-pgsql "--prefix=${BINARY_DIR}/thirdparty/ossp-uuid-install")
+
     string(TOLOWER "${CMAKE_BUILD_TYPE}" build_type)
-    if(NOT build_type MATCHES debug)
+    if(build_type MATCHES debug)
         list(APPEND CONFIGURE_COMMAND --enable-debug=yes)
     endif()
 
@@ -55,10 +49,12 @@ function(use_bundled_osspuuid SOURCE_DIR BINARY_DIR)
             UPDATE_COMMAND ""
             INSTALL_COMMAND make install
             BUILD_BYPRODUCTS ${OSSPUUID_LIBRARIES_LIST}
-            CONFIGURE_COMMAND ""
-            PATCH_COMMAND ${PC} && ${CONFIGURE_COMMAND}
+            CONFIGURE_COMMAND ${CONFIGURE_COMMAND}
+            PATCH_COMMAND ${PC}
             STEP_TARGETS build
             EXCLUDE_FROM_ALL TRUE
+            DOWNLOAD_NO_PROGRESS TRUE
+            TLS_VERIFY TRUE
     )
 
     # Set variables

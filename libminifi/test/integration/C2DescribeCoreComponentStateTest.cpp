@@ -1,0 +1,93 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#include <string>
+#include "unit/TestBase.h"
+#include "integration/HTTPIntegrationBase.h"
+#include "integration/HTTPHandlers.h"
+#include "processors/TailFile.h"
+#include "state/ProcessorController.h"
+#include "utils/file/FileUtils.h"
+#include "unit/Catch.h"
+
+namespace org::apache::nifi::minifi::test {
+
+class VerifyC2DescribeCoreComponentState : public VerifyC2Describe {
+ public:
+  explicit VerifyC2DescribeCoreComponentState(const std::filesystem::path& test_file_path, std::atomic_bool& verified)
+    : VerifyC2Describe(test_file_path, verified) {
+    temp_dir_ = testController.createTempDirectory();
+
+    test_file_1_ = temp_dir_ / "test1.txt";
+    test_file_2_ = temp_dir_ / "test2.txt";
+
+    std::ofstream f1(test_file_1_, std::ios::out | std::ios::binary);
+    f1 << "foo\n";
+
+    std::ofstream f2(test_file_2_, std::ios::out | std::ios::binary);
+    f2 << "foobar\n";
+  }
+
+ protected:
+  void updateProperties(minifi::FlowController& flow_controller) override {
+    auto setFileName = [] (const std::filesystem::path& file_name, minifi::state::StateController& component){
+      auto& processor = dynamic_cast<minifi::state::ProcessorController&>(component).getProcessor();
+      REQUIRE(processor.setProperty(minifi::processors::TailFile::FileName.name, file_name.string()));
+    };
+
+    flow_controller.executeOnComponent("TailFile1",
+      [&](minifi::state::StateController& component) {setFileName(test_file_1_, component);});
+    flow_controller.executeOnComponent("TailFile2",
+      [&](minifi::state::StateController& component) {setFileName(test_file_2_, component);});
+  }
+
+  TestController testController;
+  std::filesystem::path temp_dir_;
+  std::filesystem::path test_file_1_;
+  std::filesystem::path test_file_2_;
+};
+
+class DescribeCoreComponentStateHandler: public HeartbeatHandler {
+ public:
+  explicit DescribeCoreComponentStateHandler(std::shared_ptr<minifi::Configure> configuration, std::atomic_bool& verified)
+    : HeartbeatHandler(std::move(configuration)),
+      verified_(verified) {
+  }
+
+  void handleHeartbeat(const rapidjson::Document&, struct mg_connection * conn) override {
+    sendHeartbeatResponse("DESCRIBE", "corecomponentstate", "889345", conn);
+  }
+
+  void handleAcknowledge(const rapidjson::Document& root) override {
+    REQUIRE(root.HasMember("corecomponentstate"));
+
+    auto assertExpectedTailFileState = [&](const char* uuid, const char* name, const char* position) {
+      REQUIRE(root["corecomponentstate"].HasMember(uuid));
+      const auto& tf = root["corecomponentstate"][uuid];
+      REQUIRE(tf.HasMember("file.0.name"));
+      REQUIRE(std::string(tf["file.0.name"].GetString()) == name);
+      REQUIRE(tf.HasMember("file.0.position"));
+      REQUIRE(std::string(tf["file.0.position"].GetString()) == position);
+      REQUIRE(tf.HasMember("file.0.current"));
+      REQUIRE(strlen(tf["file.0.current"].GetString()) > 0U);
+    };
+
+    assertExpectedTailFileState("2438e3c8-015a-1000-79ca-83af40ec1993", "test1.txt", "4");
+    assertExpectedTailFileState("2438e3c8-015a-1000-79ca-83af40ec1994", "test2.txt", "7");
+    verified_ = true;
+  }
+
+ private:
+  std::atomic_bool& verified_;
+};
+
+TEST_CASE("C2DescribeCoreComponentStateTest", "[c2test]") {
+  std::atomic_bool verified{false};
+  VerifyC2DescribeCoreComponentState harness(std::filesystem::path(TEST_RESOURCES) / "TestC2DescribeCoreComponentState.yml", verified);
+  harness.setKeyDir(TEST_RESOURCES);
+  DescribeCoreComponentStateHandler handler(harness.getConfiguration(), verified);
+  harness.setUrl("https://localhost:0/api/heartbeat", &handler);
+  harness.run();
+}
+
+}  // namespace org::apache::nifi::minifi::test

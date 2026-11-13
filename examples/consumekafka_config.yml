@@ -1,17 +1,6 @@
-# Licensed to the Apache Software Foundation (ASF) under one or more
-# contributor license agreements.  See the NOTICE file distributed with
-# this work for additional information regarding copyright ownership.
-# The ASF licenses this file to You under the Apache License, Version 2.0
-# (the "License"); you may not use this file except in compliance with
-# the License.  You may obtain a copy of the License at
-#
-#     http://www.apache.org/licenses/LICENSE-2.0
-#
-# Unless required by applicable law or agreed to in writing, software
-# distributed under the License is distributed on an "AS IS" BASIS,
-# WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-# See the License for the specific language governing permissions and
-# limitations under the License.
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 MiNiFi Config Version: 3
 Flow Controller:
@@ -46,6 +35,7 @@ Processors:
     Directory: /tmp/output
 Connections:
 - name: ConsumeKafka/success/PutFile
+  id: c9ac662f-015a-4b09-9c05-14599e30f196
   source id: 37d6e8e5-6284-423e-8620-c5168a71add7
   source relationship name: success
   destination id: 7f9c6f0b-e936-499e-b659-acfaf6872772

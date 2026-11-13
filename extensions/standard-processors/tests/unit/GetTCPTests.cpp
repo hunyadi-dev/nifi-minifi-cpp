@@ -1,419 +1,298 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#include <utility>
-#include <memory>
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #include <string>
-#include <vector>
-#include <set>
-#include <fstream>
-#include "unit/ProvenanceTestHelper.h"
-#include "TestBase.h"
-#include "RandomServerSocket.h"
-#include "Scheduling.h"
-#include "LogAttribute.h"
-#include "GetTCP.h"
-#include "core/Core.h"
-#include "core/FlowFile.h"
-#include "core/Processor.h"
-#include "core/ProcessContext.h"
-#include "core/ProcessSession.h"
-#include "core/ProcessorNode.h"
-#include "core/reporting/SiteToSiteProvenanceReportingTask.h"
-#include "utils/gsl.h"
 
-TEST_CASE("GetTCPWithoutEOM", "[GetTCP1]") {
-  TestController testController;
-  std::vector<uint8_t> buffer;
-  for (auto c : "Hello World\nHello Warld\nGoodByte Cruel world") {
-    buffer.push_back(c);
-  }
-  std::shared_ptr<core::ContentRepository> content_repo = std::make_shared<core::repository::VolatileContentRepository>();
+#include "unit/Catch.h"
+#include "processors/GetTCP.h"
+#include "unit/SingleProcessorTestController.h"
+#include "unit/TestUtils.h"
+#include "utils/net/AsioCoro.h"
+#include "utils/net/AsioSocketUtils.h"
+#include "controllers/SSLContextService.h"
+#include "range/v3/algorithm/contains.hpp"
+#include "minifi-cpp/utils/gsl.h"
+#include "fmt/chrono.h"
 
-  content_repo->initialize(std::make_shared<minifi::Configure>());
+using GetTCP = org::apache::nifi::minifi::processors::GetTCP;
 
-  std::shared_ptr<org::apache::nifi::minifi::io::StreamFactory> stream_factory = minifi::io::StreamFactory::getInstance(std::make_shared<minifi::Configure>());
-  org::apache::nifi::minifi::io::RandomServerSocket server(org::apache::nifi::minifi::io::Socket::getMyHostName());
+using namespace std::literals::chrono_literals;
 
-  LogTestController::getInstance().setDebug<minifi::processors::LogAttribute>();
-  LogTestController::getInstance().setDebug<minifi::processors::GetTCP>();
-  LogTestController::getInstance().setTrace<minifi::io::Socket>();
+namespace org::apache::nifi::minifi::test {
 
-  std::shared_ptr<core::Repository> repo = std::make_shared<TestRepository>();
-
-  std::shared_ptr<core::Processor> processor = std::make_shared<org::apache::nifi::minifi::processors::GetTCP>("gettcpexample");
-
-  std::shared_ptr<core::Processor> logAttribute = std::make_shared<org::apache::nifi::minifi::processors::LogAttribute>("logattribute");
-
-  processor->setStreamFactory(stream_factory);
-  processor->initialize();
-
-  utils::Identifier processoruuid = processor->getUUID();
-  REQUIRE(processoruuid);
-
-  utils::Identifier logattribute_uuid = logAttribute->getUUID();
-  REQUIRE(logattribute_uuid);
-
-  REQUIRE(processoruuid.to_string() != logattribute_uuid.to_string());
-
-  std::shared_ptr<minifi::Connection> connection = std::make_shared<minifi::Connection>(repo, content_repo, "gettcpexampleConnection");
-  connection->addRelationship(core::Relationship("success", "description"));
-
-  std::shared_ptr<minifi::Connection> connection2 = std::make_shared<minifi::Connection>(repo, content_repo, "logattribute");
-  connection2->addRelationship(core::Relationship("success", "description"));
-
-  // link the connections so that we can test results at the end for this
-  connection->setSource(processor);
-
-  // link the connections so that we can test results at the end for this
-  connection->setDestination(logAttribute);
-
-  connection2->setSource(logAttribute);
-
-  connection2->setSourceUUID(logattribute_uuid);
-  connection->setSourceUUID(processoruuid);
-  connection->setDestinationUUID(logattribute_uuid);
-
-  processor->addConnection(connection);
-  logAttribute->addConnection(connection);
-  logAttribute->addConnection(connection2);
-
-  std::shared_ptr<core::ProcessorNode> node = std::make_shared<core::ProcessorNode>(processor);
-    std::shared_ptr<core::ProcessorNode> node2 = std::make_shared<core::ProcessorNode>(logAttribute);
-    std::shared_ptr<core::ProcessContext> context = std::make_shared<core::ProcessContext>(node, nullptr, repo, repo, content_repo);
-    std::shared_ptr<core::ProcessContext> context2 = std::make_shared<core::ProcessContext>(node2, nullptr, repo, repo, content_repo);
-  context->setProperty(org::apache::nifi::minifi::processors::GetTCP::EndpointList, org::apache::nifi::minifi::io::Socket::getMyHostName() + ":" + std::to_string(server.getPort()));
-  context->setProperty(org::apache::nifi::minifi::processors::GetTCP::ReconnectInterval, "200 msec");
-  context->setProperty(org::apache::nifi::minifi::processors::GetTCP::ConnectionAttemptLimit, "10");
-  auto session = std::make_shared<core::ProcessSession>(context);
-    auto session2 = std::make_shared<core::ProcessSession>(context2);
-
-  REQUIRE(processor->getName() == "gettcpexample");
-
-  std::shared_ptr<core::FlowFile> record;
-  processor->setScheduledState(core::ScheduledState::RUNNING);
-
-  std::shared_ptr<core::ProcessSessionFactory> factory = std::make_shared<core::ProcessSessionFactory>(context);
-  processor->onSchedule(context, factory);
-  processor->onTrigger(context, session);
-  server.write(buffer, buffer.size());
-  std::this_thread::sleep_for(std::chrono::seconds(2));
-
-  logAttribute->initialize();
-  logAttribute->incrementActiveTasks();
-  logAttribute->setScheduledState(core::ScheduledState::RUNNING);
-  std::shared_ptr<core::ProcessSessionFactory> factory2 = std::make_shared<core::ProcessSessionFactory>(context2);
-  logAttribute->onSchedule(context2, factory2);
-  logAttribute->onTrigger(context2, session2);
-
-  auto reporter = session->getProvenanceReporter();
-  auto records = reporter->getEvents();
-  record = session->get();
-  REQUIRE(record == nullptr);
-  REQUIRE(records.size() == 0);
-
-  processor->incrementActiveTasks();
-  processor->setScheduledState(core::ScheduledState::RUNNING);
-  processor->onTrigger(context, session);
-  reporter = session->getProvenanceReporter();
-
-  records = reporter->getEvents();
-  session->commit();
-
-  logAttribute->incrementActiveTasks();
-  logAttribute->setScheduledState(core::ScheduledState::RUNNING);
-  logAttribute->onTrigger(context2, session2);
-
-  records = reporter->getEvents();
-
-  REQUIRE(true == LogTestController::getInstance().contains("Reconnect interval is 200 ms"));
-  REQUIRE(true == LogTestController::getInstance().contains("Size:45 Offset:0"));
-
-  LogTestController::getInstance().reset();
+void check_for_attributes(core::FlowFile& flow_file, uint16_t port) {
+  const auto local_addresses = {"127.0.0.1:" + std::to_string(port), "::ffff:127.0.0.1:" + std::to_string(port), "::1:" + std::to_string(port)};
+  CHECK(ranges::contains(local_addresses, flow_file.getAttribute(GetTCP::SourceEndpoint.name)));
 }
 
-TEST_CASE("GetTCPWithOEM", "[GetTCP2]") {
-  std::vector<uint8_t> buffer;
-  for (auto c : "Hello World\nHello Warld\nGoodByte Cruel world") {
-    buffer.push_back(c);
-  }
-  std::shared_ptr<core::ContentRepository> content_repo = std::make_shared<core::repository::VolatileContentRepository>();
-
-  content_repo->initialize(std::make_shared<minifi::Configure>());
-
-  std::shared_ptr<org::apache::nifi::minifi::io::StreamFactory> stream_factory = minifi::io::StreamFactory::getInstance(std::make_shared<minifi::Configure>());
-
-  TestController testController;
-
-  org::apache::nifi::minifi::io::RandomServerSocket server(org::apache::nifi::minifi::io::Socket::getMyHostName());
-
-  LogTestController::getInstance().setDebug<minifi::processors::LogAttribute>();
-  LogTestController::getInstance().setTrace<core::repository::VolatileContentRepository >();
-  LogTestController::getInstance().setTrace<minifi::processors::GetTCP>();
-  LogTestController::getInstance().setTrace<core::ConfigurableComponent>();
-  LogTestController::getInstance().setTrace<minifi::io::Socket>();
-
-  std::shared_ptr<core::Repository> repo = std::make_shared<TestRepository>();
-
-  std::shared_ptr<core::Processor> processor = std::make_shared<org::apache::nifi::minifi::processors::GetTCP>("gettcpexample");
-
-  std::shared_ptr<core::Processor> logAttribute = std::make_shared<org::apache::nifi::minifi::processors::LogAttribute>("logattribute");
-
-  processor->setStreamFactory(stream_factory);
-  processor->initialize();
-
-  utils::Identifier processoruuid = processor->getUUID();
-  REQUIRE(processoruuid);
-
-  utils::Identifier logattribute_uuid = logAttribute->getUUID();
-  REQUIRE(logattribute_uuid);
-
-  std::shared_ptr<minifi::Connection> connection = std::make_shared<minifi::Connection>(repo, content_repo, "gettcpexampleConnection");
-  connection->addRelationship(core::Relationship("partial", "description"));
-
-  std::shared_ptr<minifi::Connection> connection2 = std::make_shared<minifi::Connection>(repo, content_repo, "logattribute");
-  connection2->addRelationship(core::Relationship("partial", "description"));
-
-  // link the connections so that we can test results at the end for this
-  connection->setSource(processor);
-
-  // link the connections so that we can test results at the end for this
-  connection->setDestination(logAttribute);
-
-  connection2->setSource(logAttribute);
-
-  connection2->setSourceUUID(logattribute_uuid);
-  connection->setSourceUUID(processoruuid);
-  connection->setDestinationUUID(logattribute_uuid);
-
-  processor->addConnection(connection);
-  logAttribute->addConnection(connection);
-  logAttribute->addConnection(connection2);
-
-  std::shared_ptr<core::ProcessorNode> node = std::make_shared<core::ProcessorNode>(processor);
-    std::shared_ptr<core::ProcessorNode> node2 = std::make_shared<core::ProcessorNode>(logAttribute);
-    std::shared_ptr<core::ProcessContext> context = std::make_shared<core::ProcessContext>(node, nullptr, repo, repo, content_repo);
-    std::shared_ptr<core::ProcessContext> context2 = std::make_shared<core::ProcessContext>(node2, nullptr, repo, repo, content_repo);
-  context->setProperty(org::apache::nifi::minifi::processors::GetTCP::EndpointList, org::apache::nifi::minifi::io::Socket::getMyHostName() + ":" + std::to_string(server.getPort()));
-  context->setProperty(org::apache::nifi::minifi::processors::GetTCP::ReconnectInterval, "200 msec");
-  context->setProperty(org::apache::nifi::minifi::processors::GetTCP::ConnectionAttemptLimit, "10");
-  // we're using new lines above
-  context->setProperty(org::apache::nifi::minifi::processors::GetTCP::EndOfMessageByte, "10");
-  auto session = std::make_shared<core::ProcessSession>(context);
-  auto session2 = std::make_shared<core::ProcessSession>(context2);
-
-
-  REQUIRE(processor->getName() == "gettcpexample");
-
-  std::shared_ptr<core::FlowFile> record;
-  processor->setScheduledState(core::ScheduledState::RUNNING);
-
-  std::shared_ptr<core::ProcessSessionFactory> factory = std::make_shared<core::ProcessSessionFactory>(context);
-  processor->onSchedule(context, factory);
-  processor->onTrigger(context, session);
-  server.write(buffer, buffer.size());
-  std::this_thread::sleep_for(std::chrono::seconds(2));
-
-  logAttribute->initialize();
-  logAttribute->incrementActiveTasks();
-  logAttribute->setScheduledState(core::ScheduledState::RUNNING);
-  std::shared_ptr<core::ProcessSessionFactory> factory2 = std::make_shared<core::ProcessSessionFactory>(context2);
-  logAttribute->onSchedule(context2, factory2);
-  logAttribute->onTrigger(context2, session2);
-
-  auto reporter = session->getProvenanceReporter();
-  auto records = reporter->getEvents();
-  record = session->get();
-  REQUIRE(record == nullptr);
-  REQUIRE(records.size() == 0);
-
-  processor->incrementActiveTasks();
-  processor->setScheduledState(core::ScheduledState::RUNNING);
-  processor->onTrigger(context, session);
-  reporter = session->getProvenanceReporter();
-
-  records = reporter->getEvents();
-  session->commit();
-
-  logAttribute->incrementActiveTasks();
-  logAttribute->setScheduledState(core::ScheduledState::RUNNING);
-  logAttribute->onTrigger(context2, session2);
-
-  records = reporter->getEvents();
-
-  logAttribute->incrementActiveTasks();
-  logAttribute->setScheduledState(core::ScheduledState::RUNNING);
-  logAttribute->onTrigger(context2, session2);
-
-  records = reporter->getEvents();
-
-  REQUIRE(true == LogTestController::getInstance().contains("Reconnect interval is 200 ms"));
-  REQUIRE(true == LogTestController::getInstance().contains("Size:11 Offset:0"));
-  REQUIRE(true == LogTestController::getInstance().contains("Size:12 Offset:0"));
-  REQUIRE(true == LogTestController::getInstance().contains("Size:22 Offset:0"));
-
-  LogTestController::getInstance().reset();
+minifi::utils::net::SslData createSslDataForServer() {
+  const std::filesystem::path executable_dir = minifi::utils::file::FileUtils::get_executable_dir();
+  minifi::utils::net::SslData ssl_data;
+  ssl_data.ca_loc = (executable_dir / "resources" / "ca_A.crt").string();
+  ssl_data.cert_loc = (executable_dir / "resources" / "localhost_by_A.pem").string();
+  ssl_data.key_loc = (executable_dir / "resources" / "localhost.key").string();
+  return ssl_data;
 }
 
-TEST_CASE("GetTCPWithOnlyOEM", "[GetTCP3]") {
-  std::vector<uint8_t> buffer;
-  for (auto c : "\n") {
-    buffer.push_back(c);
+void addSslContextServiceTo(SingleProcessorTestController& controller) {
+  auto ssl_context_service = controller.plan->addController("SSLContextService", "SSLContextService");
+  LogTestController::getInstance().setTrace<GetTCP>();
+  const auto executable_dir = minifi::utils::file::FileUtils::get_executable_dir();
+  REQUIRE(controller.plan->setProperty(ssl_context_service, controllers::SSLContextService::CACertificate, (executable_dir / "resources" / "ca_A.crt").string()));
+  REQUIRE(controller.plan->setProperty(ssl_context_service, controllers::SSLContextService::ClientCertificate, (executable_dir / "resources" / "alice_by_A.pem").string()));
+  REQUIRE(controller.plan->setProperty(ssl_context_service, controllers::SSLContextService::PrivateKey, (executable_dir / "resources" / "alice.key").string()));
+  ssl_context_service->enable();
+}
+
+class TcpTestServer {
+ public:
+  void run() {
+    server_thread_ = std::thread([&]() {
+      asio::co_spawn(io_context_, listenAndSendMessages(), asio::detached);
+      io_context_.run();
+    });
   }
 
-  std::shared_ptr<core::ContentRepository> content_repo = std::make_shared<core::repository::VolatileContentRepository>();
+  void queueMessage(std::string message) {
+    messages_to_send_.enqueue(std::move(message));
+  }
 
-  content_repo->initialize(std::make_shared<minifi::Configure>());
+  void enableSSL() {
+    const std::filesystem::path executable_dir = minifi::utils::file::FileUtils::get_executable_dir();
 
-  std::shared_ptr<org::apache::nifi::minifi::io::StreamFactory> stream_factory = minifi::io::StreamFactory::getInstance(std::make_shared<minifi::Configure>());
+    asio::ssl::context ssl_context(asio::ssl::context::tls_server);
+    ssl_context.set_options(minifi::utils::net::MINIFI_SSL_OPTIONS);
+    ssl_context.set_password_callback([key_pw = "Password12"](std::size_t&, asio::ssl::context_base::password_purpose&) { return key_pw; });
+    ssl_context.use_certificate_file((executable_dir / "resources" / "localhost_by_A.pem").string(), asio::ssl::context::pem);
+    ssl_context.use_private_key_file((executable_dir / "resources" / "localhost.key").string(), asio::ssl::context::pem);
+    ssl_context.load_verify_file((executable_dir / "resources" / "ca_A.crt").string());
+    ssl_context.set_verify_mode(asio::ssl::verify_peer);
 
-  TestController testController;
+    ssl_context_ = std::move(ssl_context);
+  }
 
-  LogTestController::getInstance().setDebug<minifi::io::Socket>();
+  uint16_t getPort() const {
+    return port_;
+  }
 
-  org::apache::nifi::minifi::io::RandomServerSocket server(org::apache::nifi::minifi::io::Socket::getMyHostName());
+  TcpTestServer() = default;
+  TcpTestServer(TcpTestServer&&) = delete;
+  TcpTestServer(const TcpTestServer&) = delete;
+  TcpTestServer& operator=(TcpTestServer&&) = delete;
+  TcpTestServer& operator=(const TcpTestServer&) = delete;
 
-  LogTestController::getInstance().setDebug<minifi::processors::LogAttribute>();
+  ~TcpTestServer() {
+    io_context_.stop();
+    if (server_thread_.joinable())
+      server_thread_.join();
+  }
 
-  LogTestController::getInstance().setDebug<minifi::processors::GetTCP>();
+ private:
+  asio::awaitable<void> sendMessages(auto& socket) {
+    while (true) {
+      std::string message_to_send;
+      if (!messages_to_send_.tryDequeue(message_to_send)) {
+        co_await minifi::utils::net::async_wait(10ms);
+        continue;
+      }
+      co_await asio::async_write(socket, asio::buffer(message_to_send), minifi::utils::net::use_nothrow_awaitable);
+    }
+  }
 
-  std::shared_ptr<core::Repository> repo = std::make_shared<TestRepository>();
+  asio::awaitable<void> secureSession(asio::ip::tcp::socket socket) {
+    gsl_Expects(ssl_context_);
+    minifi::utils::net::SslSocket ssl_socket(std::move(socket), *ssl_context_);
+    auto [handshake_error] = co_await ssl_socket.async_handshake(minifi::utils::net::HandshakeType::server, minifi::utils::net::use_nothrow_awaitable);
+    if (handshake_error) {
+      co_return;
+    }
+    co_await sendMessages(ssl_socket);
+    asio::error_code ec;
+    [[maybe_unused]] auto e = ssl_socket.lowest_layer().cancel(ec);
+    co_await ssl_socket.async_shutdown(minifi::utils::net::use_nothrow_awaitable);
+  }
 
-  std::shared_ptr<core::Processor> processor = std::make_shared<org::apache::nifi::minifi::processors::GetTCP>("gettcpexample");
+  asio::awaitable<void> insecureSession(asio::ip::tcp::socket socket) {
+    co_await sendMessages(socket);
+  }
 
-  std::shared_ptr<core::Processor> logAttribute = std::make_shared<org::apache::nifi::minifi::processors::LogAttribute>("logattribute");
+  asio::awaitable<void> listenAndSendMessages() {
+    asio::ip::tcp::acceptor acceptor(io_context_, asio::ip::tcp::endpoint(asio::ip::tcp::v6(), port_));
+    if (port_ == 0)
+      port_ = acceptor.local_endpoint().port();
+    while (true) {
+      auto [accept_error, socket] = co_await acceptor.async_accept(minifi::utils::net::use_nothrow_awaitable);
+      if (accept_error) {
+        co_return;
+      }
+      if (ssl_context_)
+        co_spawn(io_context_, secureSession(std::move(socket)), asio::detached);
+      else
+        co_spawn(io_context_, insecureSession(std::move(socket)), asio::detached);
+    }
+  }
 
-  processor->setStreamFactory(stream_factory);
-  processor->initialize();
+  std::optional<asio::ssl::context> ssl_context_;
+  minifi::utils::ConcurrentQueue<std::string> messages_to_send_;
+  std::atomic<uint16_t> port_ = 0;
+  std::thread server_thread_;
+  asio::io_context io_context_;
+};
 
-  utils::Identifier processoruuid = processor->getUUID();
-  REQUIRE(processoruuid);
+TEST_CASE("GetTCP test with delimiter", "[GetTCP]") {
+  SingleProcessorTestController controller{minifi::test::utils::make_processor<GetTCP>("GetTCP")};
+  const auto get_tcp = controller.getProcessor();
+  LogTestController::getInstance().setTrace<GetTCP>();
+  REQUIRE(get_tcp->setProperty(GetTCP::Timeout.name, fmt::format("{}", minifi::test::utils::timeout(1s))));
+  REQUIRE(get_tcp->setProperty(GetTCP::MaxBatchSize.name, "2"));
 
-  utils::Identifier logattribute_uuid = logAttribute->getUUID();
-  REQUIRE(logattribute_uuid);
+  TcpTestServer tcp_test_server;
 
-  std::shared_ptr<minifi::Connection> connection = std::make_shared<minifi::Connection>(repo, content_repo, "gettcpexampleConnection");
-  connection->addRelationship(core::Relationship("success", "description"));
+  SECTION("No SSL") {}
 
-  std::shared_ptr<minifi::Connection> connection2 = std::make_shared<minifi::Connection>(repo, content_repo, "logattribute");
-  connection2->addRelationship(core::Relationship("success", "description"));
+  SECTION("SSL") {
+    addSslContextServiceTo(controller);
+    tcp_test_server.enableSSL();
+    REQUIRE(get_tcp->setProperty(GetTCP::SSLContextService.name, "SSLContextService"));
+  }
 
-  // link the connections so that we can test results at the end for this
-  connection->setSource(processor);
+  tcp_test_server.queueMessage("Hello\n");
+  tcp_test_server.run();
+  REQUIRE(utils::verifyEventHappenedInPollTime(250ms, [&] { return tcp_test_server.getPort() != 0; }, 20ms));
 
-  // link the connections so that we can test results at the end for this
-  connection->setDestination(logAttribute);
+  REQUIRE(get_tcp->setProperty(GetTCP::EndpointList.name, fmt::format("localhost:{}", tcp_test_server.getPort())));
+  controller.plan->scheduleProcessor(get_tcp);
 
-  connection2->setSource(logAttribute);
+  ProcessorTriggerResult result;
+  REQUIRE(controller.triggerUntil({{GetTCP::Success, 1}}, result, 1s, 50ms));
+  CHECK(controller.plan->getContent(result.at(GetTCP::Success)[0]) == "Hello\n");
 
-  connection2->setSourceUUID(logattribute_uuid);
-  connection->setSourceUUID(processoruuid);
-  connection->setDestinationUUID(logattribute_uuid);
-
-  processor->addConnection(connection);
-  logAttribute->addConnection(connection);
-  logAttribute->addConnection(connection2);
-
-  std::shared_ptr<core::ProcessorNode> node = std::make_shared<core::ProcessorNode>(processor);
-    std::shared_ptr<core::ProcessorNode> node2 = std::make_shared<core::ProcessorNode>(logAttribute);
-    std::shared_ptr<core::ProcessContext> context = std::make_shared<core::ProcessContext>(node, nullptr, repo, repo, content_repo);
-    std::shared_ptr<core::ProcessContext> context2 = std::make_shared<core::ProcessContext>(node2, nullptr, repo, repo, content_repo);
-  context->setProperty(org::apache::nifi::minifi::processors::GetTCP::EndpointList, org::apache::nifi::minifi::io::Socket::getMyHostName() + ":" + std::to_string(server.getPort()));
-  context->setProperty(org::apache::nifi::minifi::processors::GetTCP::ReconnectInterval, "200 msec");
-  context->setProperty(org::apache::nifi::minifi::processors::GetTCP::ConnectionAttemptLimit, "10");
-  // we're using new lines above
-  context->setProperty(org::apache::nifi::minifi::processors::GetTCP::EndOfMessageByte, "10");
-  auto session = std::make_shared<core::ProcessSession>(context);
-    auto session2 = std::make_shared<core::ProcessSession>(context2);
-
-
-  REQUIRE(processor->getName() == "gettcpexample");
-
-  std::shared_ptr<core::FlowFile> record;
-  processor->setScheduledState(core::ScheduledState::RUNNING);
-
-  std::shared_ptr<core::ProcessSessionFactory> factory = std::make_shared<core::ProcessSessionFactory>(context);
-  processor->onSchedule(context, factory);
-  processor->onTrigger(context, session);
-  server.write(buffer, buffer.size());
-  std::this_thread::sleep_for(std::chrono::seconds(2));
-
-  logAttribute->initialize();
-  logAttribute->incrementActiveTasks();
-  logAttribute->setScheduledState(core::ScheduledState::RUNNING);
-  std::shared_ptr<core::ProcessSessionFactory> factory2 = std::make_shared<core::ProcessSessionFactory>(context2);
-  logAttribute->onSchedule(context2, factory2);
-  logAttribute->onTrigger(context2, session2);
-
-  auto reporter = session->getProvenanceReporter();
-  auto records = reporter->getEvents();
-  record = session->get();
-  REQUIRE(record == nullptr);
-  REQUIRE(records.size() == 0);
-
-  processor->incrementActiveTasks();
-  processor->setScheduledState(core::ScheduledState::RUNNING);
-  processor->onTrigger(context, session);
-  reporter = session->getProvenanceReporter();
-
-  records = reporter->getEvents();
-  session->commit();
-
-  logAttribute->incrementActiveTasks();
-  logAttribute->setScheduledState(core::ScheduledState::RUNNING);
-  logAttribute->onTrigger(context2, session2);
-
-  records = reporter->getEvents();
-
-  logAttribute->incrementActiveTasks();
-  logAttribute->setScheduledState(core::ScheduledState::RUNNING);
-  logAttribute->onTrigger(context2, session2);
-
-  records = reporter->getEvents();
-
-  REQUIRE(true == LogTestController::getInstance().contains("Reconnect interval is 200 ms"));
-  REQUIRE(true == LogTestController::getInstance().contains("Size:2 Offset:0"));
-  LogTestController::getInstance().reset();
+  check_for_attributes(*result.at(GetTCP::Success)[0], tcp_test_server.getPort());
 }
 
-TEST_CASE("GetTCPEmptyNoConnect", "[GetTCP3]") {
-  TestController testController;
-  LogTestController::getInstance().setDebug<minifi::processors::LogAttribute>();
-  LogTestController::getInstance().setDebug<minifi::processors::GetTCP>();
-  LogTestController::getInstance().setTrace<minifi::io::Socket>();
+TEST_CASE("GetTCP test with too large message", "[GetTCP]") {
+  SingleProcessorTestController controller{minifi::test::utils::make_processor<GetTCP>("GetTCP")};
+  const auto get_tcp = controller.getProcessor();
+  LogTestController::getInstance().setTrace<GetTCP>();
+  REQUIRE(get_tcp->setProperty(GetTCP::Timeout.name, fmt::format("{}", minifi::test::utils::timeout(1s))));
+  REQUIRE(get_tcp->setProperty(GetTCP::MaxBatchSize.name, "2"));
+  REQUIRE(get_tcp->setProperty(GetTCP::MaxMessageSize.name, "10"));
+  REQUIRE(get_tcp->setProperty(GetTCP::MessageDelimiter.name, "\r"));
 
-  std::shared_ptr<TestPlan> plan = testController.createPlan();
-  std::shared_ptr<core::Processor> getfile = plan->addProcessor("GetTCP", "gettcpexample");
+  TcpTestServer tcp_test_server;
 
-  plan->addProcessor("LogAttribute", "logattribute", core::Relationship("success", "description"), true);
+  SECTION("No SSL") {}
 
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetTCP::EndpointList.getName(), org::apache::nifi::minifi::io::Socket::getMyHostName() + ":9182");
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetTCP::ReconnectInterval.getName(), "200 msec");
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetTCP::ConnectionAttemptLimit.getName(), "10");
-  // we're using new lines above
-  plan->setProperty(getfile, org::apache::nifi::minifi::processors::GetTCP::EndOfMessageByte.getName(), "10");
+  SECTION("SSL") {
+    addSslContextServiceTo(controller);
+    tcp_test_server.enableSSL();
+    REQUIRE(get_tcp->setProperty(GetTCP::SSLContextService.name, "SSLContextService"));
+  }
 
-  testController.runSession(plan, false);
-  auto records = plan->getProvenanceRecords();
-  std::shared_ptr<core::FlowFile> record = plan->getCurrentFlowFile();
-  REQUIRE(record == nullptr);
-  REQUIRE(records.size() == 0);
+  tcp_test_server.queueMessage("abcdefghijklmnopqrstuvwxyz\rBye\r");
+  tcp_test_server.run();
 
-  REQUIRE(true == LogTestController::getInstance().contains("Reconnect interval is 200 ms"));
-  REQUIRE(true == LogTestController::getInstance().contains("Could not create socket during initialization for " + org::apache::nifi::minifi::io::Socket::getMyHostName()  + ":9182"));
-  LogTestController::getInstance().reset();
+  REQUIRE(utils::verifyEventHappenedInPollTime(250ms, [&] { return tcp_test_server.getPort() != 0; }, 20ms));
+
+  REQUIRE(get_tcp->setProperty(GetTCP::EndpointList.name, fmt::format("localhost:{}", tcp_test_server.getPort())));
+  controller.plan->scheduleProcessor(get_tcp);
+
+  ProcessorTriggerResult result;
+  REQUIRE(controller.triggerUntil({{GetTCP::Success, 1}}, result, 1s, 50ms));
+  REQUIRE(result.at(GetTCP::Partial).size() == 3);
+  REQUIRE(result.at(GetTCP::Success).size() == 1);
+  CHECK(controller.plan->getContent(result.at(GetTCP::Partial)[0]) == "abcdefghij");
+  CHECK(controller.plan->getContent(result.at(GetTCP::Partial)[1]) == "klmnopqrst");
+  CHECK(controller.plan->getContent(result.at(GetTCP::Partial)[2]) == "uvwxyz\r");
+  CHECK(controller.plan->getContent(result.at(GetTCP::Success)[0]) == "Bye\r");
+
+  check_for_attributes(*result.at(GetTCP::Partial)[0], tcp_test_server.getPort());
+  check_for_attributes(*result.at(GetTCP::Partial)[1], tcp_test_server.getPort());
+  check_for_attributes(*result.at(GetTCP::Partial)[2], tcp_test_server.getPort());
+  check_for_attributes(*result.at(GetTCP::Success)[0], tcp_test_server.getPort());
 }
+
+TEST_CASE("GetTCP test multiple endpoints", "[GetTCP]") {
+  SingleProcessorTestController controller{minifi::test::utils::make_processor<GetTCP>("GetTCP")};
+  const auto get_tcp = controller.getProcessor();
+  LogTestController::getInstance().setTrace<GetTCP>();
+  REQUIRE(get_tcp->setProperty(GetTCP::Timeout.name, fmt::format("{}", minifi::test::utils::timeout(1s))));
+  REQUIRE(get_tcp->setProperty(GetTCP::MaxBatchSize.name, "2"));
+
+  TcpTestServer server_1;
+  TcpTestServer server_2;
+
+  SECTION("No SSL") {}
+
+  SECTION("SSL") {
+    addSslContextServiceTo(controller);
+    server_1.enableSSL();
+    server_2.enableSSL();
+    REQUIRE(get_tcp->setProperty(GetTCP::SSLContextService.name, "SSLContextService"));
+  }
+
+  server_1.queueMessage("abcdefghijklmnopqrstuvwxyz\nBye\n");
+  server_1.run();
+
+  server_2.queueMessage("012345678901234567890\nAuf Wiedersehen\n");
+  server_2.run();
+
+  REQUIRE(utils::verifyEventHappenedInPollTime(250ms, [&] { return server_1.getPort() != 0 && server_2.getPort() != 0; }, 20ms));
+
+  REQUIRE(get_tcp->setProperty(GetTCP::EndpointList.name, fmt::format("localhost:{},localhost:{}", server_1.getPort(), server_2.getPort())));
+  controller.plan->scheduleProcessor(get_tcp);
+
+  ProcessorTriggerResult result;
+  CHECK(controller.triggerUntil({{GetTCP::Success, 4}}, result, 1s, 50ms));
+  CHECK(result.at(GetTCP::Success).size() == 4);
+
+  std::vector<std::string> success_flow_file_contents;
+  for (const auto& flow_file: result.at(GetTCP::Success)) {
+    success_flow_file_contents.push_back(controller.plan->getContent(flow_file));
+  }
+
+  CHECK(ranges::contains(success_flow_file_contents, "abcdefghijklmnopqrstuvwxyz\n"));
+  CHECK(ranges::contains(success_flow_file_contents, "Bye\n"));
+  CHECK(ranges::contains(success_flow_file_contents, "012345678901234567890\n"));
+  CHECK(ranges::contains(success_flow_file_contents, "Auf Wiedersehen\n"));
+}
+
+TEST_CASE("GetTCP max queue and max batch size test", "[GetTCP]") {
+  SingleProcessorTestController controller{minifi::test::utils::make_processor<GetTCP>("GetTCP")};
+  const auto get_tcp = controller.getProcessor();
+  LogTestController::getInstance().setTrace<GetTCP>();
+  REQUIRE(get_tcp->setProperty(GetTCP::Timeout.name, fmt::format("{}", minifi::test::utils::timeout(1s))));
+  REQUIRE(get_tcp->setProperty(GetTCP::MaxBatchSize.name, "10"));
+  REQUIRE(get_tcp->setProperty(GetTCP::MaxQueueSize.name, "50"));
+
+  TcpTestServer server;
+
+  SECTION("No SSL") {}
+  SECTION("SSL") {
+    addSslContextServiceTo(controller);
+    server.enableSSL();
+    REQUIRE(get_tcp->setProperty(GetTCP::SSLContextService.name, "SSLContextService"));
+  }
+
+  LogTestController::getInstance().setWarn<GetTCP>();
+
+  for (auto i = 0; i < 100; ++i) {
+    server.queueMessage("some_message\n");
+  }
+
+  server.run();
+
+  REQUIRE(utils::verifyEventHappenedInPollTime(250ms, [&] { return server.getPort() != 0; }, 20ms));
+
+  REQUIRE(get_tcp->setProperty(GetTCP::EndpointList.name, fmt::format("localhost:{}", server.getPort())));
+  controller.plan->scheduleProcessor(get_tcp);
+
+  CHECK(utils::countLogOccurrencesUntil("Queue is full. TCP message ignored.", 50, 300ms, 50ms));
+  CHECK(controller.trigger().at(GetTCP::Success).size() == 10);
+  CHECK(controller.trigger().at(GetTCP::Success).size() == 10);
+  CHECK(controller.trigger().at(GetTCP::Success).size() == 10);
+  CHECK(controller.trigger().at(GetTCP::Success).size() == 10);
+  CHECK(controller.trigger().at(GetTCP::Success).size() == 10);
+  CHECK(controller.trigger().at(GetTCP::Success).empty());
+}
+}  // namespace org::apache::nifi::minifi::test

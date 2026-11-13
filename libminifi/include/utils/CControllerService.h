@@ -1,0 +1,105 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#pragma once
+
+#include <string>
+#include <vector>
+
+#include "minifi-api.h"
+#include "minifi-cpp/Exception.h"
+#include "minifi-cpp/core/ControllerServiceMetadata.h"
+#include "minifi-cpp/core/Property.h"
+#include "minifi-cpp/core/controller/ControllerServiceApi.h"
+#include "utils/minifi-api-utils.h"
+
+namespace org::apache::nifi::minifi {
+struct ClassDescription;
+}
+
+namespace org::apache::nifi::minifi::utils {
+
+
+
+struct CControllerServiceClassDescription {
+  std::string full_name;
+  std::vector<core::Property> class_properties;
+  minifi_controller_service_callbacks callbacks;
+};
+
+class CControllerService final : public core::controller::ControllerServiceApi, public core::controller::ControllerServiceHandle {
+ public:
+  CControllerService(CControllerServiceClassDescription class_description, core::ControllerServiceMetadata metadata)
+    : class_description_(std::move(class_description)),
+      metadata_(std::move(metadata)) {
+    minifi_controller_service_metadata c_metadata;
+    auto uuid_str = metadata_.uuid.to_string();
+    c_metadata.uuid = minifiStringView(uuid_str.view());
+    c_metadata.name = minifiStringView(metadata_.name);
+    c_metadata.logger = toC(&metadata_.logger);
+    impl_ = class_description_.callbacks.create(c_metadata);
+  }
+  CControllerService(CControllerServiceClassDescription class_description, core::ControllerServiceMetadata metadata, gsl::owner<void*> impl)
+      : class_description_(std::move(class_description)),
+        impl_(impl),
+        metadata_(std::move(metadata)) {}
+  CControllerService(const CControllerService&) = delete;
+  CControllerService& operator=(const CControllerService&) = delete;
+  CControllerService(CControllerService&&) = delete;
+  CControllerService& operator=(CControllerService&&) = delete;
+  ~CControllerService() override {
+    class_description_.callbacks.destroy(impl_);
+  }
+
+  [[nodiscard]] bool supportsDynamicProperties() const override {
+    return false;
+  }
+
+  void initialize(core::controller::ControllerServiceDescriptor& descriptor) override {
+    descriptor.setSupportedProperties(std::span(class_description_.class_properties));
+  }
+
+  void onEnable(core::controller::ControllerServiceContext& controller_service_context,
+      const std::shared_ptr<Configure>&,
+      const std::vector<std::shared_ptr<core::controller::ControllerServiceHandle>>&) override {
+    const auto enable_status = class_description_.callbacks.enable(impl_, toC(&controller_service_context));
+    if (enable_status != MINIFI_STATUS_SUCCESS) {
+      throw Exception(PROCESS_SCHEDULE_EXCEPTION, "Could not enable controller service");
+    }
+  }
+
+  void notifyStop() override {
+    class_description_.callbacks.disable(impl_);
+  }
+
+  ControllerServiceHandle* getControllerServiceHandle() override {
+    return this;
+  }
+
+  [[nodiscard]] std::string getName() const {
+    return metadata_.name;
+  }
+
+  [[nodiscard]] Identifier getUUID() const {
+    return metadata_.uuid;
+  }
+
+  [[nodiscard]] void* getImpl() const {
+    return this->impl_;
+  }
+
+  [[nodiscard]] const CControllerServiceClassDescription& getClassDescription() const {
+    return class_description_;
+  }
+
+ private:
+  CControllerServiceClassDescription class_description_;
+  gsl::owner<void*> impl_;
+  minifi::core::ControllerServiceMetadata metadata_;
+};
+
+void useCControllerServiceClassDescription(std::string_view artifact_name, std::string_view group_name, const minifi_controller_service_definition& class_description,
+    const std::function<void(const ClassDescription&, CControllerServiceClassDescription)>& fn);
+
+}  // namespace org::apache::nifi::minifi::utils

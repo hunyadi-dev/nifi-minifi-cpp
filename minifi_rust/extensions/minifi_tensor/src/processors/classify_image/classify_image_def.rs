@@ -1,0 +1,71 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+use crate::low_level_processors::{classify_output, image_to_tensor};
+use crate::processors::classify_image::ClassifyImage;
+use crate::services::tract_model_service::TractModelService;
+use minifi_native::{
+    OutputAttribute, ProcessorDefinition, ProcessorInputRequirement, Property, PropertyDefinition,
+    Relationship, property_definitions,
+};
+
+pub(crate) const TRACT_MODEL_SERVICE: Property<TractModelService> = Property::new(
+    "Tract model service",
+    "Reference to a TractModelService controller service. The referenced service \
+                  owns the compiled model (ONNX or NNEF) that will be evaluated for each \
+                  incoming flow file.",
+);
+
+pub(super) const SUCCESS: Relationship = Relationship {
+    name: "success",
+    description: "Inference and post-processing completed. The classifications are written as a \
+                  JSON array (may be empty) to the attribute named by 'Output attribute name', \
+                  leaving the flow file content as the original image; if that property is empty, \
+                  they replace the flow file content instead.",
+};
+
+pub(super) const FAILURE: Relationship = Relationship {
+    name: "failure",
+    description: "The image could not be decoded, the input tensor could not be built, the model \
+                  failed to run, or the model outputs could not be interpreted as classification.",
+};
+
+impl ProcessorDefinition for ClassifyImage {
+    const DESCRIPTION: &'static str = "Runs a full image-classification pass in a single processor: decodes the image from the \
+         flow file content, resizes and normalises it into an input tensor, runs one inference \
+         against the compiled model owned by the referenced TractModelService, and post-processes \
+         the score vector (score activation, Top-K selection, confidence filtering, optional label \
+         lookup) into predictions. Collapses the ImageToTensor -> InvokeTractModel -> \
+         ClassifyOutput chain into one node. The Top-K classifications are emitted as a JSON \
+         array: when 'Output attribute name' is set they are written into that attribute and \
+         the flow file content is left unchanged (the original image); when it is left empty they replace \
+         the flow file content instead.";
+    const INPUT_REQUIREMENT: ProcessorInputRequirement = ProcessorInputRequirement::Required;
+    const SUPPORTS_DYNAMIC_PROPERTIES: bool = false;
+    const SUPPORTS_DYNAMIC_RELATIONSHIPS: bool = false;
+    const OUTPUT_ATTRIBUTES: &'static [OutputAttribute] =
+        classify_output::CLASSIFY_OUTPUT_ATTRIBUTES;
+    const RELATIONSHIPS: &'static [Relationship] = &[SUCCESS, FAILURE];
+
+    const PROPERTIES: &'static [PropertyDefinition] = property_definitions![
+        image_to_tensor::TARGET_WIDTH,
+        image_to_tensor::TARGET_HEIGHT,
+        image_to_tensor::RESIZE_FILTER,
+        image_to_tensor::RESIZE_MODE,
+        image_to_tensor::LETTERBOX_PAD_VALUE,
+        image_to_tensor::COLOR_FORMAT,
+        image_to_tensor::TENSOR_SHAPE_FORMAT,
+        image_to_tensor::MEAN,
+        image_to_tensor::STD_DEV,
+        image_to_tensor::PIXEL_DIVISOR,
+        TRACT_MODEL_SERVICE,
+        classify_output::TOP_K,
+        classify_output::SCORE_OUTPUT_INDEX,
+        classify_output::SCORE_ACTIVATION,
+        classify_output::CONFIDENCE_THRESHOLD,
+        classify_output::LABELS_FILE_PATH,
+        classify_output::LABEL_INDEX_OFFSET,
+        classify_output::OUTPUT_ATTRIBUTE_NAME
+    ];
+}

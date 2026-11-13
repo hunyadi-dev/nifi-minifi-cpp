@@ -1,26 +1,11 @@
-/**
- * @file MergeContent.h
- * MergeContent class declaration
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #pragma once
 
 #include <deque>
 #include <map>
+#include <utility>
 #include <vector>
 #include <memory>
 #include <string>
@@ -29,50 +14,49 @@
 #include "BinFiles.h"
 #include "archive_entry.h"
 #include "archive.h"
-#include "core/logging/LoggerConfiguration.h"
+#include "SmartArchivePtrs.h"
+#include "core/logging/LoggerFactory.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "minifi-cpp/core/PropertyValidator.h"
 #include "serialization/FlowFileSerializer.h"
-#include "utils/gsl.h"
-#include "utils/Export.h"
+#include "utils/ArrayUtils.h"
+#include "minifi-cpp/utils/gsl.h"
+#include "minifi-cpp/utils/Export.h"
+#include "io/Stream.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace processors {
+namespace org::apache::nifi::minifi::processors {
 
 namespace merge_content_options {
 
-constexpr const char *MERGE_STRATEGY_BIN_PACK = "Bin-Packing Algorithm";
-constexpr const char *MERGE_STRATEGY_DEFRAGMENT = "Defragment";
-constexpr const char *MERGE_FORMAT_TAR_VALUE = "TAR";
-constexpr const char *MERGE_FORMAT_ZIP_VALUE = "ZIP";
-constexpr const char *MERGE_FORMAT_CONCAT_VALUE = "Binary Concatenation";
-constexpr const char* MERGE_FORMAT_FLOWFILE_STREAM_V3_VALUE = "FlowFile Stream, v3";
-constexpr const char *DELIMITER_STRATEGY_FILENAME = "Filename";
-constexpr const char *DELIMITER_STRATEGY_TEXT = "Text";
-constexpr const char *ATTRIBUTE_STRATEGY_KEEP_COMMON = "Keep Only Common Attributes";
-constexpr const char *ATTRIBUTE_STRATEGY_KEEP_ALL_UNIQUE = "Keep All Unique Attributes";
+inline constexpr std::string_view MERGE_STRATEGY_BIN_PACK = "Bin-Packing Algorithm";
+inline constexpr std::string_view MERGE_STRATEGY_DEFRAGMENT = "Defragment";
+inline constexpr std::string_view MERGE_FORMAT_TAR_VALUE = "TAR";
+inline constexpr std::string_view MERGE_FORMAT_ZIP_VALUE = "ZIP";
+inline constexpr std::string_view MERGE_FORMAT_CONCAT_VALUE = "Binary Concatenation";
+inline constexpr std::string_view MERGE_FORMAT_FLOWFILE_STREAM_V3_VALUE = "FlowFile Stream, v3";
+inline constexpr std::string_view DELIMITER_STRATEGY_FILENAME = "Filename";
+inline constexpr std::string_view DELIMITER_STRATEGY_TEXT = "Text";
+inline constexpr std::string_view ATTRIBUTE_STRATEGY_KEEP_COMMON = "Keep Only Common Attributes";
+inline constexpr std::string_view ATTRIBUTE_STRATEGY_KEEP_ALL_UNIQUE = "Keep All Unique Attributes";
 
-} /* namespace merge_content_options */
+}  // namespace merge_content_options
 
-// MergeBin Class
 class MergeBin {
  public:
   virtual ~MergeBin() = default;
   // merge the flows in the bin
-  virtual void merge(core::ProcessContext *context, core::ProcessSession *session,
+  virtual void merge(core::ProcessSession &session,
       std::deque<std::shared_ptr<core::FlowFile>> &flows, FlowFileSerializer& serializer, const std::shared_ptr<core::FlowFile> &flowFile) = 0;
 };
 
-// BinaryConcatenationMerge Class
 class BinaryConcatenationMerge : public MergeBin {
  public:
-  BinaryConcatenationMerge(const std::string& header, const std::string& footer, const std::string& demarcator);
+  BinaryConcatenationMerge(std::string header, std::string footer, std::string demarcator);
 
-  void merge(core::ProcessContext *context, core::ProcessSession *session,
-      std::deque<std::shared_ptr<core::FlowFile>> &flows, FlowFileSerializer& serializer, const std::shared_ptr<core::FlowFile> &flowFile) override;
+  void merge(core::ProcessSession &session,
+    std::deque<std::shared_ptr<core::FlowFile>>& flows, FlowFileSerializer& serializer, const std::shared_ptr<core::FlowFile>& merge_flow) override;
   // Nest Callback Class for write stream
-  class WriteCallback: public OutputStreamCallback {
+  class WriteCallback {
    public:
     WriteCallback(std::string &header, std::string &footer, std::string &demarcator,
         std::deque<std::shared_ptr<core::FlowFile>> &flows, FlowFileSerializer& serializer) :
@@ -85,35 +69,39 @@ class BinaryConcatenationMerge : public MergeBin {
     std::deque<std::shared_ptr<core::FlowFile>> &flows_;
     FlowFileSerializer& serializer_;
 
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
+    io::IoResult operator()(const std::shared_ptr<io::OutputStream>& stream) const {
       size_t write_size_sum = 0;
       if (!header_.empty()) {
         const auto write_ret = stream->write(reinterpret_cast<const uint8_t*>(header_.data()), header_.size());
-        if (io::isError(write_ret))
-          return -1;
+        if (io::isError(write_ret)) {
+          return io::IoResult::error();
+        }
         write_size_sum += write_ret;
       }
       bool isFirst = true;
       for (const auto& flow : flows_) {
         if (!isFirst && !demarcator_.empty()) {
-          const auto write_ret = stream->write(reinterpret_cast<const uint8_t*>(demarcator_.data()), demarcator_.size());
-          if (io::isError(write_ret))
-            return -1;
-          write_size_sum += write_ret;
+          const auto write_result = stream->write(reinterpret_cast<const uint8_t*>(demarcator_.data()), demarcator_.size());
+          if (io::isError(write_result)) {
+            return io::IoResult::error();
+          }
+          write_size_sum += write_result;
         }
-        const auto len = serializer_.serialize(flow, stream);
-        if (len < 0)
-          return len;
-        write_size_sum += gsl::narrow<size_t>(len);
+        const auto serialization_result = serializer_.serialize(flow, stream);
+        if (!serialization_result) {
+          return serialization_result;
+        }
+        write_size_sum += gsl::narrow<size_t>(*serialization_result);
         isFirst = false;
       }
       if (!footer_.empty()) {
-        const auto write_ret = stream->write(reinterpret_cast<const uint8_t*>(footer_.data()), footer_.size());
-        if (io::isError(write_ret))
-          return -1;
-        write_size_sum += write_ret;
+        const auto write_result = stream->write(reinterpret_cast<const uint8_t*>(footer_.data()), footer_.size());
+        if (io::isError(write_result)) {
+          return io::IoResult::error();
+        }
+        write_size_sum += write_result;
       }
-      return gsl::narrow<int64_t>(write_size_sum);
+      return io::IoResult::from(write_size_sum);
     }
   };
 
@@ -124,15 +112,14 @@ class BinaryConcatenationMerge : public MergeBin {
 };
 
 
-// Archive Class
 class ArchiveMerge {
  public:
-  class ArchiveWriter : public io::OutputStream {
+  class ArchiveWriter : public io::StreamImpl, public io::OutputStream {
    public:
-    ArchiveWriter(struct archive *arch, struct archive_entry *entry) : arch_(arch), entry_(entry) {}
-    size_t write(const uint8_t* data, size_t size) override {
+    ArchiveWriter(archive& arch, archive_entry& entry) : arch_(arch), entry_(entry) {}
+    size_t write(const uint8_t* data, const size_t size) override {
       if (!header_emitted_) {
-        if (archive_write_header(arch_, entry_) != ARCHIVE_OK) {
+        if (archive_write_header(&arch_, &entry_) != ARCHIVE_OK) {
           return io::STREAM_ERROR;
         }
         header_emitted_ = true;
@@ -140,7 +127,7 @@ class ArchiveMerge {
       size_t totalWrote = 0;
       size_t remaining = size;
       while (remaining > 0) {
-        const auto ret = archive_write_data(arch_, data + totalWrote, remaining);
+        const auto ret = archive_write_data(&arch_, data + totalWrote, remaining);
         if (ret < 0) {
           return io::STREAM_ERROR;
         }
@@ -155,33 +142,29 @@ class ArchiveMerge {
     }
 
    private:
-    struct archive *arch_;
-    struct archive_entry *entry_;
+    archive& arch_;
+    archive_entry& entry_;
     bool header_emitted_{false};
   };
   // Nest Callback Class for write stream
-  class WriteCallback: public OutputStreamCallback {
+  class WriteCallback {
    public:
-    WriteCallback(std::string merge_type, std::deque<std::shared_ptr<core::FlowFile>> &flows, FlowFileSerializer& serializer)
+    WriteCallback(std::string_view merge_type, std::deque<std::shared_ptr<core::FlowFile>> &flows, FlowFileSerializer& serializer)
         : merge_type_(merge_type),
           flows_(flows),
-          logger_(logging::LoggerFactory<ArchiveMerge>::getLogger()),
           serializer_(serializer) {
-      size_ = 0;
-      stream_ = nullptr;
     }
-    ~WriteCallback() override = default;
 
     std::string merge_type_;
     std::deque<std::shared_ptr<core::FlowFile>> &flows_;
-    std::shared_ptr<io::BaseStream> stream_;
-    size_t size_;
-    std::shared_ptr<logging::Logger> logger_;
+    std::shared_ptr<io::OutputStream> stream_ = nullptr;
+    size_t size_ = 0;
+    std::shared_ptr<core::logging::Logger> logger_ = core::logging::LoggerFactory<ArchiveMerge>::getLogger();
     FlowFileSerializer& serializer_;
 
     static la_ssize_t archive_write(struct archive* /*arch*/, void *context, const void *buff, size_t size) {
-      WriteCallback *callback = reinterpret_cast<WriteCallback *>(context);
-      uint8_t* data = reinterpret_cast<uint8_t*>(const_cast<void*>(buff));
+      auto* callback = static_cast<WriteCallback *>(context);
+      const auto* data = static_cast<uint8_t*>(const_cast<void*>(buff));
       la_ssize_t totalWrote = 0;
       size_t remaining = size;
       while (remaining > 0) {
@@ -200,65 +183,57 @@ class ArchiveMerge {
       return totalWrote;
     }
 
-    int64_t process(const std::shared_ptr<io::BaseStream>& stream) override {
-      struct archive *arch;
+    io::IoResult operator()(const std::shared_ptr<io::OutputStream>& stream) {
+      const auto arch = archive_write_unique_ptr{archive_write_new()};
 
-      arch = archive_write_new();
       if (merge_type_ == merge_content_options::MERGE_FORMAT_TAR_VALUE) {
-        archive_write_set_format_pax_restricted(arch);  // tar format
+        archive_write_set_format_pax_restricted(arch.get());  // tar format
       }
       if (merge_type_ == merge_content_options::MERGE_FORMAT_ZIP_VALUE) {
-        archive_write_set_format_zip(arch);  // zip format
+        archive_write_set_format_zip(arch.get());  // zip format
       }
-      archive_write_set_bytes_per_block(arch, 0);
-      archive_write_add_filter_none(arch);
+      archive_write_set_bytes_per_block(arch.get(), 0);
+      archive_write_add_filter_none(arch.get());
       stream_ = stream;
-      archive_write_open(arch, this, NULL, archive_write, NULL);
+      archive_write_open(arch.get(), this, nullptr, archive_write, nullptr);
 
-      for (auto flow : flows_) {
-        struct archive_entry *entry = archive_entry_new();
+      for (const auto& flow : flows_) {
+        auto entry = archive_entry_unique_ptr{archive_entry_new()};
         std::string fileName;
         flow->getAttribute(core::SpecialFlowAttribute::FILENAME, fileName);
-        archive_entry_set_pathname(entry, fileName.c_str());
-        archive_entry_set_size(entry, flow->getSize());
-        archive_entry_set_mode(entry, S_IFREG | 0755);
+        archive_entry_set_pathname(entry.get(), fileName.c_str());
+        archive_entry_set_size(entry.get(), gsl::narrow<la_int64_t>(flow->getSize()));
+        archive_entry_set_mode(entry.get(), S_IFREG | 0755);
         if (merge_type_ == merge_content_options::MERGE_FORMAT_TAR_VALUE) {
-          std::string perm;
-          int permInt;
-          if (flow->getAttribute(BinFiles::TAR_PERMISSIONS_ATTRIBUTE, perm)) {
+          if (std::string perm; flow->getAttribute(BinFiles::TAR_PERMISSIONS_ATTRIBUTE, perm)) {
             try {
-              permInt = std::stoi(perm);
-              logger_->log_debug("Merge Tar File %s permission %s", fileName, perm);
-              archive_entry_set_perm(entry, (mode_t) permInt);
+              const int perm_int = std::stoi(perm);
+              logger_->log_debug("Merge Tar File {} permission {}", fileName, perm);
+              archive_entry_set_perm(entry.get(), static_cast<mode_t>(perm_int));
             } catch (...) {
             }
           }
         }
-        const auto ret = serializer_.serialize(flow, std::make_shared<ArchiveWriter>(arch, entry));
-        if (ret < 0) {
+        const auto ret = serializer_.serialize(flow, std::make_shared<ArchiveWriter>(*arch, *entry));
+        if (!ret) {
           return ret;
         }
-        archive_entry_free(entry);
       }
 
-      archive_write_close(arch);
-      archive_write_free(arch);
-      return size_;
+      return io::IoResult::from(size_);
     }
   };
 };
 
-// TarMerge Class
 class TarMerge: public ArchiveMerge, public MergeBin {
  public:
-  void merge(core::ProcessContext *context, core::ProcessSession *session, std::deque<std::shared_ptr<core::FlowFile>> &flows,
+  void merge(core::ProcessSession &session, std::deque<std::shared_ptr<core::FlowFile>> &flows,
              FlowFileSerializer& serializer, const std::shared_ptr<core::FlowFile> &merge_flow) override;
 };
 
-// ZipMerge Class
 class ZipMerge: public ArchiveMerge, public MergeBin {
  public:
-  void merge(core::ProcessContext *context, core::ProcessSession *session, std::deque<std::shared_ptr<core::FlowFile>> &flows,
+  void merge(core::ProcessSession &session, std::deque<std::shared_ptr<core::FlowFile>> &flows,
              FlowFileSerializer& serializer, const std::shared_ptr<core::FlowFile> &merge_flow) override;
 };
 
@@ -266,7 +241,7 @@ class AttributeMerger {
  public:
   explicit AttributeMerger(std::deque<std::shared_ptr<org::apache::nifi::minifi::core::FlowFile>> &flows)
     : flows_(flows) {}
-  void mergeAttributes(core::ProcessSession *session, const std::shared_ptr<core::FlowFile> &merge_flow);
+  void mergeAttributes(core::ProcessSession &session, core::FlowFile& merge_flow);
   virtual ~AttributeMerger() = default;
 
  protected:
@@ -297,68 +272,114 @@ class KeepAllUniqueAttributesMerger: public AttributeMerger {
   std::vector<std::string> removed_attributes_;
 };
 
-// MergeContent Class
+/**
+ * A processor that merges multiple correlated flow files to a single flow file
+ *
+ * Concepts:
+ * - Batch size: represents the maximum number of flow files to be processed from the incoming relationship
+ * - Bin (or bundle): represents a set of flow files that belong together defined by the processor properties. Correlated flow files are defined by the CorrelationAttributeName property which
+ *                    defines the attribute that provides the groupid for the bin the flow file belongs to
+ * - Ready bin: when a bin reaches a limit defined by the maximum age or the maximum size, the bin becomes ready, and ready bins can be merged
+ * - Group: a set of bins with the same groupid. In case a bin cannot accept a new flow files (e.g. it would go above its size limit), a new bin is created with this new flow file and added
+ *          to the same group of bins
+ */
 class MergeContent : public processors::BinFiles {
  public:
-  // Constructor
-  /*!
-   * Create a new processor
-   */
-  explicit MergeContent(const std::string& name, const utils::Identifier& uuid = {})
-      : processors::BinFiles(name, uuid),
-        logger_(logging::LoggerFactory<MergeContent>::getLogger()) {
+  explicit MergeContent(core::ProcessorMetadata metadata)
+      : processors::BinFiles(metadata) {
     mergeStrategy_ = merge_content_options::MERGE_STRATEGY_DEFRAGMENT;
     mergeFormat_ = merge_content_options::MERGE_FORMAT_CONCAT_VALUE;
     delimiterStrategy_ = merge_content_options::DELIMITER_STRATEGY_FILENAME;
     keepPath_ = false;
     attributeStrategy_ = merge_content_options::ATTRIBUTE_STRATEGY_KEEP_COMMON;
   }
-  // Destructor
   ~MergeContent() override = default;
-  // Processor Name
-  EXTENSIONAPI static constexpr char const* ProcessorName = "MergeContent";
-  // Supported Properties
-  EXTENSIONAPI static core::Property MergeStrategy;
-  EXTENSIONAPI static core::Property MergeFormat;
-  EXTENSIONAPI static core::Property CorrelationAttributeName;
-  EXTENSIONAPI static core::Property DelimiterStrategy;
-  EXTENSIONAPI static core::Property KeepPath;
-  EXTENSIONAPI static core::Property Header;
-  EXTENSIONAPI static core::Property Footer;
-  EXTENSIONAPI static core::Property Demarcator;
-  EXTENSIONAPI static core::Property AttributeStrategy;
 
-  // Supported Relationships
-  EXTENSIONAPI static core::Relationship Merge;
+  EXTENSIONAPI static constexpr const char* Description = "Merges a Group of FlowFiles together based on a user-defined strategy and packages them into a single FlowFile. "
+      "MergeContent should be configured with only one incoming connection as it won't create grouped Flow Files."
+      "This processor updates the mime.type attribute as appropriate.";
 
- public:
-  /**
-   * Function that's executed when the processor is scheduled.
-   * @param context process context.
-   * @param sessionFactory process session factory that is used when creating
-   * ProcessSession objects.
-   */
-  void onSchedule(core::ProcessContext *context, core::ProcessSessionFactory *sessionFactory) override;
-  // OnTrigger method, implemented by NiFi MergeContent
-  void onTrigger(core::ProcessContext *context, core::ProcessSession *session) override;
-  // Initialize, over write by NiFi MergeContent
+  EXTENSIONAPI static constexpr auto MergeStrategy = core::PropertyDefinitionBuilder<2>::createProperty("Merge Strategy")
+      .withDescription("Defragment or Bin-Packing Algorithm")
+      .withAllowedValues({merge_content_options::MERGE_STRATEGY_DEFRAGMENT, merge_content_options::MERGE_STRATEGY_BIN_PACK})
+      .withDefaultValue(merge_content_options::MERGE_STRATEGY_BIN_PACK)
+      .build();
+  EXTENSIONAPI static constexpr auto MergeFormat = core::PropertyDefinitionBuilder<4>::createProperty("Merge Format")
+      .withDescription("Merge Format")
+      .withAllowedValues({
+        merge_content_options::MERGE_FORMAT_CONCAT_VALUE,
+        merge_content_options::MERGE_FORMAT_TAR_VALUE,
+        merge_content_options::MERGE_FORMAT_ZIP_VALUE,
+        merge_content_options::MERGE_FORMAT_FLOWFILE_STREAM_V3_VALUE})
+      .withDefaultValue(merge_content_options::MERGE_FORMAT_CONCAT_VALUE)
+      .build();
+  EXTENSIONAPI static constexpr auto CorrelationAttributeName = core::PropertyDefinitionBuilder<>::createProperty("Correlation Attribute Name")
+      .withDescription("Correlation Attribute Name")
+      .build();
+  EXTENSIONAPI static constexpr auto DelimiterStrategy = core::PropertyDefinitionBuilder<2>::createProperty("Delimiter Strategy")
+      .withDescription("Determines if Header, Footer, and Demarcator should point to files")
+      .withAllowedValues({merge_content_options::DELIMITER_STRATEGY_FILENAME, merge_content_options::DELIMITER_STRATEGY_TEXT})
+      .withDefaultValue(merge_content_options::DELIMITER_STRATEGY_FILENAME)
+      .build();
+  EXTENSIONAPI static constexpr auto Header = core::PropertyDefinitionBuilder<>::createProperty("Header File")
+      .withDescription("Filename specifying the header to use")
+      .build();
+  EXTENSIONAPI static constexpr auto Footer = core::PropertyDefinitionBuilder<>::createProperty("Footer File")
+      .withDescription("Filename specifying the footer to use")
+      .build();
+  EXTENSIONAPI static constexpr auto Demarcator = core::PropertyDefinitionBuilder<>::createProperty("Demarcator File")
+      .withDescription("Filename specifying the demarcator to use")
+      .build();
+  EXTENSIONAPI static constexpr auto KeepPath = core::PropertyDefinitionBuilder<>::createProperty("Keep Path")
+      .withDescription("If using the Zip or Tar Merge Format, specifies whether or not the FlowFiles' paths should be included in their entry")
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("false")
+      .build();
+  EXTENSIONAPI static constexpr auto AttributeStrategy = core::PropertyDefinitionBuilder<2>::createProperty("Attribute Strategy")
+      .withDescription("Determines which FlowFile attributes should be added to the bundle. If 'Keep All Unique Attributes' is selected, "
+          "any attribute on any FlowFile that gets bundled will be kept unless its value conflicts with the value from another FlowFile "
+          "(in which case neither, or none, of the conflicting attributes will be kept). If 'Keep Only Common Attributes' is selected, "
+          "only the attributes that exist on all FlowFiles in the bundle, with the same value, will be preserved.")
+      .withAllowedValues({merge_content_options::ATTRIBUTE_STRATEGY_KEEP_COMMON, merge_content_options::ATTRIBUTE_STRATEGY_KEEP_ALL_UNIQUE})
+      .withDefaultValue(merge_content_options::ATTRIBUTE_STRATEGY_KEEP_COMMON)
+      .build();
+  EXTENSIONAPI static constexpr auto Properties = utils::array_cat(BinFiles::Properties, std::to_array<core::PropertyReference>({
+      MergeStrategy,
+      MergeFormat,
+      CorrelationAttributeName,
+      DelimiterStrategy,
+      KeepPath,
+      Header,
+      Footer,
+      Demarcator,
+      AttributeStrategy
+  }));
+
+
+  EXTENSIONAPI static constexpr auto Merge = core::RelationshipDefinition{"merged", "The FlowFile containing the merged content"};
+  EXTENSIONAPI static constexpr auto Relationships = utils::array_cat(BinFiles::Relationships, std::array{Merge});
+
+  EXTENSIONAPI static constexpr bool SupportsDynamicProperties = false;
+  EXTENSIONAPI static constexpr bool SupportsDynamicRelationships = false;
+  EXTENSIONAPI static constexpr core::annotation::Input InputRequirement = core::annotation::Input::INPUT_REQUIRED;
+  EXTENSIONAPI static constexpr bool IsSingleThreaded = true;
+
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_PROCESSORS
+
+  void onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& session_factory) override;
+  void onTrigger(core::ProcessContext& context, core::ProcessSession& session) override;
   void initialize() override;
-  bool processBin(core::ProcessContext *context, core::ProcessSession *session, std::unique_ptr<Bin> &bin) override;
+  bool processBin(core::ProcessSession &session, std::unique_ptr<Bin> &bin) override;
 
  protected:
   // Returns a group ID representing a bin. This allows flow files to be binned into like groups
-  std::string getGroupId(core::ProcessContext *context, std::shared_ptr<core::FlowFile> flow) override;
+  std::string getGroupId(const std::shared_ptr<core::FlowFile>& flow) override;
   // check whether the defragment bin is validate
-  bool checkDefragment(std::unique_ptr<Bin> &bin);
+  static bool checkDefragment(std::unique_ptr<Bin> &bin);
 
  private:
   void validatePropertyOptions();
 
-  core::annotation::Input getInputRequirement() const override {
-    return core::annotation::Input::INPUT_REQUIRED;
-  }
-
-  std::shared_ptr<logging::Logger> logger_;
   std::string mergeStrategy_;
   std::string mergeFormat_;
   std::string correlationAttributeName_;
@@ -371,12 +392,7 @@ class MergeContent : public processors::BinFiles {
   std::string footerContent_;
   std::string demarcatorContent_;
   std::string attributeStrategy_;
-  // readContent
-  std::string readContent(std::string path);
+  static std::string readContent(const std::string& path);
 };
 
-} /* namespace processors */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+}  // namespace org::apache::nifi::minifi::processors

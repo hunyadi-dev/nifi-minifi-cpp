@@ -1,306 +1,482 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include "c2/ControllerSocketProtocol.h"
 
 #include <fstream>
-#include <memory>
+#include <sstream>
 #include <string>
 #include <utility>
 #include <vector>
 
-#include "utils/gsl.h"
+#include "asio/detached.hpp"
+#include "asio/ssl/stream.hpp"
+#include "c2/C2Payload.h"
+#include "c2/C2Utils.h"
+#include "controllers/SSLContextService.h"
+#include "io/AsioStream.h"
+#include "properties/Configuration.h"
+#include "utils/ConfigurationUtils.h"
 #include "utils/StringUtils.h"
-#include "core/Resource.h"
+#include "minifi-cpp/utils/gsl.h"
+#include "utils/net/AsioSocketUtils.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace c2 {
+namespace org::apache::nifi::minifi::c2 {
+constexpr auto MAX_COMPONENT_NAME_LENGTH = 1_KiB;
 
-void ControllerSocketProtocol::initialize(core::controller::ControllerServiceProvider* controller, const std::shared_ptr<state::StateMonitor> &updateSink,
-                                          const std::shared_ptr<Configure> &configuration) {
-  HeartbeatReporter::initialize(controller, updateSink, configuration);
-  stream_factory_ = minifi::io::StreamFactory::getInstance(configuration);
-
-  std::string host = "localhost", port, limitStr, context_name;
-  std::shared_ptr<minifi::controllers::SSLContextService> secure_context = nullptr;
-
-  if (configuration_->get("controller.ssl.context.service", context_name)) {
-    std::shared_ptr<core::controller::ControllerService> service = controller->getControllerService(context_name);
-    if (nullptr != service) {
-      secure_context = std::static_pointer_cast<minifi::controllers::SSLContextService>(service);
+ControllerSocketProtocol::SocketRestartCommandProcessor::SocketRestartCommandProcessor(state::StateMonitor& update_sink, const std::shared_ptr<core::logging::Logger>& logger) :
+    update_sink_(update_sink),
+    logger_(logger) {
+  command_queue_.start();
+  command_processor_thread_ = std::thread([this] {
+    while (running_) {
+      CommandData command_data;
+      if (command_queue_.dequeueWait(command_data)) {
+        if (command_data.command == Command::FLOW_UPDATE) {
+          auto result = update_sink_.applyUpdate("ControllerSocketProtocol", command_data.data, true);
+          if (!result) {
+            logger_->log_error("Failed to apply flow update: {}", result.error());
+          }
+        } else if (command_data.command == Command::START) {
+          update_sink_.executeOnComponent(command_data.data, [](state::StateController& component) {
+            component.start();
+          });
+        }
+      }
+      is_socket_restarting_ = false;
     }
+  });
+}
+
+ControllerSocketProtocol::SocketRestartCommandProcessor::~SocketRestartCommandProcessor() {
+  running_ = false;
+  command_queue_.stop();
+  if (command_processor_thread_.joinable()) {
+    command_processor_thread_.join();
   }
-  if (nullptr == secure_context) {
-    std::string secureStr;
-    if (configuration->get(Configure::nifi_remote_input_secure, secureStr) && org::apache::nifi::minifi::utils::StringUtils::toBool(secureStr).value_or(false)) {
-      secure_context = std::make_shared<minifi::controllers::SSLContextService>("ControllerSocketProtocolSSL", configuration);
-      secure_context->onEnable();
+}
+
+ControllerSocketProtocol::ControllerSocketProtocol(state::StateMonitor& update_sink, std::shared_ptr<Configure> configuration,
+  const std::shared_ptr<ControllerSocketReporter>& controller_socket_reporter)
+    : update_sink_(update_sink),
+      controller_socket_reporter_(controller_socket_reporter),
+      configuration_(std::move(configuration)),
+      socket_restart_processor_(update_sink_, logger_) {
+  gsl_Expects(configuration_);
+}
+
+ControllerSocketProtocol::~ControllerSocketProtocol() {
+  stopListener();
+}
+
+void ControllerSocketProtocol::stopListener() {
+  if (acceptor_) {
+    asio::post(io_context_, [this] {
+      acceptor_->close();
+    });
+  }
+  if (server_thread_.joinable()) {
+    server_thread_.join();
+  }
+  io_context_.restart();
+}
+
+asio::awaitable<void> ControllerSocketProtocol::startAccept() {
+  while (true) {
+    auto [accept_error, socket] = co_await acceptor_->async_accept(utils::net::use_nothrow_awaitable);
+    if (accept_error) {
+      if (accept_error == asio::error::operation_aborted || accept_error == asio::error::bad_descriptor) {
+        logger_->log_debug("Controller socket accept aborted");
+        co_return;
+      }
+      logger_->log_error("Controller socket accept failed with the following message: '{}'", accept_error.message());
+      continue;
     }
+    auto stream = std::make_unique<io::AsioStream<asio::ip::tcp::socket>>(std::move(socket));
+    co_spawn(io_context_, handleCommand(std::move(stream)), asio::detached);
+  }
+}
+
+asio::awaitable<void> ControllerSocketProtocol::handshakeAndHandleCommand(asio::ip::tcp::socket&& socket, std::shared_ptr<minifi::controllers::SSLContextServiceInterface> ssl_context_service) {
+  asio::ssl::context ssl_context = utils::net::getSslContext(*ssl_context_service, asio::ssl::context::tls_server);
+  ssl_context.set_options(utils::net::MINIFI_SSL_OPTIONS);
+  asio::ssl::stream<asio::ip::tcp::socket> ssl_socket(std::move(socket), ssl_context);
+
+  auto [handshake_error] = co_await ssl_socket.async_handshake(utils::net::HandshakeType::server, utils::net::use_nothrow_awaitable);
+  if (handshake_error) {
+    logger_->log_error("Controller socket handshake failed with the following message: '{}'", handshake_error.message());
+    co_return;
   }
 
-  const bool anyInterface = configuration_->get("controller.socket.local.any.interface", limitStr) && utils::StringUtils::toBool(limitStr).value_or(false);
+  auto stream = std::make_unique<io::AsioStream<asio::ssl::stream<asio::ip::tcp::socket>>>(std::move(ssl_socket));
+  co_return co_await handleCommand(std::move(stream));
+}
+
+asio::awaitable<void> ControllerSocketProtocol::startAcceptSsl(std::shared_ptr<minifi::controllers::SSLContextServiceInterface> ssl_context_service) {
+  while (true) {  // NOLINT(clang-analyzer-core.NullDereference) suppressing asio library linter warning
+    auto [accept_error, socket] = co_await acceptor_->async_accept(utils::net::use_nothrow_awaitable);
+    if (accept_error) {
+      if (accept_error == asio::error::operation_aborted || accept_error == asio::error::bad_descriptor) {
+        logger_->log_debug("Controller socket accept aborted");
+        co_return;
+      }
+      logger_->log_error("Controller socket accept failed with the following message: '{}'", accept_error.message());
+      continue;
+    }
+
+    co_spawn(io_context_, handshakeAndHandleCommand(std::move(socket), ssl_context_service), asio::detached);
+  }
+}
+
+void ControllerSocketProtocol::initialize() {
+  std::unique_lock<std::mutex> lock(initialization_mutex_);
+  std::shared_ptr<minifi::controllers::SSLContextServiceInterface> secure_context;
+  std::string secure_str;
+  if (configuration_->get(Configure::nifi_remote_input_secure, secure_str) && org::apache::nifi::minifi::utils::string::toBool(secure_str).value_or(false)) {
+    secure_context = controllers::SSLContextService::createAndEnable("ControllerSocketProtocolSSL", configuration_);
+  }
+
+  std::string limit_str;
+  const bool any_interface = configuration_->get(Configuration::controller_socket_local_any_interface, limit_str) && utils::string::toBool(limit_str).value_or(false);
 
   // if host name isn't defined we will use localhost
-  configuration_->get("controller.socket.host", host);
+  std::string host = "localhost";
+  configuration_->get(Configuration::controller_socket_host, host);
 
-  if (nullptr != configuration_ && configuration_->get("controller.socket.port", port)) {
-    if (nullptr != secure_context) {
-#ifdef OPENSSL_SUPPORT
-      // if there is no openssl support we won't be using SSL
-      auto tls_context = std::make_shared<io::TLSContext>(configuration, secure_context);
-      server_socket_ = std::unique_ptr<io::BaseServerSocket>(new io::TLSServerSocket(tls_context, host, std::stoi(port), 2));
-#else
-      server_socket_ = std::unique_ptr<io::BaseServerSocket>(new io::ServerSocket(nullptr, host, std::stoi(port), 2));
-#endif
+  std::string port;
+  stopListener();
+  if (configuration_->get(Configuration::controller_socket_port, port)) {
+    // if we have a localhost hostname and we did not manually specify any.interface we will bind only to the loopback adapter
+    if ((host == "localhost" || host == "127.0.0.1" || host == "::") && !any_interface) {
+      acceptor_ = std::make_unique<asio::ip::tcp::acceptor>(io_context_, asio::ip::tcp::endpoint(asio::ip::address_v4::loopback(), std::stoi(port)));
     } else {
-      server_socket_ = std::unique_ptr<io::BaseServerSocket>(new io::ServerSocket(nullptr, host, std::stoi(port), 2));
-    }
-    // if we have a localhost hostname and we did not manually specify any.interface we will
-    // bind only to the loopback adapter
-    if ((host == "localhost" || host == "127.0.0.1" || host == "::") && !anyInterface) {
-      server_socket_->initialize(true);
-    } else {
-      server_socket_->initialize(false);
+      acceptor_ = std::make_unique<asio::ip::tcp::acceptor>(io_context_, asio::ip::tcp::endpoint(asio::ip::tcp::v4(), std::stoi(port)));
     }
 
-    auto check = [this]() -> bool {
-      return update_sink_->isRunning();
-    };
+    if (secure_context) {
+      co_spawn(io_context_, startAcceptSsl(std::move(secure_context)), asio::detached);
+    } else {
+      co_spawn(io_context_, startAccept(), asio::detached);
+    }
+    server_thread_ = std::thread([this] {
+      io_context_.run();
+    });
+  }
+}
 
-    auto handler = [this](io::BaseStream *stream) {
-      uint8_t head;
-      if (stream->read(head) != 1) {
-        logger_->log_debug("Connection broke");
+void ControllerSocketProtocol::setRoot(core::ProcessGroup* root) {
+  if (auto controller_socket_reporter = controller_socket_reporter_.lock()) {
+    controller_socket_reporter->setRoot(root);
+  }
+}
+
+void ControllerSocketProtocol::handleStart(io::BaseStream &stream) {
+  std::string component_str;
+  const auto size = stream.read(component_str, io::LengthPrefixSize::_16BIT, MAX_COMPONENT_NAME_LENGTH);
+  if (!io::isError(size)) {
+    if (component_str == "FlowController") {
+      // Starting flow controller resets socket
+      socket_restart_processor_.enqueue({SocketRestartCommandProcessor::Command::START, component_str});
+    } else {
+      update_sink_.executeOnComponent(component_str, [](state::StateController& component) {
+        component.start();
+      });
+    }
+  } else {
+    logger_->log_error("Connection broke");
+  }
+}
+
+void ControllerSocketProtocol::handleStop(io::BaseStream &stream) {
+  std::string component_str;
+  const auto size = stream.read(component_str, io::LengthPrefixSize::_16BIT, MAX_COMPONENT_NAME_LENGTH);
+  if (!io::isError(size)) {
+    update_sink_.executeOnComponent(component_str, [](state::StateController& component) {
+      component.stop();
+    });
+  } else {
+    logger_->log_error("Connection broke");
+  }
+}
+
+void ControllerSocketProtocol::handleClear(io::BaseStream &stream) {
+  std::string connection;
+  const auto size = stream.read(connection, io::LengthPrefixSize::_16BIT, MAX_COMPONENT_NAME_LENGTH);
+  if (!io::isError(size)) {
+    update_sink_.clearConnection(connection);
+  }
+}
+
+void ControllerSocketProtocol::handleUpdate(io::BaseStream &stream) {
+  std::string what;
+  {
+    const auto size = stream.read(what, io::LengthPrefixSize::_16BIT, MAX_COMPONENT_NAME_LENGTH);
+    if (io::isError(size)) {
+      logger_->log_error("Connection broke");
+      return;
+    }
+  }
+  if (what == "flow") {
+    std::string ff_loc;
+    {
+      const auto size = stream.read(ff_loc, io::LengthPrefixSize::_16BIT, 1_KiB);
+      if (io::isError(size)) {
+        logger_->log_error("Connection broke");
         return;
       }
-      switch (head) {
-        case Operation::START:
-        {
-          std::string componentStr;
-          const auto size = stream->read(componentStr);
-          if (!io::isError(size)) {
-            auto components = update_sink_->getComponents(componentStr);
-            for (const auto& component : components) {
-              component->start();
-            }
-          } else {
-            logger_->log_debug("Connection broke");
-          }
-        }
-        break;
-        case Operation::STOP:
-        {
-          std::string componentStr;
-          const auto size = stream->read(componentStr);
-          if (!io::isError(size)) {
-            auto components = update_sink_->getComponents(componentStr);
-            for (const auto& component : components) {
-              component->stop();
-            }
-          } else {
-            logger_->log_debug("Connection broke");
-          }
-        }
-        break;
-        case Operation::CLEAR:
-        {
-          std::string connection;
-          const auto size = stream->read(connection);
-          if (!io::isError(size)) {
-            update_sink_->clearConnection(connection);
-          }
-        }
-        break;
-        case Operation::UPDATE:
-        {
-          std::string what;
-          {
-            const auto size = stream->read(what);
-            if (io::isError(size)) {
-              logger_->log_debug("Connection broke");
-              break;
-            }
-          }
-          if (what == "flow") {
-            std::string ff_loc;
-            {
-              const auto size = stream->read(ff_loc);
-              if (io::isError(size)) {
-                logger_->log_debug("Connection broke");
-                break;
-              }
-            }
-            std::ifstream tf(ff_loc);
-            std::string configuration((std::istreambuf_iterator<char>(tf)),
-                std::istreambuf_iterator<char>());
-            update_sink_->applyUpdate("ControllerSocketProtocol", configuration);
-          }
-        }
-        break;
-        case Operation::DESCRIBE:
-        {
-          std::string what;
-          const auto size = stream->read(what);
-          if (io::isError(size)) {
-            logger_->log_debug("Connection broke");
-            break;
-          }
-          if (what == "queue") {
-            std::string connection;
-            const auto size_ = stream->read(connection);
-            if (io::isError(size_)) {
-              logger_->log_debug("Connection broke");
-              break;
-            }
-            std::stringstream response;
-            {
-              std::lock_guard<std::mutex> lock(controller_mutex_);
-              response << queue_size_[connection] << " / " << queue_max_[connection];
-            }
-            io::BufferStream resp;
-            resp.write(&head, 1);
-            resp.write(response.str());
-            stream->write(resp.getBuffer(), resp.size());
-          } else if (what == "components") {
-            io::BufferStream resp;
-            resp.write(&head, 1);
-            const auto size_ = gsl::narrow<uint16_t>(update_sink_->getAllComponents().size());
-            resp.write(size_);
-            for (const auto &component : update_sink_->getAllComponents()) {
-              resp.write(component->getComponentName());
-              resp.write(component->isRunning() ? "true" : "false");
-            }
-            stream->write(resp.getBuffer(), resp.size());
-          } else if (what == "jstack") {
-            io::BufferStream resp;
-            resp.write(&head, 1);
-            auto traces = update_sink_->getTraces();
-            uint64_t trace_size = traces.size();
-            resp.write(trace_size);
-            for (const auto &trace : traces) {
-              const auto &lines = trace.getTraces();
-              resp.write(trace.getName());
-              uint64_t lsize = lines.size();
-              resp.write(lsize);
-              for (const auto &line : lines) {
-                resp.write(line);
-              }
-            }
-            stream->write(resp.getBuffer(), resp.size());
-          } else if (what == "connections") {
-            io::BufferStream resp;
-            resp.write(&head, 1);
-            const auto size_ = gsl::narrow<uint16_t>(queue_full_.size());
-            resp.write(size_);
-            for (const auto &connection : queue_full_) {
-              resp.write(connection.first, false);
-            }
-            stream->write(resp.getBuffer(), resp.size());
-          } else if (what == "getfull") {
-            std::vector<std::string> full_connections;
-            {
-              std::lock_guard<std::mutex> lock(controller_mutex_);
-              for (const auto& conn : queue_full_) {
-                if (conn.second) {
-                  full_connections.push_back(conn.first);
-                }
-              }
-            }
-            io::BufferStream resp;
-            resp.write(&head, 1);
-            const auto full_connection_count = gsl::narrow<uint16_t>(full_connections.size());
-            resp.write(full_connection_count);
-            for (const auto& conn : full_connections) {
-              resp.write(conn);
-            }
-            stream->write(resp.getBuffer(), resp.size());
-          }
-        }
-        break;
-      }
-    };
-    server_socket_->registerCallback(check, handler);
+    }
+    std::ifstream tf(ff_loc);
+    std::string flow_configuration((std::istreambuf_iterator<char>(tf)),
+        std::istreambuf_iterator<char>());
+    socket_restart_processor_.enqueue({SocketRestartCommandProcessor::Command::FLOW_UPDATE, flow_configuration});
+  }
+}
+
+void ControllerSocketProtocol::writeQueueSizesResponse(io::BaseStream &stream) {
+  std::string connection;
+  const auto size_ = stream.read(connection, io::LengthPrefixSize::_16BIT, MAX_COMPONENT_NAME_LENGTH);
+  if (io::isError(size_)) {
+    logger_->log_error("Connection broke");
+    return;
+  }
+  std::unordered_map<std::string, ControllerSocketReporter::QueueSize> sizes;
+  if (auto controller_socket_reporter = controller_socket_reporter_.lock()) {
+    sizes = controller_socket_reporter->getQueueSizes();
+  }
+  std::stringstream response;
+  if (sizes.contains(connection)) {
+    response << sizes[connection].queue_size << " / " << sizes[connection].queue_size_max;
   } else {
-    server_socket_ = nullptr;
+    response << "not found";
   }
+  io::BufferStream resp;
+  auto op = static_cast<uint8_t>(Operation::describe);
+  resp.write(&op, 1);
+  resp.write(response.str());
+  stream.write(resp.getBuffer());
 }
 
-void ControllerSocketProtocol::parse_content(const std::vector<C2ContentResponse> &content) {
-  for (const auto &payload_content : content) {
-    if (payload_content.name == "Components") {
-      for (const auto& operation_argument : payload_content.operation_arguments) {
-        bool is_enabled = minifi::utils::StringUtils::toBool(operation_argument.second.to_string()).value_or(false);
-        std::lock_guard<std::mutex> lock(controller_mutex_);
-        component_map_[operation_argument.first] = is_enabled;
-      }
+void ControllerSocketProtocol::writeComponentsResponse(io::BaseStream &stream) {
+  std::vector<std::pair<std::string, bool>> components;
+  update_sink_.executeOnAllComponents([&components](state::StateController& component) {
+    components.emplace_back(component.getComponentName(), component.isRunning());
+  });
+  io::BufferStream resp;
+  auto op = static_cast<uint8_t>(Operation::describe);
+  resp.write(&op, 1);
+  resp.write(gsl::narrow<uint16_t>(components.size()));
+  for (const auto& [name, is_running] : components) {
+    resp.write(name);
+    resp.write(is_running ? "true" : "false");
+  }
+
+  stream.write(resp.getBuffer());
+}
+
+void ControllerSocketProtocol::writeConnectionsResponse(io::BaseStream &stream) {
+  io::BufferStream resp;
+  auto op = static_cast<uint8_t>(Operation::describe);
+  resp.write(&op, 1);
+  std::unordered_set<std::string> connections;
+  if (auto controller_socket_reporter = controller_socket_reporter_.lock()) {
+    connections = controller_socket_reporter->getConnections();
+  }
+
+  const auto size = gsl::narrow<uint16_t>(connections.size());
+  resp.write(size);
+  for (const auto &connection : connections) {
+    resp.write(connection, false);
+  }
+  stream.write(resp.getBuffer());
+}
+
+void ControllerSocketProtocol::writeGetFullResponse(io::BaseStream &stream) {
+  io::BufferStream resp;
+  auto op = static_cast<uint8_t>(Operation::describe);
+  resp.write(&op, 1);
+  std::unordered_set<std::string> full_connections;
+  if (auto controller_socket_reporter = controller_socket_reporter_.lock()) {
+    full_connections = controller_socket_reporter->getFullConnections();
+  }
+
+  const auto size = gsl::narrow<uint16_t>(full_connections.size());
+  resp.write(size);
+  for (const auto &connection : full_connections) {
+    resp.write(connection, false);
+  }
+  stream.write(resp.getBuffer());
+}
+
+void ControllerSocketProtocol::writeManifestResponse(io::BaseStream &stream) {
+  io::BufferStream resp;
+  auto op = static_cast<uint8_t>(Operation::describe);
+  resp.write(&op, 1);
+  std::string manifest;
+  if (auto controller_socket_reporter = controller_socket_reporter_.lock()) {
+    manifest = controller_socket_reporter->getAgentManifest();
+  }
+  resp.write(manifest, true);
+  stream.write(resp.getBuffer());
+}
+
+std::string ControllerSocketProtocol::getJstack() {
+  if (!update_sink_.isRunning()) {
+    return {};
+  }
+  std::stringstream result;
+  const auto traces = update_sink_.getTraces();
+  for (const auto& trace : traces) {
+    for (const auto& line : trace.getTraces()) {
+      result << trace.getName() << " -- " << line << "\n";
     }
   }
+  return result.str();
 }
 
-int16_t ControllerSocketProtocol::heartbeat(const C2Payload &payload) {
-  if (server_socket_ == nullptr)
-    return 0;
-  for (const auto &pc : payload.getNestedPayloads()) {
-    if (pc.getLabel() == "flowInfo" || pc.getLabel() == "metrics") {
-      for (const auto &metrics_payload : pc.getNestedPayloads()) {
-        if (metrics_payload.getLabel() == "QueueMetrics" || metrics_payload.getLabel() == "queues") {
-          for (const auto &queue_metrics : metrics_payload.getNestedPayloads()) {
-            const auto& metric_content = queue_metrics.getContent();
-            for (const auto &payload_content : metric_content) {
-              uint64_t size = 0;
-              uint64_t max = 0;
-              for (const auto& content : payload_content.operation_arguments) {
-                if (content.first == "datasize") {
-                  size = std::stoull(content.second.to_string());
-                } else if (content.first == "datasizemax") {
-                  max = std::stoull(content.second.to_string());
-                }
-              }
-              std::lock_guard<std::mutex> lock(controller_mutex_);
-              if (size >= max) {
-                queue_full_[payload_content.name] = true;
-              } else {
-                queue_full_[payload_content.name] = false;
-              }
-              queue_size_[payload_content.name] = size;
-              queue_max_[payload_content.name] = max;
-            }
-          }
-        }
-      }
+void ControllerSocketProtocol::writeJstackResponse(io::BaseStream &stream) {
+  io::BufferStream resp;
+  auto op = static_cast<uint8_t>(Operation::describe);
+  resp.write(&op, 1);
+  std::string jstack_response;
+  if (auto controller_socket_reporter = controller_socket_reporter_.lock()) {
+    jstack_response = getJstack();
+  }
+  resp.write(jstack_response, true);
+  stream.write(resp.getBuffer());
+}
+
+void ControllerSocketProtocol::writeFlowStatusResponse(io::BaseStream &stream) {
+  std::string query;
+  {
+    const auto size = stream.read(query, io::LengthPrefixSize::_16BIT, 1_MiB);
+    if (io::isError(size)) {
+      logger_->log_error("Connection broke");
+      return;
     }
   }
-
-  parse_content(payload.getContent());
-
-  std::vector<uint8_t> buffer;
-  buffer.resize(1024);
-
-  return 0;
+  auto request_strings = utils::string::splitAndTrimRemovingEmpty(query, ";");
+  std::vector<FlowStatusRequest> requests;
+  for (const auto& request_string : request_strings) {
+    try {
+      requests.push_back(FlowStatusRequest(request_string));
+    } catch (const std::exception& e) {
+      logger_->log_error("Invalid flow status request: {}", e.what());
+    }
+  }
+  io::BufferStream resp;
+  auto op = static_cast<uint8_t>(Operation::describe);
+  resp.write(&op, 1);
+  std::string flowstatus_response;
+  if (auto controller_socket_reporter = controller_socket_reporter_.lock()) {
+    flowstatus_response = controller_socket_reporter->getFlowStatus(requests);
+  }
+  resp.write(flowstatus_response, true);
+  stream.write(resp.getBuffer());
 }
 
-REGISTER_RESOURCE(ControllerSocketProtocol, "Creates a reporter that can handle basic c2 operations for a localized environment through a simple TCP socket.");
+void ControllerSocketProtocol::handleDescribe(io::BaseStream &stream) {
+  std::string what;
+  const auto size = stream.read(what, io::LengthPrefixSize::_16BIT, 1_KiB);
+  if (io::isError(size)) {
+    logger_->log_error("Connection broke");
+    return;
+  }
+  if (what == "queue") {
+    writeQueueSizesResponse(stream);
+  } else if (what == "components") {
+    writeComponentsResponse(stream);
+  } else if (what == "connections") {
+    writeConnectionsResponse(stream);
+  } else if (what == "getfull") {
+    writeGetFullResponse(stream);
+  } else if (what == "manifest") {
+    writeManifestResponse(stream);
+  } else if (what == "jstack") {
+    writeJstackResponse(stream);
+  } else if (what == "flowstatus") {
+    writeFlowStatusResponse(stream);
+  } else {
+    logger_->log_error("Unknown C2 describe parameter: {}", what);
+  }
+}
 
-}  // namespace c2
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+void ControllerSocketProtocol::writeDebugBundleResponse(io::BaseStream &stream) {
+  auto files = update_sink_.getDebugInfo();
+  auto bundle = createDebugBundleArchive(files);
+  io::BufferStream resp;
+  auto op = static_cast<uint8_t>(Operation::transfer);
+  resp.write(&op, 1);
+  if (!bundle) {
+    logger_->log_error("Creating debug bundle failed: {}", bundle.error());
+    resp.write(static_cast<size_t>(0));
+    stream.write(resp.getBuffer());
+    return;
+  }
+
+  size_t bundle_size = bundle.value()->size();
+  resp.write(bundle_size);
+  static constexpr auto BUFFER_SIZE = utils::configuration::DEFAULT_BUFFER_SIZE;
+  std::array<std::byte, BUFFER_SIZE> out_buffer{};
+  while (bundle_size > 0) {
+    const auto next_write_size = (std::min)(bundle_size, BUFFER_SIZE);
+    const auto size_read = bundle.value()->read(std::as_writable_bytes(std::span(out_buffer).subspan(0, next_write_size)));
+    resp.write(reinterpret_cast<const uint8_t*>(out_buffer.data()), size_read);
+    bundle_size -= size_read;
+  }
+
+  stream.write(resp.getBuffer());
+}
+
+void ControllerSocketProtocol::handleTransfer(io::BaseStream &stream) {
+  std::string what;
+  const auto size = stream.read(what, io::LengthPrefixSize::_16BIT, 1_KiB);
+  if (io::isError(size)) {
+    logger_->log_error("Connection broke");
+    return;
+  }
+  if (what == "debug") {
+    writeDebugBundleResponse(stream);
+  } else {
+    logger_->log_error("Unknown C2 transfer parameter: {}", what);
+  }
+}
+
+asio::awaitable<void> ControllerSocketProtocol::handleCommand(std::unique_ptr<io::BaseStream> stream) {
+  uint8_t head = 0;
+  if (stream->read(head) != 1) {
+    logger_->log_error("Connection broke");
+    co_return;
+  }
+
+  if (socket_restart_processor_.isSocketRestarting()) {
+    logger_->log_debug("Socket restarting, dropping command");
+    co_return;
+  }
+
+  auto op = static_cast<Operation>(head);
+  switch (op) {
+    case Operation::start:
+      handleStart(*stream);
+      break;
+    case Operation::stop:
+      handleStop(*stream);
+      break;
+    case Operation::clear:
+      handleClear(*stream);
+      break;
+    case Operation::update:
+      handleUpdate(*stream);
+      break;
+    case Operation::describe:
+      handleDescribe(*stream);
+      break;
+    case Operation::transfer:
+      handleTransfer(*stream);
+      break;
+    default:
+      logger_->log_error("Unhandled C2 operation: {}", head);
+  }
+}
+
+}  // namespace org::apache::nifi::minifi::c2

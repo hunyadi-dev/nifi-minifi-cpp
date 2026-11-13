@@ -1,0 +1,83 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
+#include "processors/SplitRecord.h"
+#include "unit/SingleProcessorTestController.h"
+#include "utils/StringUtils.h"
+#include "rapidjson/document.h"
+#include "unit/TestUtils.h"
+
+namespace org::apache::nifi::minifi::test {
+
+class SplitRecordTestController : public TestController {
+ public:
+  SplitRecordTestController() {
+    controller_.plan->addController("JsonTreeReader", "JsonTreeReader");
+    controller_.plan->addController("JsonRecordSetWriter", "JsonRecordSetWriter");
+    REQUIRE(controller_.getProcessor());
+    REQUIRE(controller_.getProcessor()->setProperty(processors::SplitRecord::RecordReader.name, "JsonTreeReader"));
+    REQUIRE(controller_.getProcessor()->setProperty(processors::SplitRecord::RecordWriter.name, "JsonRecordSetWriter"));
+  }
+
+  void verifyResults(const ProcessorTriggerResult& results, const std::vector<std::string>& expected_contents) const {
+    REQUIRE(results.at(processors::SplitRecord::Original).size() == 1);
+    REQUIRE(results.at(processors::SplitRecord::Splits).size() == expected_contents.size());
+    auto& split_results = results.at(processors::SplitRecord::Splits);
+    const auto fragment_identifier = split_results[0]->getAttribute("fragment.identifier").value();
+    const auto original_filename = results.at(processors::SplitRecord::Original)[0]->getAttribute("filename").value();
+    for (size_t i = 0; i < expected_contents.size(); ++i) {
+      rapidjson::Document result_document;
+      result_document.Parse(controller_.plan->getContent(split_results[i]).c_str());
+      rapidjson::Document expected_document;
+      expected_document.Parse(expected_contents[i].c_str());
+      CHECK(result_document == expected_document);
+      CHECK(split_results[i]->getAttribute("record.count").value() ==   std::to_string(minifi::utils::string::split(expected_contents[i], "},{").size()));
+      CHECK(split_results[i]->getAttribute("fragment.index").value() == std::to_string(i));
+      CHECK(split_results[i]->getAttribute("fragment.count").value() == std::to_string(expected_contents.size()));
+      CHECK(split_results[i]->getAttribute("fragment.identifier").value() == fragment_identifier);
+      CHECK(split_results[i]->getAttribute("segment.original.filename").value() == original_filename);
+    }
+  }
+
+ protected:
+  SingleProcessorTestController controller_{minifi::test::utils::make_processor<processors::SplitRecord>("SplitRecord")};
+};
+
+TEST_CASE_METHOD(SplitRecordTestController, "Invalid Records Per Split property", "[splitrecord]") {
+  REQUIRE(controller_.getProcessor()->setProperty(processors::SplitRecord::RecordsPerSplit.name, "invalid"));
+  auto results = controller_.trigger({InputFlowFileData{"{\"name\": \"John\"}\n{\"name\": \"Jill\"}"}});
+  REQUIRE(results[processors::SplitRecord::Failure].size() == 1);
+  REQUIRE(LogTestController::getInstance().contains("Records Per Split should be set to a number larger than 0", 1s));
+}
+
+TEST_CASE_METHOD(SplitRecordTestController, "Records Per Split property should be greater than zero", "[splitrecord]") {
+  REQUIRE(controller_.getProcessor()->setProperty(processors::SplitRecord::RecordsPerSplit.name, "${id}"));
+  auto results = controller_.trigger({InputFlowFileData{"{\"name\": \"John\"}\n{\"name\": \"Jill\"}", {{"id", "0"}}}});
+  REQUIRE(results[processors::SplitRecord::Failure].size() == 1);
+  REQUIRE(LogTestController::getInstance().contains("Records Per Split should be set to a number larger than 0", 1s));
+}
+
+TEST_CASE_METHOD(SplitRecordTestController, "Invalid records in flow file result in zero splits", "[splitrecord]") {
+  REQUIRE(controller_.getProcessor()->setProperty(processors::SplitRecord::RecordsPerSplit.name, "1"));
+  auto results = controller_.trigger({InputFlowFileData{ R"({"name": "John)"}});
+  CHECK(results[processors::SplitRecord::Splits].empty());
+  REQUIRE(results[processors::SplitRecord::Original].size() == 1);
+  CHECK(controller_.plan->getContent(results.at(processors::SplitRecord::Original)[0]) == "{\"name\": \"John");
+}
+
+TEST_CASE_METHOD(SplitRecordTestController, "Split records one by one", "[splitrecord]") {
+  REQUIRE(controller_.getProcessor()->setProperty(processors::SplitRecord::RecordsPerSplit.name, "1"));
+  auto results = controller_.trigger({InputFlowFileData{"{\"name\": \"John\"}\n{\"name\": \"Jill\"}"}});
+  verifyResults(results, {R"([{"name":"John"}])", R"([{"name":"Jill"}])"});
+}
+
+TEST_CASE_METHOD(SplitRecordTestController, "Split records two by two", "[splitrecord]") {
+  REQUIRE(controller_.getProcessor()->setProperty(processors::SplitRecord::RecordsPerSplit.name, "2"));
+  auto results = controller_.trigger({InputFlowFileData{"{\"a\": \"1\", \"b\": \"2\"}\n{\"c\": \"3\"}\n{\"d\": \"4\", \"e\": \"5\"}\n{\"f\": \"6\"}\n{\"g\": \"7\", \"h\": \"8\"}\n"}});
+  verifyResults(results, {R"([{"a":"1","b":"2"},{"c":"3"}])", R"([{"d":"4","e":"5"},{"f":"6"}])", R"([{"g":"7","h":"8"}])"});
+}
+
+}  // namespace org::apache::nifi::minifi::test

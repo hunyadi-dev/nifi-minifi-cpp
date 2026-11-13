@@ -1,16 +1,7 @@
 <!--
-  Licensed to the Apache Software Foundation (ASF) under one or more
-  contributor license agreements.  See the NOTICE file distributed with
-  this work for additional information regarding copyright ownership.
-  The ASF licenses this file to You under the Apache License, Version 2.0
-  (the "License"); you may not use this file except in compliance with
-  the License.  You may obtain a copy of the License at
-      http://www.apache.org/licenses/LICENSE-2.0
-  Unless required by applicable law or agreed to in writing, software
-  distributed under the License is distributed on an "AS IS" BASIS,
-  WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
-  See the License for the specific language governing permissions and
-  limitations under the License.
+  SPDX-License-Identifier: Apache-2.0
+  SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+  SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 -->
 # Apache MiNiFi C++ Third Parties guide
 
@@ -25,7 +16,6 @@ This document describes the way we build and use third parties and provides a gu
     + [License](#license)
   * [Built-in or system dependency](#built-in-or-system-dependency)
   * [System dependency](#system-dependency)
-    + [bootstrap.sh](#bootstrapsh)
     + [Find\<Package\>.cmake](#find--package--cmake)
     + [find_package](#find-package)
   * [Built-in dependency](#built-in-dependency)
@@ -98,12 +88,6 @@ Both a system and a built-in version can be supported, in which case the choice 
 
 To add a new system dependency, you have to follow the following steps:
 
-### bootstrap.sh
-
-If you are using a system dependency, you have to ensure that the development packages are installed on the build system if the extension is selected.
-
-To ensure this, edit `bootstrap.sh` and all the platform-specific scripts (`centos.sh`, `fedora.sh`, `debian.sh`, `suse.sh`, `rheldistro.sh`, `darwin.sh`).
-
 ### Find\<Package\>.cmake
 
 If a `Find<Package>.cmake` is provided for your third party by not unreasonably new (not later than 3.2) CMake versions out of the box, then you have nothing further to do, unless they don't create imported library targets.
@@ -135,7 +119,7 @@ We thrive to build all third party dependencies using the [External Projects](ht
 
 There are some exceptions to using External Projects:
  - header only libraries don't require it (you could still use ExternalProject_Add to download and unpack the sources, but it is easier to just include the source in our repository and create an INTERFACE target from them).
- - there are some libraries (notably OpenCV) which generate so many targets in so many configurations and interdependencies between the targets that it is impractical to use imported library targets with them
+ - there are some libraries which generate so many targets in so many configurations and interdependencies between the targets that it is impractical to use imported library targets with them
  - there are a few third parties that have not yet been converted to an External Project, but they will be, eventually
 
 To add a new built-in dependency, the easiest way is to use an already existing one as a template.

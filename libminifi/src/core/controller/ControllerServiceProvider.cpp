@@ -1,39 +1,18 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include "core/controller/ControllerServiceProvider.h"
+
 #include <memory>
 #include <string>
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace core {
-namespace controller {
+#include "minifi-cpp/utils/gsl.h"
 
-/**
- * @param identifier of controller service
- * @return the ControllerService that is registered with the given
- * identifier
- */
-std::shared_ptr<ControllerService> ControllerServiceProvider::getControllerService(const std::string &identifier) {
-  auto service = controller_map_->getControllerServiceNode(identifier);
+namespace org::apache::nifi::minifi::core::controller {
+
+std::shared_ptr<ControllerService> ControllerServiceProvider::getControllerService(const std::string &identifier) const {
+  auto service = controller_map_->get(identifier);
   if (service != nullptr) {
     return service->getControllerServiceImplementation();
   } else {
@@ -41,9 +20,24 @@ std::shared_ptr<ControllerService> ControllerServiceProvider::getControllerServi
   }
 }
 
-} /* namespace controller */
-} /* namespace core */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+std::shared_ptr<ControllerService> ControllerServiceProvider::getControllerService(const std::string &identifier, const utils::Identifier &processor_uuid) const {
+  auto service = controller_map_->get(identifier, processor_uuid);
+  if (service != nullptr) {
+    return service->getControllerServiceImplementation();
+  } else {
+    return nullptr;
+  }
+}
+
+void ControllerServiceProvider::putControllerServiceNode(const std::string& primary_key,
+    const std::shared_ptr<ControllerServiceNode>& controller_service_node,
+    ProcessGroup* process_group,
+    const std::optional<std::string>& alternative_key) {
+  gsl_Expects(controller_map_);
+  controller_map_->put(primary_key, controller_service_node, process_group);
+  if (alternative_key) {
+    controller_map_->registerAlternativeKey(primary_key, *alternative_key);
+  }
+}
+
+}  // namespace org::apache::nifi::minifi::core::controller

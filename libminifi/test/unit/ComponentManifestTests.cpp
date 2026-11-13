@@ -1,0 +1,149 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#undef LOAD_EXTENSIONS
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
+#include "core/Core.h"
+#include "core/ConfigurableComponentImpl.h"
+#include "core/controller/ControllerServiceBase.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "core/Resource.h"
+#include "core/state/nodes/AgentInformation.h"
+#include "core/ProcessorImpl.h"
+#include "range/v3/algorithm/find_if.hpp"
+
+using minifi::state::response::SerializedResponseNode;
+
+SerializedResponseNode& get(SerializedResponseNode& node, const std::string& field) {
+  REQUIRE(!node.array);
+  for (auto& child : node.children) {
+    if (child.name == field) return child;
+  }
+  throw std::logic_error("No field '" + field + "'");
+}
+
+namespace org::apache::nifi::minifi::test::apple {
+class ExampleApacheService : public core::controller::ControllerServiceBase, public core::controller::ControllerServiceHandle {
+ public:
+  using ControllerServiceBase::ControllerServiceBase;
+
+  void initialize() override {}
+  void onEnable() override {}
+
+  [[nodiscard]] ControllerServiceHandle* getControllerServiceHandle() override { return this; }
+
+  static constexpr const char* Description = "An example service";
+  static constexpr auto Properties = std::array<core::PropertyReference, 0>{};
+  static constexpr bool SupportsDynamicProperties = false;
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_CONTROLLER_SERVICES
+};
+
+REGISTER_RESOURCE(ExampleApacheService, ControllerService);
+}  // namespace org::apache::nifi::minifi::test::apple
+
+namespace test::apple {
+
+class ExampleService : public core::controller::ControllerServiceBase, public core::controller::ControllerServiceHandle {
+ public:
+  using ControllerServiceBase::ControllerServiceBase;
+
+  void initialize() override {}
+  void onEnable() override {}
+
+  [[nodiscard]] ControllerServiceHandle* getControllerServiceHandle() override {return this;}
+
+  static constexpr const char* Description = "An example service";
+  static constexpr auto Properties = std::array<core::PropertyReference, 0>{};
+  static constexpr bool SupportsDynamicProperties = false;
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_CONTROLLER_SERVICES
+};
+
+REGISTER_RESOURCE(ExampleService, ControllerService);
+
+class ExampleProcessor : public core::ProcessorImpl {
+ public:
+  using ProcessorImpl::ProcessorImpl;
+
+  static constexpr const char* Description = "An example processor";
+  static constexpr auto ExampleProperty = core::PropertyDefinitionBuilder<>::createProperty("Example Property")
+      .withDescription("An example property")
+      .isRequired(false)
+      .withAllowedTypes<ExampleService>()
+      .build();
+  static constexpr auto ExampleApacheProperty = core::PropertyDefinitionBuilder<>::createProperty("Example Apache Property")
+      .withDescription("An example property")
+      .isRequired(false)
+      .withAllowedTypes<org::apache::nifi::minifi::test::apple::ExampleApacheService>()
+      .build();
+  static constexpr auto Properties = std::to_array<core::PropertyReference>({ExampleProperty, ExampleApacheProperty});
+  static constexpr auto Relationships = std::array<core::RelationshipDefinition, 0>{};
+  static constexpr bool SupportsDynamicProperties = false;
+  static constexpr bool SupportsDynamicRelationships = false;
+  static constexpr core::annotation::Input InputRequirement = core::annotation::Input::INPUT_ALLOWED;
+  static constexpr bool IsSingleThreaded = false;
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_PROCESSORS
+
+  void initialize() override {
+    setSupportedProperties(Properties);
+  }
+};
+
+REGISTER_RESOURCE(ExampleProcessor, Processor);
+
+}  // namespace test::apple
+
+TEST_CASE("Manifest indicates property type requirement") {
+  const auto system_bundle_id = minifi::BundleCoordinate{.name = "minifi-system", .group_name = "org.apache.nifi.minifi.test", .version = minifi::AgentBuild::VERSION};
+  const auto system_components = minifi::ClassDescriptionRegistry::getClassDescriptions().at(system_bundle_id);
+  auto nodes = minifi::state::response::serializeComponentManifest(system_components);
+  REQUIRE(nodes.size() == 1);
+  REQUIRE(nodes.at(0).name == "componentManifest");
+
+  auto& processors = get(nodes.at(0), "processors").children;
+
+  auto example_proc_it = std::find_if(processors.begin(), processors.end(), [&](auto& proc) {
+    return get(proc, "type").value == "test.apple.ExampleProcessor";
+  });
+  REQUIRE(example_proc_it != processors.end());
+
+  auto& properties = get(*example_proc_it, "propertyDescriptors").children;
+
+  {
+    auto prop_it = std::find_if(properties.begin(), properties.end(), [&](auto& prop) { return get(prop, "name").value == "Example Property"; });
+
+    REQUIRE(prop_it != properties.end());
+
+    // TODO(adebreceni): based on Property::types_ a property could accept
+    //    multiple types, these would be dumped into the same object as the type of
+    //    field "typeProvidedByValue" is not an array but an object
+    auto& type = get(*prop_it, "typeProvidedByValue");
+
+    CHECK(get(type, "type").value == "test.apple.ExampleService");
+    CHECK(get(type, "group").value == "org.apache.nifi.minifi.test");
+    CHECK(get(type, "artifact").value == "minifi-system");
+  }
+  {
+    auto prop_it = ranges::find_if(properties, [&](auto& prop) { return get(prop, "name").value == "Example Apache Property"; });
+    REQUIRE(prop_it != properties.end());
+
+    auto& type = get(*prop_it, "typeProvidedByValue");
+
+    CHECK(get(type, "type").value == "org.apache.nifi.minifi.test.apple.ExampleApacheService");
+    // Backward compatibility test, if the group starts with org.apache.nifi.minifi we use that
+    CHECK(get(type, "group").value == "org.apache.nifi.minifi.test");
+    CHECK(get(type, "artifact").value == "minifi-system");
+  }
+}
+
+TEST_CASE("Processors do not get instantiated during manifest creation") {
+  LogTestController::getInstance().setDebug<core::Processor>();
+
+  const auto system_bundle_id = minifi::BundleCoordinate{.name = "minifi-system", .group_name = "org.apache.nifi.minifi", .version = minifi::AgentBuild::VERSION};
+  const auto system_components = minifi::ClassDescriptionRegistry::getClassDescriptions().at(system_bundle_id);
+  minifi::state::response::serializeComponentManifest(system_components);
+
+  CHECK_FALSE(LogTestController::getInstance().contains("Processor ExampleProcessor created"));
+}

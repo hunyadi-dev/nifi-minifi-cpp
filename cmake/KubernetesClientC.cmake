@@ -1,0 +1,60 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+include(FetchContent)
+find_package(OpenSSL REQUIRED)
+
+set(BUILD_TESTING OFF     CACHE BOOL "" FORCE)
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+FetchContent_Declare(yaml
+        GIT_REPOSITORY  https://github.com/yaml/libyaml.git
+        GIT_TAG         2c891fc7a770e8ba2fec34fc6b545c672beb37e6  # 0.2.5
+        SYSTEM
+)
+
+set(LWS_WITHOUT_TESTAPPS ON                           CACHE BOOL "" FORCE)
+set(LWS_WITHOUT_TEST_SERVER ON                        CACHE BOOL "" FORCE)
+set(LWS_WITHOUT_TEST_SERVER_EXTPOLL ON                CACHE BOOL "" FORCE)
+set(LWS_WITHOUT_TEST_PING ON                          CACHE BOOL "" FORCE)
+set(LWS_WITHOUT_TEST_CLIENT ON                        CACHE BOOL "" FORCE)
+set(LWS_WITH_SHARED OFF                               CACHE BOOL "" FORCE)
+set(LWS_OPENSSL_INCLUDE_DIRS "${OPENSSL_INCLUDE_DIR}" CACHE STRING "" FORCE)
+set(LWS_OPENSSL_LIBRARIES "${OPENSSL_LIBRARIES}"      CACHE STRING "" FORCE)
+set(DISABLE_WERROR ON                                 CACHE STRING "" FORCE)
+
+set(WEBSOCKETS_PATCH_FILE_1 "${CMAKE_SOURCE_DIR}/thirdparty/libwebsockets/fix-include-dirs.patch")
+set(WEBSOCKETS_PATCH_FILE_2 "${CMAKE_SOURCE_DIR}/thirdparty/libwebsockets/openssl3.patch")
+set(WEBSOCKETS_PC ${Bash_EXECUTABLE} -c "set -x &&\
+        (${Patch_EXECUTABLE} -R -p1 -s -f --dry-run -i ${WEBSOCKETS_PATCH_FILE_1} || ${Patch_EXECUTABLE} -p1 -i ${WEBSOCKETS_PATCH_FILE_1}) &&\
+        (${Patch_EXECUTABLE} -R -p1 -s -f --dry-run -i ${WEBSOCKETS_PATCH_FILE_2} || ${Patch_EXECUTABLE} -p1 -i ${WEBSOCKETS_PATCH_FILE_2})")
+FetchContent_Declare(websockets
+        URL             https://github.com/warmcat/libwebsockets/archive/refs/tags/v4.5.8.tar.gz
+        URL_HASH        SHA256=b6ade658f4af3a823d0dc806ae5ef0623f0f4f5e2aeb895a0f77c4783840c30e
+        PATCH_COMMAND "${WEBSOCKETS_PC}"
+        SYSTEM
+)
+
+FetchContent_MakeAvailable(yaml websockets)
+
+set(BUILD_SHARED_LIBS OFF CACHE BOOL "" FORCE)
+set(K8S_PATCH_FILE "${CMAKE_SOURCE_DIR}/thirdparty/kubernetes-client-c/all/patches/remove-findpackage.patch")
+set(K8S_PC ${Bash_EXECUTABLE} -c "set -x &&\
+        (${Patch_EXECUTABLE} -R -p1 -s -f --dry-run -i ${K8S_PATCH_FILE} || ${Patch_EXECUTABLE} -p1 -i ${K8S_PATCH_FILE})")
+FetchContent_Declare(kubernetes
+    URL             https://github.com/kubernetes-client/c/archive/refs/tags/v0.14.0.tar.gz
+    URL_HASH        SHA256=52216183b540cd10cfe33da326c7a529c127e9bca3cc512533059374591cbdc4
+    PATCH_COMMAND   "${K8S_PC}"
+    SOURCE_SUBDIR   kubernetes
+    SYSTEM
+)
+
+FetchContent_MakeAvailable(kubernetes)
+
+target_include_directories(kubernetes INTERFACE $<BUILD_INTERFACE:${kubernetes_SOURCE_DIR}>)
+
+target_link_libraries(websockets CURL::libcurl OpenSSL::Crypto OpenSSL::SSL)
+
+if (NOT TARGET kubernetes::kubernetes)
+    add_library(kubernetes::kubernetes ALIAS kubernetes)
+endif()

@@ -1,190 +1,182 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_GETFILE_H_
-#define EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_GETFILE_H_
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
 
 #include <memory>
 #include <queue>
 #include <string>
 #include <vector>
 #include <atomic>
+#include <utility>
 
-#include "core/state/nodes/MetricsBase.h"
-#include "FlowFileRecord.h"
-#include "core/Processor.h"
+#include "core/ProcessorImpl.h"
+#include "minifi-cpp/core/ProcessContext.h"
 #include "core/ProcessSession.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "core/PropertyDefinitionBuilder.h"
+#include "minifi-cpp/core/PropertyValidator.h"
+#include "minifi-cpp/core/RelationshipDefinition.h"
 #include "core/Core.h"
-#include "core/logging/LoggerConfiguration.h"
-#include "utils/Export.h"
+#include "core/logging/LoggerFactory.h"
+#include "minifi-cpp/utils/Export.h"
+#include "minifi-cpp/core/ProcessorMetricsExtension.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace processors {
+namespace org::apache::nifi::minifi::processors {
 
 struct GetFileRequest {
   bool recursive = true;
   bool keepSourceFile = false;
-  uint64_t minAge = 0;
-  uint64_t maxAge = 0;
+  std::chrono::milliseconds minAge{0};
+  std::chrono::milliseconds maxAge{0};
   uint64_t minSize = 0;
   uint64_t maxSize = 0;
   bool ignoreHiddenFile = true;
-  uint64_t pollInterval = 0;
+  std::chrono::milliseconds pollInterval{0};
   uint64_t batchSize = 10;
-  std::string fileFilter = "[^\\.].*";
-  std::string inputDirectory;
+  std::string fileFilter = ".*";
+  std::filesystem::path inputDirectory;
 };
 
-class GetFileMetrics : public state::response::ResponseNode {
+class GetFileMetrics : public core::ProcessorMetricsExtension {
  public:
-  GetFileMetrics()
-      : state::response::ResponseNode("GetFileMetrics") {
-    iterations_ = 0;
-    accepted_files_ = 0;
-    input_bytes_ = 0;
-  }
-
-  GetFileMetrics(const std::string& name, const utils::Identifier& uuid)
-      : state::response::ResponseNode(name, uuid) {
-    iterations_ = 0;
-    accepted_files_ = 0;
-    input_bytes_ = 0;
-  }
-  virtual ~GetFileMetrics() = default;
-  std::string getName() const override {
-    return core::Connectable::getName();
-  }
-
   std::vector<state::response::SerializedResponseNode> serialize() override {
     std::vector<state::response::SerializedResponseNode> resp;
 
-    state::response::SerializedResponseNode iter;
-    iter.name = "OnTriggerInvocations";
-    iter.value = (uint32_t)iterations_.load();
+    state::response::SerializedResponseNode accepted_files_node{"AcceptedFiles", accepted_files.load()};
+    resp.push_back(accepted_files_node);
 
-    resp.push_back(iter);
-
-    state::response::SerializedResponseNode accepted_files;
-    accepted_files.name = "AcceptedFiles";
-    accepted_files.value = (uint32_t)accepted_files_.load();
-
-    resp.push_back(accepted_files);
-
-    state::response::SerializedResponseNode input_bytes;
-    input_bytes.name = "InputBytes";
-    input_bytes.value = (uint32_t)input_bytes_.load();
-
-    resp.push_back(input_bytes);
+    state::response::SerializedResponseNode input_bytes_node{"InputBytes", input_bytes.load()};
+    resp.push_back(input_bytes_node);
 
     return resp;
   }
 
- protected:
-  friend class GetFile;
+  std::vector<state::PublishedMetric> calculateMetrics() override {
+    std::vector<state::PublishedMetric> metrics;
+    metrics.push_back({"accepted_files", static_cast<double>(accepted_files.load()), {}});
+    metrics.push_back({"input_bytes", static_cast<double>(input_bytes.load()), {}});
+    return metrics;
+  }
 
-  std::atomic<size_t> iterations_;
-  std::atomic<size_t> accepted_files_;
-  std::atomic<size_t> input_bytes_;
+  std::atomic<uint32_t> accepted_files{0};
+  std::atomic<uint64_t> input_bytes{0};
 };
 
-// GetFile Class
-class GetFile : public core::Processor, public state::response::MetricsNodeSource {
+class GetFile : public core::ProcessorImpl {
  public:
-  // Constructor
-  /*!
-   * Create a new processor
-   */
-  explicit GetFile(const std::string& name, const utils::Identifier& uuid = {})
-      : Processor(name, uuid),
-        metrics_(std::make_shared<GetFileMetrics>()),
-        last_listing_time_(0),
-        logger_(logging::LoggerFactory<GetFile>::getLogger()) {
+  explicit GetFile(core::ProcessorMetadata metadata)
+      : ProcessorImpl(metadata) {
+    metrics_extension_ = std::make_shared<GetFileMetrics>();
   }
-  // Destructor
   ~GetFile() override = default;
 
-  // Processor Name
-  EXTENSIONAPI static constexpr char const* ProcessorName = "GetFile";
-  // Supported Properties
-  EXTENSIONAPI static core::Property Directory;
-  EXTENSIONAPI static core::Property Recurse;
-  EXTENSIONAPI static core::Property KeepSourceFile;
-  EXTENSIONAPI static core::Property MinAge;
-  EXTENSIONAPI static core::Property MaxAge;
-  EXTENSIONAPI static core::Property MinSize;
-  EXTENSIONAPI static core::Property MaxSize;
-  EXTENSIONAPI static core::Property IgnoreHiddenFile;
-  EXTENSIONAPI static core::Property PollInterval;
-  EXTENSIONAPI static core::Property BatchSize;
-  EXTENSIONAPI static core::Property FileFilter;
-  // Supported Relationships
-  EXTENSIONAPI static core::Relationship Success;
+  EXTENSIONAPI static constexpr const char* Description = "Creates FlowFiles from files in a directory. MiNiFi will ignore files for which it doesn't have read permissions.";
 
- public:
-  /**
-   * Function that's executed when the processor is scheduled.
-   * @param context process context.
-   * @param sessionFactory process session factory that is used when creating
-   * ProcessSession objects.
-   */
-  void onSchedule(core::ProcessContext *context, core::ProcessSessionFactory *sessionFactory) override;
-  /**
-   * Execution trigger for the GetFile Processor
-   * @param context processor context
-   * @param session processor session reference.
-   */
-  void onTrigger(core::ProcessContext *context, core::ProcessSession *session) override;
+  EXTENSIONAPI static constexpr auto Directory = core::PropertyDefinitionBuilder<>::createProperty("Input Directory")
+      .withDescription("The input directory from which to pull files")
+      .isRequired(true)
+      .supportsExpressionLanguage(true)
+      .withValidator(core::StandardPropertyValidators::NON_BLANK_VALIDATOR)
+      .build();
+  EXTENSIONAPI static constexpr auto Recurse = core::PropertyDefinitionBuilder<>::createProperty("Recurse Subdirectories")
+      .withDescription("Indicates whether or not to pull files from subdirectories")
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("true")
+      .build();
+  EXTENSIONAPI static constexpr auto KeepSourceFile = core::PropertyDefinitionBuilder<>::createProperty("Keep Source File")
+      .withDescription("If true, the file is not deleted after it has been copied to the Content Repository")
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("false")
+      .build();
+  EXTENSIONAPI static constexpr auto MinAge = core::PropertyDefinitionBuilder<>::createProperty("Minimum File Age")
+      .withDescription("The minimum age that a file must be in order to be pulled;"
+          " any file younger than this amount of time (according to last modification date) will be ignored")
+      .withValidator(core::StandardPropertyValidators::TIME_PERIOD_VALIDATOR)
+      .withDefaultValue("0 sec")
+      .build();
+  EXTENSIONAPI static constexpr auto MaxAge = core::PropertyDefinitionBuilder<>::createProperty("Maximum File Age")
+      .withDescription("The maximum age that a file must be in order to be pulled;"
+          " any file older than this amount of time (according to last modification date) will be ignored")
+      .withValidator(core::StandardPropertyValidators::TIME_PERIOD_VALIDATOR)
+      .withDefaultValue("0 sec")
+      .build();
+  EXTENSIONAPI static constexpr auto MinSize = core::PropertyDefinitionBuilder<>::createProperty("Minimum File Size")
+      .withDescription("The minimum size that a file can be in order to be pulled")
+      .withValidator(core::StandardPropertyValidators::DATA_SIZE_VALIDATOR)
+      .withDefaultValue("0 B")
+      .build();
+  EXTENSIONAPI static constexpr auto MaxSize = core::PropertyDefinitionBuilder<>::createProperty("Maximum File Size")
+      .withDescription("The maximum size that a file can be in order to be pulled")
+      .withValidator(core::StandardPropertyValidators::DATA_SIZE_VALIDATOR)
+      .withDefaultValue("0 B")
+      .build();
+  EXTENSIONAPI static constexpr auto IgnoreHiddenFile = core::PropertyDefinitionBuilder<>::createProperty("Ignore Hidden Files")
+      .withDescription("Indicates whether or not hidden files should be ignored")
+      .withValidator(core::StandardPropertyValidators::BOOLEAN_VALIDATOR)
+      .withDefaultValue("true")
+      .build();
+  EXTENSIONAPI static constexpr auto PollInterval = core::PropertyDefinitionBuilder<>::createProperty("Polling Interval")
+      .withDescription("Indicates how long to wait before performing a directory listing")
+      .withValidator(core::StandardPropertyValidators::TIME_PERIOD_VALIDATOR)
+      .withDefaultValue("0 sec")
+      .build();
+  EXTENSIONAPI static constexpr auto BatchSize = core::PropertyDefinitionBuilder<>::createProperty("Batch Size")
+      .withDescription("The maximum number of files to pull in each iteration")
+      .withValidator(core::StandardPropertyValidators::UNSIGNED_INTEGER_VALIDATOR)
+      .withDefaultValue("10")
+      .build();
+  EXTENSIONAPI static constexpr auto FileFilter = core::PropertyDefinitionBuilder<>::createProperty("File Filter")
+      .withDescription("Only files whose names match the given regular expression will be picked up")
+      .withDefaultValue(".*")
+      .build();
+  EXTENSIONAPI static constexpr auto Properties = std::to_array<core::PropertyReference>({
+      Directory,
+      Recurse,
+      KeepSourceFile,
+      MinAge,
+      MaxAge,
+      MinSize,
+      MaxSize,
+      IgnoreHiddenFile,
+      PollInterval,
+      BatchSize,
+      FileFilter
+  });
 
-  // Initialize, over write by NiFi GetFile
-  void initialize(void) override;
+
+  EXTENSIONAPI static constexpr auto Success = core::RelationshipDefinition{"success", "All files are routed to success"};
+  EXTENSIONAPI static constexpr auto Relationships = std::array{Success};
+
+  EXTENSIONAPI static constexpr bool SupportsDynamicProperties = false;
+  EXTENSIONAPI static constexpr bool SupportsDynamicRelationships = false;
+  EXTENSIONAPI static constexpr core::annotation::Input InputRequirement = core::annotation::Input::INPUT_FORBIDDEN;
+  EXTENSIONAPI static constexpr bool IsSingleThreaded = false;
+
+  ADD_COMMON_VIRTUAL_FUNCTIONS_FOR_PROCESSORS
+
+  void onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& session_factory) override;
+  void onTrigger(core::ProcessContext& context, core::ProcessSession& session) override;
+  void initialize() override;
+
   /**
    * performs a listing on the directory.
    * @param request get file request.
    */
   void performListing(const GetFileRequest &request);
 
-  int16_t getMetricNodes(std::vector<std::shared_ptr<state::response::ResponseNode>> &metric_vector) override;
-
  private:
-  core::annotation::Input getInputRequirement() const override {
-    return core::annotation::Input::INPUT_FORBIDDEN;
-  }
-
   bool isListingEmpty() const;
-  void putListing(std::string fileName);
-  std::queue<std::string> pollListing(uint64_t batch_size);
-  bool fileMatchesRequestCriteria(std::string fullName, std::string name, const GetFileRequest &request);
-  void getSingleFile(core::ProcessSession& session, const std::string& file_name) const;
+  void putListing(const std::filesystem::path& file_path);
+  std::queue<std::filesystem::path> pollListing(uint64_t batch_size);
+  bool fileMatchesRequestCriteria(const std::filesystem::path& full_name, const std::filesystem::path& name, const GetFileRequest &request);
+  void getSingleFile(core::ProcessSession& session, const std::filesystem::path& file_path) const;
 
-  std::shared_ptr<GetFileMetrics> metrics_;
   GetFileRequest request_;
-  std::queue<std::string> directory_listing_;
+  std::queue<std::filesystem::path> directory_listing_;
   mutable std::mutex directory_listing_mutex_;
-  std::atomic<uint64_t> last_listing_time_;
-  std::shared_ptr<logging::Logger> logger_;
+  std::atomic<std::chrono::time_point<std::chrono::system_clock>> last_listing_time_{};
+  size_t buffer_size_{};
 };
 
-}  // namespace processors
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // EXTENSIONS_STANDARD_PROCESSORS_PROCESSORS_GETFILE_H_
+}  // namespace org::apache::nifi::minifi::processors

@@ -1,0 +1,26 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+ARG BASE_IMAGE
+FROM ${BASE_IMAGE} as base_image
+LABEL maintainer="Apache NiFi <dev@nifi.apache.org>"
+
+ARG MINIFI_VERSION
+ARG ARCHIVE_LOCATION
+ARG INSTALL_PACKAGE_CMD
+
+ARG UID=1001
+ARG GID=1001
+
+ENV USER=minificpp
+ENV MINIFI_INSTALLATION_TYPE="FHS"
+
+
+COPY ${ARCHIVE_LOCATION} /tmp/minifi.rpm
+RUN /bin/bash -c "${INSTALL_PACKAGE_CMD}" \
+    && rpm -i /tmp/minifi.rpm
+
+USER ${USER}
+
+# Start MiNiFi CPP in the foreground
+CMD ["/usr/bin/minifi"]

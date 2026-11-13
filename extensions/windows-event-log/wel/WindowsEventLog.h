@@ -1,20 +1,6 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #pragma once
 
@@ -31,108 +17,83 @@
 #include <vector>
 
 #include "core/Core.h"
-#include "concurrentqueue.h"
-#include "core/Processor.h"
+#include "moodycamel/concurrentqueue.h"
+#include "core/ProcessorImpl.h"
 #include "core/ProcessSession.h"
 #include "utils/OsUtils.h"
-#include "FlowFileRecord.h"
+#include "minifi-cpp/FlowFileRecord.h"
+#include "UniqueEvtHandle.h"
 
 #include "pugixml.hpp"
+#include "utils/expected.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace wel {
+namespace org::apache::nifi::minifi::wel {
 
+enum class Metadata {
+  LOG_NAME,
+  SOURCE,
+  TIME_CREATED,
+  EVENTID,
+  OPCODE,
+  EVENT_RECORDID,
+  EVENT_TYPE,
+  TASK_CATEGORY,
+  LEVEL,
+  KEYWORDS,
+  USER,
+  COMPUTER,
+};
 
-  enum METADATA {
-    LOG_NAME,
-    SOURCE,
-    TIME_CREATED,
-    EVENTID,
-    OPCODE,
-    EVENT_RECORDID,
-    EVENT_TYPE,
-    TASK_CATEGORY,
-    LEVEL,
-    KEYWORDS,
-    USER,
-    COMPUTER,
-    UNKNOWN
-  };
-
-
-// this is a continuous enum so we can rely on the array
-
-typedef std::vector<std::pair<METADATA, std::string>> METADATA_NAMES;
-
-class WindowsEventLogHandler {
+class EventDataCache {
  public:
-  WindowsEventLogHandler() : metadata_provider_(nullptr) {
-  }
-
-  explicit WindowsEventLogHandler(EVT_HANDLE metadataProvider) : metadata_provider_(metadataProvider) {
-  }
-
-  std::string getEventMessage(EVT_HANDLE eventHandle) const;
-
-
-  EVT_HANDLE getMetadata() const;
+  explicit EventDataCache(std::chrono::milliseconds lifetime = std::chrono::hours{24})
+      : lifetime_(lifetime) {}
+  [[nodiscard]] std::optional<std::string> get(EVT_FORMAT_MESSAGE_FLAGS field, const std::string& key) const;
+  void set(EVT_FORMAT_MESSAGE_FLAGS field, const std::string& key, std::string value);
 
  private:
-  EVT_HANDLE metadata_provider_;
+  struct CacheKey {
+    EVT_FORMAT_MESSAGE_FLAGS field;
+    std::string key;
+
+    [[nodiscard]] bool operator==(const CacheKey&) const noexcept = default;
+  };
+  struct CacheKeyHash {
+    [[nodiscard]] size_t operator()(const CacheKey& cache_key) const noexcept {
+      return utils::hash_combine(std::hash<EVT_FORMAT_MESSAGE_FLAGS>{}(cache_key.field), std::hash<std::string>{}(cache_key.key));
+    }
+  };
+  struct CacheItem {
+    std::string value;
+    std::chrono::system_clock::time_point expiry;
+  };
+
+  mutable std::mutex mutex_;
+  std::chrono::milliseconds lifetime_;
+  std::unordered_map<CacheKey, CacheItem, CacheKeyHash> cache_;
+};
+
+class WindowsEventLogProvider {
+ public:
+  WindowsEventLogProvider() : provider_handle_(nullptr) {}
+  explicit WindowsEventLogProvider(EVT_HANDLE provider_handle) : provider_handle_(provider_handle) {}
+
+  std::expected<std::string, std::error_code> getEventMessage(EVT_HANDLE event_handle) const;
+  [[nodiscard]] std::string getEventData(EVT_FORMAT_MESSAGE_FLAGS field, const std::string& key, EVT_HANDLE event_handle) const;
+
+ private:
+  [[nodiscard]] std::string getEventDataImpl(EVT_FORMAT_MESSAGE_FLAGS field, EVT_HANDLE event_handle) const;
+
+  unique_evt_handle provider_handle_;
+  mutable EventDataCache event_data_cache_;
 };
 
 class WindowsEventLogMetadata {
  public:
   virtual ~WindowsEventLogMetadata() = default;
-  virtual std::string getEventData(EVT_FORMAT_MESSAGE_FLAGS flags) const = 0;
-  virtual std::string getEventTimestamp() const = 0;
+  [[nodiscard]] virtual std::string getEventData(EVT_FORMAT_MESSAGE_FLAGS field, const std::string& key) const = 0;
+  [[nodiscard]] virtual std::string getEventTimestamp() const = 0;
   virtual short getEventTypeIndex() const = 0;  // NOLINT short comes from WINDOWS API
-
-  static std::string getMetadataString(METADATA val) {
-    static std::map<METADATA, std::string> map = {
-        {LOG_NAME, "LOG_NAME" },
-        {SOURCE, "SOURCE"},
-        {TIME_CREATED, "TIME_CREATED" },
-        {EVENTID, "EVENTID"},
-        {OPCODE, "OPCODE"},
-        {EVENT_RECORDID, "EVENT_RECORDID"},
-        {EVENT_TYPE, "EVENT_TYPE"},
-        {TASK_CATEGORY, "TASK_CATEGORY"},
-        {LEVEL, "LEVEL"},
-        {KEYWORDS, "KEYWORDS"},
-        {USER, "USER"},
-        {COMPUTER, "COMPUTER"}
-    };
-
-    return map[val];
-  }
-
-  static METADATA getMetadataFromString(const std::string &val) {
-    static std::map<std::string, METADATA> map = {
-        {"LOG_NAME", LOG_NAME},
-        {"SOURCE", SOURCE},
-        {"TIME_CREATED", TIME_CREATED },
-        {"EVENTID", EVENTID},
-        {"OPCODE", OPCODE},
-        {"EVENT_RECORDID", EVENT_RECORDID},
-        {"TASK_CATEGORY", TASK_CATEGORY},
-        {"EVENT_TYPE", EVENT_TYPE},
-        {"LEVEL", LEVEL},
-        {"KEYWORDS", KEYWORDS},
-        {"USER", USER},
-        {"COMPUTER", COMPUTER}
-    };
-
-    auto enumVal = map.find(val);
-    if (enumVal != std::end(map)) {
-      return enumVal->second;
-    } else {
-      return METADATA::UNKNOWN;
-    }
-  }
 
   static std::string getComputerName() {
     static std::string computer_name;
@@ -151,65 +112,59 @@ class WindowsEventLogMetadata {
 
 class WindowsEventLogMetadataImpl : public WindowsEventLogMetadata {
  public:
-  WindowsEventLogMetadataImpl(EVT_HANDLE metadataProvider, EVT_HANDLE event_ptr) : metadata_ptr_(metadataProvider), event_timestamp_(0), event_ptr_(event_ptr) {
+  WindowsEventLogMetadataImpl(const WindowsEventLogProvider& event_log_provider, EVT_HANDLE event_handle) : event_log_provider_(event_log_provider), event_handle_(event_handle) {
     renderMetadata();
   }
 
-  std::string getEventData(EVT_FORMAT_MESSAGE_FLAGS flags) const override;
+  [[nodiscard]] std::string getEventData(EVT_FORMAT_MESSAGE_FLAGS field, const std::string& key) const override;
 
-  std::string getEventTimestamp() const override { return event_timestamp_str_; }
+  [[nodiscard]] std::string getEventTimestamp() const override { return event_timestamp_str_; }
 
   short getEventTypeIndex() const override { return event_type_index_; }  // NOLINT short comes from WINDOWS API
 
  private:
   void renderMetadata();
 
-  uint64_t event_timestamp_;
   std::string event_type_;
-  short event_type_index_;  // NOLINT short comes from WINDOWS API
+  short event_type_index_ = 0;  // NOLINT short comes from WINDOWS API
   std::string event_timestamp_str_;
-  EVT_HANDLE event_ptr_;
-  EVT_HANDLE metadata_ptr_;
+  EVT_HANDLE event_handle_;
+  const WindowsEventLogProvider& event_log_provider_;
 };
+
+using HeaderNames = std::vector<std::pair<Metadata, std::string>>;
 
 class WindowsEventLogHeader {
  public:
-  explicit WindowsEventLogHeader(METADATA_NAMES header_names) : header_names_(header_names) {}
-
-  void setDelimiter(const std::string &delim);
+  explicit WindowsEventLogHeader(const HeaderNames& header_names, const std::optional<std::string>& custom_delimiter, size_t minimum_size);
 
   template<typename MetadataCollection>
   std::string getEventHeader(const MetadataCollection& metadata_collection) const;
 
+  [[nodiscard]] std::string getDelimiterFor(size_t length) const;
  private:
-  std::string createDefaultDelimiter(size_t max, size_t length) const;
+  [[nodiscard]] std::string createDefaultDelimiter(size_t length) const;
 
-  std::string delimiter_;
-  METADATA_NAMES header_names_;
+  const HeaderNames& header_names_;
+  const std::optional<std::string>& custom_delimiter_;
+  const size_t longest_header_name_;
 };
 
 template<typename MetadataCollection>
 std::string WindowsEventLogHeader::getEventHeader(const MetadataCollection& metadata_collection) const {
   std::stringstream eventHeader;
-  size_t max = 1;
-  for (const auto &option : header_names_) {
-    max = (std::max(max, option.second.size()));
-  }
-  ++max;  // increment by one to get space.
-  for (const auto &option : header_names_) {
+
+  for (const auto& option : header_names_) {
     auto name = option.second;
-    if (!name.empty()) {
-      eventHeader << name << (delimiter_.empty() ? createDefaultDelimiter(max, name.size()) : delimiter_);
-    }
-    eventHeader << utils::StringUtils::trim(metadata_collection(option.first)) << std::endl;
+    eventHeader << name;
+    if (custom_delimiter_)
+      eventHeader << *custom_delimiter_;
+    else
+      eventHeader << createDefaultDelimiter(name.size());
+    eventHeader << utils::string::trim(metadata_collection(option.first)) << std::endl;
   }
 
   return eventHeader.str();
 }
 
-} /* namespace wel */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
-
+}  // namespace org::apache::nifi::minifi::wel

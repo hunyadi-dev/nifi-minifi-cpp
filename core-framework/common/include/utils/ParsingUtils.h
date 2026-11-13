@@ -1,0 +1,99 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include "ParsingErrors.h"
+#include "StringUtils.h"
+#include "TimeUtil.h"
+#include "minifi-cpp/utils/Literals.h"
+#include "fmt/format.h"
+
+namespace org::apache::nifi::minifi::parsing {
+std::expected<bool, std::error_code> parseBool(std::string_view input);
+
+template<std::integral T>
+std::expected<T, std::error_code> parseIntegralMinMax(std::string_view input, T minimum, T maximum);
+template<std::integral T>
+std::expected<T, std::error_code> parseIntegral(std::string_view input);
+
+template<class TargetDuration>
+std::expected<TargetDuration, std::error_code> parseDurationMinMax(std::string_view input, TargetDuration minimum, TargetDuration maximum);
+template<class TargetDuration = std::chrono::milliseconds>
+std::expected<TargetDuration, std::error_code> parseDuration(std::string_view input);
+
+std::expected<uint64_t, std::error_code> parseDataSizeMinMax(std::string_view input, uint64_t minimum, uint64_t maximum);
+std::expected<uint64_t, std::error_code> parseDataSize(std::string_view input);
+
+std::expected<uint32_t, std::error_code> parseUnixOctalPermissions(std::string_view input);
+
+template<std::floating_point T>
+std::expected<T, std::error_code> parseFloatingPoint(std::string_view input);
+
+template<std::integral T>
+std::expected<T, std::error_code> parseIntegralMinMax(const std::string_view input, const T minimum, const T maximum) {
+  const auto trimmed_input = utils::string::trim(input);
+  T t{};
+  const auto [ptr, ec] = std::from_chars(trimmed_input.data(), trimmed_input.data() + trimmed_input.size(), t);
+  if (ec != std::errc()) {
+    return std::unexpected{core::ParsingErrorCode::GeneralParsingError};
+  }
+  if (ptr != trimmed_input.data() + trimmed_input.size()) {
+    return std::unexpected{core::ParsingErrorCode::GeneralParsingError};
+  }
+
+  if (t < minimum) { return std::unexpected{core::ParsingErrorCode::SmallerThanMinimum}; }
+  if (t > maximum) { return std::unexpected{core::ParsingErrorCode::LargerThanMaximum}; }
+  return t;
+}
+
+template<std::integral T>
+std::expected<T, std::error_code> parseIntegral(const std::string_view input) {
+  return parseIntegralMinMax<T>(input, std::numeric_limits<T>::min(), std::numeric_limits<T>::max());
+}
+
+template<class TargetDuration>
+std::expected<TargetDuration, std::error_code> parseDurationMinMax(const std::string_view input, const TargetDuration minimum, const TargetDuration maximum) {
+  auto duration = utils::timeutils::StringToDuration<std::chrono::milliseconds>(input);
+  if (!duration.has_value()) { return std::unexpected{core::ParsingErrorCode::GeneralParsingError}; }
+
+  if (*duration < minimum) { return std::unexpected{core::ParsingErrorCode::SmallerThanMinimum}; }
+  if (*duration > maximum) { return std::unexpected{core::ParsingErrorCode::LargerThanMaximum}; }
+
+  return *duration;
+}
+
+template<class TargetDuration>
+std::expected<TargetDuration, std::error_code> parseDuration(const std::string_view input) {
+  return parseDurationMinMax<TargetDuration>(input, TargetDuration::min(), TargetDuration::max());
+}
+
+
+template<typename T>
+std::expected<T, std::error_code> parseEnum(const std::string_view input) {
+  std::optional<T> result = magic_enum::enum_cast<T>(input);
+  if (!result) {
+    return std::unexpected{core::ParsingErrorCode::GeneralParsingError};
+  }
+  return *result;
+}
+
+template<std::floating_point T>
+std::expected<T, std::error_code> parseFloatingPoint(const std::string_view input) {
+  const auto trimmed_input = utils::string::trim(input);
+  T value{};
+
+  const auto [ptr, ec] = std::from_chars(trimmed_input.data(), trimmed_input.data() + trimmed_input.size(), value);
+
+  if (ec != std::errc()) {
+    return std::unexpected{core::ParsingErrorCode::GeneralParsingError};
+  }
+
+  if (ptr != trimmed_input.data() + trimmed_input.size()) {
+    return std::unexpected{core::ParsingErrorCode::GeneralParsingError};
+  }
+
+  return value;
+}
+
+}  // namespace org::apache::nifi::minifi::parsing

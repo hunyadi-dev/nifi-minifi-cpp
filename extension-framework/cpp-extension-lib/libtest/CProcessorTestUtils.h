@@ -1,0 +1,45 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include "api/core/Resource.h"
+#include "core/Processor.h"
+#include "core/controller/ControllerService.h"
+#include "minifi-cpp/core/ControllerServiceMetadata.h"
+#include "minifi-cpp/core/ProcessorMetadata.h"
+#include "utils/CControllerService.h"
+#include "utils/CProcessor.h"
+#include "minifi-cpp/agent/agent_docs.h"
+#include "utils/StringUtils.h"
+
+namespace org::apache::nifi::minifi::test::utils {
+
+template<typename T, typename... Args>
+std::unique_ptr<minifi::core::Processor> make_custom_c_processor(minifi::core::ProcessorMetadata metadata,
+    Args&&... args) {  // NOLINT(cppcoreguidelines-missing-std-forward)
+  std::string type;
+  std::unique_ptr<minifi::core::ProcessorApi> processor_impl;
+  minifi::api::core::useProcessorClassDefinition<T>([&](const minifi_processor_definition& definition) {
+    minifi::utils::useCProcessorClassDescription(definition, [&](const auto& description, auto c_description) {
+      type = description.short_name_;
+      processor_impl = std::make_unique<minifi::utils::CProcessor>(std::move(c_description), metadata, new T(metadata, std::forward<Args>(args)...));
+    });
+  });
+  return std::make_unique<minifi::core::Processor>(std::move(type), metadata.name, metadata.uuid, std::move(processor_impl));
+}
+
+template<typename T, typename... Args>
+std::shared_ptr<minifi::core::controller::ControllerService> make_custom_c_controller_service(minifi::core::ControllerServiceMetadata metadata,
+    Args&&... args) {  // NOLINT(cppcoreguidelines-missing-std-forward)
+  std::unique_ptr<minifi::core::controller::ControllerServiceApi> controller_service_impl;
+  minifi::api::core::useControllerServiceClassDefinition<T>([&](const minifi_controller_service_definition& definition) {
+    minifi::utils::useCControllerServiceClassDescription("test_bundle", "test_group", definition, [&](const auto&, auto c_description) {
+      controller_service_impl = std::make_unique<minifi::utils::CControllerService>(std::move(c_description),
+          metadata,
+          new T(metadata, std::forward<Args>(args)...));
+    });
+  });
+  return std::make_shared<minifi::core::controller::ControllerService>(metadata.name, metadata.uuid, std::move(controller_service_impl));
+}
+}  // namespace org::apache::nifi::minifi::test::utils

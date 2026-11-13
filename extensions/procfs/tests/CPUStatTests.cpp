@@ -1,0 +1,88 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+#include "unit/Catch.h"
+#include "catch2/catch_approx.hpp"
+#include "ProcFs.h"
+#include "MockProcFs.h"
+
+#include "rapidjson/stream.h"
+
+namespace org::apache::nifi::minifi::extensions::procfs::tests {
+
+void cpu_stat_period_total_should_be_one(const CpuStatData& cpu_stat) {
+  // according to the comment of getTotal, User and Nice already includes VirtAll (Guest + GuestNice), so adding them again would push us above 1
+  const auto sum_of_parts = cpu_stat.getUser()
+      + cpu_stat.getNice()
+      + cpu_stat.getSystem()
+      + cpu_stat.getIdle()
+      + cpu_stat.getIoWait()
+      + cpu_stat.getIrq()
+      + cpu_stat.getSoftIrq()
+      + cpu_stat.getSteal();
+  REQUIRE(sum_of_parts == cpu_stat.getTotal());
+}
+
+TEST_CASE("ProcFSTest stat test with mock", "[procfsstatmockabsolutetest]") {
+  ProcFs proc_fs_t0 = mock_proc_fs_t0();
+  auto cpu_stats_t0 = proc_fs_t0.getCpuStats();
+  REQUIRE(cpu_stats_t0.size() == 13);
+  for (const auto& [cpu_name, cpu_stat] : cpu_stats_t0) {
+    cpu_stat_period_total_should_be_one(cpu_stat);
+  }
+
+  REQUIRE(cpu_stats_t0[4].first == "cpu3");
+  CHECK(cpu_stats_t0[4].second.getUser() == SystemClockDuration(1299551));
+  CHECK(cpu_stats_t0[4].second.getNice() == SystemClockDuration(732));
+  CHECK(cpu_stats_t0[4].second.getSystem() == SystemClockDuration(316295));
+  CHECK(cpu_stats_t0[4].second.getIdle() == SystemClockDuration(4498383));
+  CHECK(cpu_stats_t0[4].second.getIoWait() == SystemClockDuration(1428));
+  CHECK(cpu_stats_t0[4].second.getIrq() == SystemClockDuration(22491));
+  CHECK(cpu_stats_t0[4].second.getSoftIrq() == SystemClockDuration(7022));
+  CHECK(cpu_stats_t0[4].second.getSteal() == SystemClockDuration(0));
+  CHECK(cpu_stats_t0[4].second.getGuest() == SystemClockDuration(0));
+  CHECK(cpu_stats_t0[4].second.getGuestNice() == SystemClockDuration(0));
+
+  ProcFs proc_fs_t1 = mock_proc_fs_t1();
+  auto cpu_stats_t1 = proc_fs_t1.getCpuStats();
+  REQUIRE(cpu_stats_t1.size() == 13);
+  for (const auto& [cpu_name, cpu_stat] : cpu_stats_t1) {
+    cpu_stat_period_total_should_be_one(cpu_stat);
+  }
+
+  for (size_t i = 0; i < cpu_stats_t1.size(); ++i) {
+    const auto& [cpu_name_t0, cpu_stat_t0] = cpu_stats_t0[i];
+    const auto& [cpu_name_t1, cpu_stat_t1] = cpu_stats_t1[i];
+    REQUIRE(cpu_name_t0 == cpu_name_t1);
+    REQUIRE(cpu_stat_t1 > cpu_stat_t0);
+    auto cpu_stat_diff = cpu_stat_t1 - cpu_stat_t0;
+    cpu_stat_period_total_should_be_one(cpu_stat_diff);
+  }
+}
+
+TEST_CASE("ProcFSTest stat test ", "[procfsstatmockabsolutetest]") {
+  ProcFs proc_fs;
+  auto cpu_stats_t0 = proc_fs.getCpuStats();
+  for (const auto& [cpu_name, cpu_stat] : cpu_stats_t0) {
+    cpu_stat_period_total_should_be_one(cpu_stat);
+  }
+  std::this_thread::sleep_for(100ms);
+  auto cpu_stats_t1 = proc_fs.getCpuStats();
+  for (const auto& [cpu_name, cpu_stat] : cpu_stats_t1) {
+    cpu_stat_period_total_should_be_one(cpu_stat);
+  }
+
+  REQUIRE(cpu_stats_t0.size() == cpu_stats_t1.size());
+
+  for (size_t i = 0; i < cpu_stats_t1.size(); ++i) {
+    const auto& [cpu_name_t0, cpu_stat_t0] = cpu_stats_t0[i];
+    const auto& [cpu_name_t1, cpu_stat_t1] = cpu_stats_t1[i];
+    REQUIRE(cpu_name_t0 == cpu_name_t1);
+    REQUIRE(cpu_stat_t1 > cpu_stat_t0);
+    auto cpu_stat_diff = cpu_stat_t1 - cpu_stat_t0;
+    cpu_stat_period_total_should_be_one(cpu_stat_diff);
+  }
+}
+
+}  // namespace org::apache::nifi::minifi::extensions::procfs::tests

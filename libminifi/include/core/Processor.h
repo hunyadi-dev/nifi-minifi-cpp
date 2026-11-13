@@ -1,324 +1,170 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
-#ifndef LIBMINIFI_INCLUDE_CORE_PROCESSOR_H_
-#define LIBMINIFI_INCLUDE_CORE_PROCESSOR_H_
-
-#include <utils/Id.h>
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
 
 #include <algorithm>
 #include <atomic>
 #include <chrono>
 #include <condition_variable>
 #include <functional>
-#include <map>
 #include <memory>
 #include <mutex>
-#include <queue>
-#include <set>
-#include <stack>
 #include <string>
-#include <vector>
+#include <string_view>
 #include <unordered_set>
 #include <unordered_map>
+#include <utility>
+#include <vector>
 
-#include "ConfigurableComponent.h"
-#include "Connectable.h"
-#include "Connection.h"
-#include "Core.h"
-#include "core/Annotation.h"
-#include "io/StreamFactory.h"
-#include "ProcessContext.h"
-#include "ProcessSession.h"
-#include "ProcessSessionFactory.h"
-#include "Property.h"
-#include "Relationship.h"
-#include "Scheduling.h"
-#include "utils/TimeUtil.h"
+#include "core/ConfigurableComponentImpl.h"
+#include "core/Connectable.h"
+#include "minifi-cpp/core/Property.h"
+#include "core/Core.h"
+#include "minifi-cpp/core/Annotation.h"
+#include "minifi-cpp/core/DynamicPropertyDefinition.h"
+#include "minifi-cpp/core/Scheduling.h"
+#include "minifi-cpp/core/state/nodes/MetricsBase.h"
+#include "core/ProcessorMetrics.h"
+#include "minifi-cpp/utils/gsl.h"
+#include "utils/Id.h"
+#include "minifi-cpp/core/OutputAttributeDefinition.h"
+#include "Processor.h"
+#include "minifi-cpp/core/ProcessorApi.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
+namespace org::apache::nifi::minifi {
+
+class Connection;
+
 namespace core {
 
-// Minimum scheduling period in Nano Second
-#define MINIMUM_SCHEDULING_NANOS 30000
+class ProcessContext;
+class ProcessSession;
+class ProcessSessionFactory;
 
-// Default penalization period in second
-
-#define BUILDING_DLL 1
-// Processor Class
-class Processor : public Connectable, public ConfigurableComponent, public std::enable_shared_from_this<Processor> {
+class Processor : public ConnectableImpl, public ConfigurableComponentImpl, public state::response::ResponseNodeSource {
  public:
-  Processor(const std::string& name, const utils::Identifier& uuid);
-  explicit Processor(const std::string& name);
-  virtual ~Processor() {
-    notifyStop();
-  }
+  Processor(std::string type, std::string_view name, const utils::Identifier& uuid, std::unique_ptr<ProcessorApi> impl);
 
-  bool isRunning() override;
-  // Set Processor Scheduled State
+  Processor(const Processor& parent) = delete;
+  Processor& operator=(const Processor& parent) = delete;
+
+  bool isRunning() const override;
+
+  ~Processor() override;
+
   void setScheduledState(ScheduledState state);
-  // Get Processor Scheduled State
-  ScheduledState getScheduledState() const {
-    return state_;
-  }
-  // Set Processor Scheduling Strategy
-  void setSchedulingStrategy(SchedulingStrategy strategy) {
-    strategy_ = strategy;
-  }
-  // Get Processor Scheduling Strategy
-  SchedulingStrategy getSchedulingStrategy() const {
-    return strategy_;
-  }
-  // Set Processor Loss Tolerant
-  void setlossTolerant(bool lossTolerant) {
-    loss_tolerant_ = lossTolerant;
-  }
-  // Get Processor Loss Tolerant
-  bool getlossTolerant() const {
-    return loss_tolerant_;
-  }
-  // Set Processor Scheduling Period in Nano Second
-  void setSchedulingPeriodNano(uint64_t period) {
-    uint64_t minPeriod = MINIMUM_SCHEDULING_NANOS;
-    // std::max has some variances on c++11-c++14 and then c++14 onward.
-    // to avoid macro conditional checks we can use this simple conditional expr.
-  scheduling_period_nano_ = period > minPeriod ? period : minPeriod;
-  }
-  // Get Processor Scheduling Period in Nano Second
-  uint64_t getSchedulingPeriodNano() const {
-    return scheduling_period_nano_;
-  }
-
-  /**
-   * Sets the cron period
-   * @param period cron period.
-   */
-  void setCronPeriod(const std::string &period) {
-    cron_period_ = period;
-  }
-
-  /**
-   * Returns the cron period
-   * @return cron period
-   */
-  const std::string getCronPeriod() const {
-    return cron_period_;
-  }
-
-  // Set Processor Run Duration in Nano Second
-  void setRunDurationNano(uint64_t period) {
-    run_duration_nano_ = period;
-  }
-  // Get Processor Run Duration in Nano Second
-  uint64_t getRunDurationNano() const {
-    return (run_duration_nano_);
-  }
-  // Set Processor yield period in MilliSecond
-  void setYieldPeriodMsec(uint64_t period) {
-    yield_period_msec_ = period;
-  }
-  // Get Processor yield period in MilliSecond
-  uint64_t getYieldPeriodMsec() const {
-    return (yield_period_msec_);
-  }
-
-  void setPenalizationPeriod(std::chrono::milliseconds period) {
-    penalization_period_ = period;
-  }
-
-  // Set Processor Maximum Concurrent Tasks
-  void setMaxConcurrentTasks(uint8_t tasks) {
-    max_concurrent_tasks_ = tasks;
-  }
-  // Get Processor Maximum Concurrent Tasks
-  uint8_t getMaxConcurrentTasks() const {
-    return (max_concurrent_tasks_);
-  }
-  // Set Trigger when empty
-  void setTriggerWhenEmpty(bool value) {
-    _triggerWhenEmpty = value;
-  }
-  // Get Trigger when empty
-  bool getTriggerWhenEmpty() const {
-    return (_triggerWhenEmpty);
-  }
-  // Get Active Task Counts
-  uint8_t getActiveTasks() const {
-    return (active_tasks_);
-  }
-  // Increment Active Task Counts
-  void incrementActiveTasks() {
-    active_tasks_++;
-  }
-  // decrement Active Task Counts
-  void decrementActiveTask() {
-    if (active_tasks_ > 0)
-      active_tasks_--;
-  }
-  void clearActiveTask() {
-    active_tasks_ = 0;
-  }
-  // Yield based on the yield period
-  void yield() override {
-    yield_expiration_ = (utils::timeutils::getTimeMillis() + yield_period_msec_);
-  }
-  // Yield based on the input time
-  void yield(uint64_t time) {
-    yield_expiration_ = (utils::timeutils::getTimeMillis() + time);
-  }
-  // whether need be to yield
-  virtual bool isYield() {
-    if (yield_expiration_ > 0)
-      return (yield_expiration_ >= utils::timeutils::getTimeMillis());
-    else
-      return false;
-  }
-  // clear yield expiration
-  void clearYield() {
-    yield_expiration_ = 0;
-  }
-  // get yield time
-  uint64_t getYieldTime() const {
-    uint64_t curTime = utils::timeutils::getTimeMillis();
-    if (yield_expiration_ > curTime)
-      return (yield_expiration_ - curTime);
-    else
-      return 0;
-  }
-  // Whether flow file queue full in any of the outgoin connection
-  bool flowFilesOutGoingFull() const;
-
-  bool addConnection(std::shared_ptr<Connectable> connection);
-  void removeConnection(std::shared_ptr<Connectable> connection);
-
-  virtual void onTrigger(const std::shared_ptr<ProcessContext> &context, const std::shared_ptr<ProcessSessionFactory> &sessionFactory);
-  void onTrigger(ProcessContext *context, ProcessSessionFactory *sessionFactory);
-
-  bool canEdit() override {
-    return !isRunning();
-  }
-
- public:
-  // OnTrigger method, implemented by NiFi Processor Designer
-  virtual void onTrigger(const std::shared_ptr<ProcessContext> &context, const std::shared_ptr<ProcessSession> &session) {
-    onTrigger(context.get(), session.get());
-  }
-  virtual void onTrigger(ProcessContext* /*context*/, ProcessSession* /*session*/) {
-  }
-  // Initialize, overridden by NiFi Process Designer
-  void initialize() override {
-  }
-  // Scheduled event hook, overridden by NiFi Process Designer
-  virtual void onSchedule(const std::shared_ptr<ProcessContext> &context, const std::shared_ptr<ProcessSessionFactory> &sessionFactory) {
-    onSchedule(context.get(), sessionFactory.get());
-  }
-  virtual void onSchedule(ProcessContext* /*context*/, ProcessSessionFactory* /*sessionFactory*/) {
-  }
-
-  // Hook executed when onSchedule fails (throws). Configuration should be reset in this
-  virtual void onUnSchedule() {
-    notifyStop();
-  }
-
-  // Check all incoming connections for work
+  ScheduledState getScheduledState() const;
+  void setSchedulingStrategy(SchedulingStrategy strategy);
+  SchedulingStrategy getSchedulingStrategy() const;
+  void setSchedulingPeriod(std::chrono::steady_clock::duration period);
+  std::chrono::steady_clock::duration getSchedulingPeriod() const;
+  void setCronPeriod(const std::string &period);
+  std::string getCronPeriod() const;
+  void setRunDurationNano(std::chrono::steady_clock::duration period);
+  std::chrono::steady_clock::duration getRunDurationNano() const;
+  void setYieldPeriodMsec(std::chrono::milliseconds period);
+  std::chrono::steady_clock::duration getYieldPeriod() const;
+  void setPenalizationPeriod(std::chrono::milliseconds period);
+  void setMaxConcurrentTasks(uint8_t tasks) override;
+  bool isSingleThreaded() const;
+  std::string getProcessorType() const;
+  void setTriggerWhenEmpty(bool trigger_when_empty);
+  bool getTriggerWhenEmpty() const;
+  uint8_t getActiveTasks() const;
+  void incrementActiveTasks();
+  void decrementActiveTask();
+  void clearActiveTask();
+  std::string getProcessGroupUUIDStr() const;
+  void setProcessGroupUUIDStr(const std::string &uuid);
+  void yield() override;
+  void yield(std::chrono::steady_clock::duration delta_time);
+  bool isYield() const;
+  void clearYield();
+  std::chrono::steady_clock::time_point getYieldExpirationTime() const;
+  std::chrono::steady_clock::duration getYieldTime() const;
+  bool addConnection(Connectable* connection);
+  bool canEdit() override;
+  void initialize() override;
+  void triggerAndCommit(const std::shared_ptr<ProcessContext>& context, const std::shared_ptr<ProcessSessionFactory>& session_factory);
+  void trigger(const std::shared_ptr<ProcessContext>& context, const std::shared_ptr<ProcessSession>& process_session);
+  void onTrigger(ProcessContext& context, ProcessSession& session);
+  void onSchedule(ProcessContext& context, ProcessSessionFactory& session_factory);
+  void onUnSchedule();
   bool isWorkAvailable() override;
-
-  void setStreamFactory(std::shared_ptr<minifi::io::StreamFactory> stream_factory) {
-    stream_factory_ = stream_factory;
-  }
-
-  bool supportsDynamicProperties() override {
-    return false;
-  }
-
   bool isThrottledByBackpressure() const;
-
-  std::shared_ptr<Connectable> pickIncomingConnection() override;
-
+  Connectable* pickIncomingConnection() override;
   void validateAnnotations() const;
+  annotation::Input getInputRequirement() const;
+  [[nodiscard]] bool supportsDynamicProperties() const override;
+  [[nodiscard]] bool supportsDynamicRelationships() const override;
+  state::response::SharedResponseNode getResponseNode() override;
+  gsl::not_null<std::shared_ptr<ProcessorMetrics>> getMetrics() const;
+  std::shared_ptr<ProcessorMetricsExtension> getMetricsExtension() const;
+  std::string getProcessGroupName() const;
+  void setProcessGroupName(const std::string &name);
+  std::string getProcessGroupPath() const;
+  void setProcessGroupPath(const std::string &path);
+  logging::LOG_LEVEL getLogBulletinLevel() const;
+  void setLogBulletinLevel(logging::LOG_LEVEL level);
+  void setLoggerCallback(const std::function<void(logging::LOG_LEVEL level, const std::string& message)>& callback);
+  void restore(const std::shared_ptr<FlowFile>& file) override;
 
-  std::string getInputRequirementAsString() const;
+  static constexpr auto DynamicProperties = std::array<DynamicPropertyDefinition, 0>{};
+
+  static constexpr auto OutputAttributes = std::array<OutputAttributeReference, 0>{};
+
+  ProcessorApi& getImpl() const {
+    gsl_Assert(impl_);
+    return *impl_;
+  }
+
+  template<typename T>
+  T& getImpl() const {
+    auto* res = dynamic_cast<T*>(&getImpl());
+    gsl_Assert(res);
+    return *res;
+  }
 
  protected:
-  virtual void notifyStop() {
-  }
-
-  std::shared_ptr<minifi::io::StreamFactory> stream_factory_;
-
-  // Processor state
+  std::string type_;
   std::atomic<ScheduledState> state_;
 
-  // lossTolerant
-  std::atomic<bool> loss_tolerant_;
-  // SchedulePeriod in Nano Seconds
-  std::atomic<uint64_t> scheduling_period_nano_;
-  // Run Duration in Nano Seconds
-  std::atomic<uint64_t> run_duration_nano_;
-  // Yield Period in Milliseconds
-  std::atomic<uint64_t> yield_period_msec_;
+  std::atomic<std::chrono::steady_clock::duration> scheduling_period_;
+  std::atomic<std::chrono::steady_clock::duration> run_duration_;
+  std::atomic<std::chrono::steady_clock::duration> yield_period_;
 
-  // Active Tasks
   std::atomic<uint8_t> active_tasks_;
-  // Trigger the Processor even if the incoming connection is empty
-  std::atomic<bool> _triggerWhenEmpty;
+  std::atomic<bool> trigger_when_empty_;
 
   std::string cron_period_;
 
+  std::shared_ptr<logging::Logger> logger_;
+  logging::LOG_LEVEL log_bulletin_level_ = logging::LOG_LEVEL::warn;
+
  private:
-  // Mutex for protection
   mutable std::mutex mutex_;
-  // Yield Expiration
-  std::atomic<uint64_t> yield_expiration_;
-
-  // Prevent default copy constructor and assignment operation
-  // Only support pass by reference or pointer
-  Processor(const Processor &parent);
-  Processor &operator=(const Processor &parent);
-
- private:
-  static std::mutex& getGraphMutex() {
-    static std::mutex mutex{};
-    return mutex;
-  }
+  std::atomic<std::chrono::steady_clock::time_point> yield_expiration_{};
 
   // must hold the graphMutex
   void updateReachability(const std::lock_guard<std::mutex>& graph_lock, bool force = false);
 
-  static bool partOfCycle(const std::shared_ptr<Connection>& conn);
+  const std::unordered_map<Connection*, std::unordered_set<Processor*>>& reachable_processors() const;
 
-  virtual annotation::Input getInputRequirement() const {
-      // default input requirement
-      return annotation::Input::INPUT_ALLOWED;
-  }
+  static bool partOfCycle(Connection* conn);
 
   // an outgoing connection allows us to reach these nodes
-  std::unordered_map<std::shared_ptr<Connection>, std::unordered_set<std::shared_ptr<const Processor>>> reachable_processors_;
+  std::unordered_map<Connection*, std::unordered_set<Processor*>> reachable_processors_;
 
-  std::shared_ptr<logging::Logger> logger_;
+  std::string process_group_uuid_;
+  std::string process_group_name_;
+  std::string process_group_path_;
+
+  gsl::not_null<std::shared_ptr<ProcessorMetrics>> metrics_;
+
+ protected:
+  std::unique_ptr<ProcessorApi> impl_;
 };
 
 }  // namespace core
-/* namespace core */
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
-
-#endif  // LIBMINIFI_INCLUDE_CORE_PROCESSOR_H_
+}  // namespace org::apache::nifi::minifi

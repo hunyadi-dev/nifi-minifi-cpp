@@ -1,0 +1,14 @@
+/**
+ * SPDX-License-Identifier: Apache-2.0
+ * SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+ * SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+ */
+
+/*
+ * core-minifi exports the symbols of its statically linked dependencies (e.g. OpenSSL), which extensions rely on.
+ * Tagging them with a minifi specific version prevents libraries loaded later (e.g. python's _hashlib referencing
+ * EVP_*@OPENSSL_3.0.0) from binding to these copies instead of their own dependencies (e.g. the system libcrypto).
+ */
+MINIFI_CORE {
+  global: *;
+};

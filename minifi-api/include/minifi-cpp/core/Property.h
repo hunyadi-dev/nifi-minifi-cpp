@@ -1,0 +1,87 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include <algorithm>
+#include <memory>
+#include <string>
+#include <unordered_set>
+#include <utility>
+#include <vector>
+
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "minifi-cpp/core/PropertyValidator.h"
+#include "range/v3/range/conversion.hpp"
+#include "range/v3/view/transform.hpp"
+#include "minifi-cpp/utils/gsl.h"
+
+namespace org::apache::nifi::minifi::core {
+
+class Property final {
+ public:
+  Property(std::string name, std::string description, const std::string &value, bool is_required);
+
+  Property(std::string name, std::string description, const std::string &value);
+
+  Property(std::string name, std::string description);
+
+  Property(Property &&other) = default;
+
+  Property(const Property &other) = default;
+
+  Property();
+
+  Property(const PropertyReference &);
+
+  ~Property() = default;
+
+  void setTransient() { is_transient_ = true; }
+
+  bool isTransient() const { return is_transient_; }
+  std::vector<std::string> getAllowedValues() const { return allowed_values_; }
+  void setAllowedValues(std::vector<std::string> allowed_values) { allowed_values_ = std::move(allowed_values); }
+  std::optional<std::string> getDefaultValue() const { return default_value_; }
+  void clearDefaultValue() { default_value_ = std::nullopt; }
+  std::string getName() const;
+  std::string getDisplayName() const;
+  std::vector<std::string> getAllowedTypes() const;
+  std::string getDescription() const;
+  const PropertyValidator& getValidator() const;
+  [[nodiscard]] std::expected<std::span<const std::string>, std::error_code> getAllValues() const;
+  [[nodiscard]] std::expected<std::string_view, std::error_code> getValue() const;
+  std::expected<void, std::error_code> setValue(std::string value);
+  std::expected<void, std::error_code> appendValue(std::string value);
+  void clearValues();
+  bool getRequired() const;
+  bool isSensitive() const;
+  bool supportsExpressionLanguage() const;
+  std::vector<std::string> getValues();
+
+  void setSupportsExpressionLanguage(bool supportEl);
+
+  void addValue(const std::string &value);
+  Property &operator=(const Property &other) = default;
+  Property &operator=(Property &&other) = default;
+  // Compare
+  bool operator<(const Property &right) const;
+
+ protected:
+  std::string name_;
+  std::string display_name_;
+  std::string description_;
+  bool is_required_;
+  bool is_sensitive_ = false;
+  bool is_collection_;
+
+  std::optional<std::string> default_value_ = std::nullopt;
+  std::vector<std::string> values_{};
+  std::vector<std::string> allowed_values_{};
+  gsl::not_null<const PropertyValidator *> validator_;
+
+  std::vector<std::string> types_;
+  bool supports_el_;
+  bool is_transient_;
+};
+
+}  // namespace org::apache::nifi::minifi::core

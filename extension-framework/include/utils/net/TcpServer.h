@@ -1,0 +1,41 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include <utility>
+#include <memory>
+
+#include "Server.h"
+#include "Ssl.h"
+
+namespace org::apache::nifi::minifi::utils::net {
+
+class TcpServer : public Server {
+ public:
+  TcpServer(std::optional<size_t> max_queue_size_,
+      uint16_t port,
+      std::shared_ptr<core::logging::Logger> logger,
+      std::optional<SslServerOptions> ssl_data,
+      bool consume_delimiter,
+      std::string delimiter)
+      : Server(max_queue_size_, port, std::move(logger)),
+        consume_delimiter_(consume_delimiter),
+        delimiter_(std::move(delimiter)),
+        ssl_data_(std::move(ssl_data)) {
+  }
+
+ protected:
+  asio::awaitable<void> doReceive() override;
+
+  asio::awaitable<void> insecureSession(asio::ip::tcp::socket socket, asio::ip::address remote_address, asio::ip::port_type remote_port, asio::ip::port_type local_port);
+  asio::awaitable<void> secureSession(asio::ip::tcp::socket socket, asio::ip::address remote_address, asio::ip::port_type remote_port, asio::ip::port_type local_port);
+
+  asio::awaitable<void> readLoop(auto& socket, asio::ip::address remote_address, asio::ip::port_type remote_port, asio::ip::port_type local_port);
+
+  bool consume_delimiter_;
+  const std::string delimiter_;
+  std::optional<SslServerOptions> ssl_data_;
+};
+
+}  // namespace org::apache::nifi::minifi::utils::net

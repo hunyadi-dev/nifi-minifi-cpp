@@ -1,0 +1,15 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+sources:
+  "1.0.2":
+    url:
+      - "https://git.openldap.org/openldap/openldap/-/archive/LMDB_1.0.2/openldap-LMDB_1.0.2.tar.gz"
+      - "https://github.com/openldap/openldap/archive/refs/tags/LMDB_1.0.2.tar.gz"
+      - "https://gitlab.com/openldap/openldap/-/archive/LMDB_1.0.2/openldap-LMDB_1.0.2.tar.gz"
+    sha256: "38a029bb3e29820380e18a2dfdbe906bbc5b322132c63274c5e4ed7833821752"
+patches:
+  "1.0.2":
+    - patch_file: "patches/fix-windows-symbols.patch"
+    - patch_file: "patches/add-cmake-file.patch"

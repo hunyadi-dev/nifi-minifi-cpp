@@ -1,62 +1,61 @@
-/**
- * @file SiteToSiteProvenanceReportingTask.cpp
- * SiteToSiteProvenanceReportingTask class implementation
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#include "core/reporting/SiteToSiteProvenanceReportingTask.h"
 
-
-#include <vector>
-#include <queue>
-#include <map>
-#include <set>
-#include <string>
-#include <memory>
-#include <sstream>
 #include <functional>
 #include <iostream>
+#include <map>
+#include <memory>
+#include <queue>
+#include <set>
+#include <sstream>
+#include <string>
 #include <utility>
+#include <vector>
 
-#include "rapidjson/document.h"
-#include "rapidjson/writer.h"
-#include "rapidjson/stringbuffer.h"
-#include "rapidjson/prettywriter.h"
-
-#include "core/Repository.h"
-#include "core/reporting/SiteToSiteProvenanceReportingTask.h"
-#include "../include/io/StreamFactory.h"
-#include "io/ClientSocket.h"
-#include "utils/TimeUtil.h"
-#include "core/ProcessContext.h"
-#include "core/ProcessSession.h"
-#include "provenance/Provenance.h"
 #include "FlowController.h"
-#include "utils/gsl.h"
+#include "core/ProcessSession.h"
+#include "minifi-cpp/core/ProcessContext.h"
+#include "minifi-cpp/core/Repository.h"
+#include "minifi-cpp/provenance/Provenance.h"
+#include "minifi-cpp/utils/gsl.h"
+#include "rapidjson/document.h"
+#include "rapidjson/prettywriter.h"
+#include "rapidjson/stringbuffer.h"
+#include "rapidjson/writer.h"
+#include "utils/TimeUtil.h"
+#include "utils/net/NetworkInterfaceInfo.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace core {
-namespace reporting {
+namespace org::apache::nifi::minifi::core::reporting {
 
 const char *SiteToSiteProvenanceReportingTask::ProvenanceAppStr = "MiNiFi Flow";
 
+namespace {
+
+std::unique_ptr<provenance::ProvenanceRepository::Cursor> getCursor(StateManager& state_manager, provenance::ProvenanceRepository& provenance_repository, logging::Logger& logger) {
+  std::string cursor_str;
+  {
+    std::unordered_map<std::string, std::string> state_map;
+    if (state_manager.get(state_map)) {
+      if (auto it = state_map.find("cursor"); it != state_map.end()) {
+        cursor_str = it->second;
+      }
+    }
+  }
+  std::vector<std::shared_ptr<provenance::ProvenanceEventRecord>> records;
+  auto cursor = provenance_repository.cursorFromString(cursor_str);
+  if (!cursor_str.empty() && !cursor) {
+    logger.log_error("Failed to parse cursor, falling back to enumerating from the beginning");
+    cursor = provenance_repository.cursorFromString("");
+  }
+  return cursor;
+}
+
+}  // namespace
+
 void SiteToSiteProvenanceReportingTask::initialize() {
-  RemoteProcessorGroupPort::initialize();
+  RemoteProcessGroupPort::initialize();
 }
 
 void setJsonStr(const std::string& key, const std::string& value, rapidjson::Value& parent, rapidjson::Document::AllocatorType& alloc) { // NOLINT
@@ -97,12 +96,11 @@ void appendJsonStr(const utils::SmallString<N>& value, rapidjson::Value& parent,
   parent.PushBack(valueVal, alloc);
 }
 
-void SiteToSiteProvenanceReportingTask::getJsonReport(const std::shared_ptr<core::ProcessContext>& /*context*/, const std::shared_ptr<core::ProcessSession>& /*session*/,
-                                                      std::vector<std::shared_ptr<core::SerializableComponent>> &records, std::string &report) {
+std::string SiteToSiteProvenanceReportingTask::getJsonReport(core::ProcessContext&, core::ProcessSession&, const std::vector<std::shared_ptr<provenance::ProvenanceEventRecord>> &records) {
   rapidjson::Document array(rapidjson::kArrayType);
   rapidjson::Document::AllocatorType &alloc = array.GetAllocator();
 
-  for (auto sercomp : records) {
+  for (const auto& sercomp : records) {
     std::shared_ptr<provenance::ProvenanceEventRecord> record = std::dynamic_pointer_cast<provenance::ProvenanceEventRecord>(sercomp);
     if (nullptr == record) {
       break;
@@ -113,13 +111,15 @@ void SiteToSiteProvenanceReportingTask::getJsonReport(const std::shared_ptr<core
     rapidjson::Value parentUuidJson(rapidjson::kArrayType);
     rapidjson::Value childUuidJson(rapidjson::kArrayType);
 
-    recordJson.AddMember("timestampMillis", record->getEventTime(), alloc);
-    recordJson.AddMember("durationMillis", record->getEventDuration(), alloc);
-    recordJson.AddMember("lineageStart", record->getlineageStartDate(), alloc);
+    recordJson.AddMember("timestampMillis", int64_t{std::chrono::duration_cast<std::chrono::milliseconds>(record->getEventTime().time_since_epoch()).count()}, alloc);
+    recordJson.AddMember("durationMillis", int64_t{record->getEventDuration().count()}, alloc);
+    recordJson.AddMember("lineageStart", int64_t{std::chrono::duration_cast<std::chrono::milliseconds>(record->getLineageStartDate().time_since_epoch()).count()}, alloc);
     recordJson.AddMember("entitySize", record->getFileSize(), alloc);
     recordJson.AddMember("entityOffset", record->getFileOffset(), alloc);
 
     recordJson.AddMember("entityType", "org.apache.nifi.flowfile.FlowFile", alloc);
+
+    recordJson.AddMember("eventOrdinal", record->getEventOrdinal(), alloc);
 
     recordJson.AddMember("eventId", getStringValue(record->getEventId().to_string(), alloc), alloc);
     recordJson.AddMember("eventType", getStringValue(provenance::ProvenanceEventRecord::ProvenanceEventTypeStr[record->getEventType()], alloc), alloc);
@@ -131,7 +131,7 @@ void SiteToSiteProvenanceReportingTask::getJsonReport(const std::shared_ptr<core
     recordJson.AddMember("remoteIdentifier", getStringValue(record->getSourceSystemFlowFileIdentifier(), alloc), alloc);
     recordJson.AddMember("alternateIdentifier", getStringValue(record->getAlternateIdentifierUri(), alloc), alloc);
 
-    for (auto attr : record->getAttributes()) {
+    for (const auto& attr : record->getAttributes()) {
       setJsonStr(attr.first, attr.second, updatedAttributesJson, alloc);
     }
     recordJson.AddMember("updatedAttributes", updatedAttributesJson, alloc);
@@ -157,54 +157,77 @@ void SiteToSiteProvenanceReportingTask::getJsonReport(const std::shared_ptr<core
   rapidjson::PrettyWriter<rapidjson::StringBuffer> writer(buffer);
   array.Accept(writer);
 
-  report = buffer.GetString();
+  return buffer.GetString();
 }
 
-void SiteToSiteProvenanceReportingTask::onSchedule(const std::shared_ptr<core::ProcessContext>& /*context*/, const std::shared_ptr<core::ProcessSessionFactory>& /*sessionFactory*/) {
+void SiteToSiteProvenanceReportingTask::onSchedule(core::ProcessContext& context, core::ProcessSessionFactory& session_factory) {
+  RemoteProcessGroupPort::onSchedule(context, session_factory);
+  context.setTriggerWhenEmpty(true);
 }
 
-void SiteToSiteProvenanceReportingTask::onTrigger(const std::shared_ptr<core::ProcessContext> &context, const std::shared_ptr<core::ProcessSession> &session) {
-  logger_->log_debug("SiteToSiteProvenanceReportingTask -- onTrigger");
-  std::vector<std::shared_ptr<core::SerializableComponent>> records;
-  logging::LOG_DEBUG(logger_) << "batch size " << batch_size_ << " records";
-  size_t deserialized = batch_size_;
-  std::shared_ptr<core::Repository> repo = context->getProvenanceRepository();
-  std::function<std::shared_ptr<core::SerializableComponent>()> constructor = []() {return std::make_shared<provenance::ProvenanceEventRecord>();};
-  if (!repo->DeSerialize(records, deserialized, constructor) && deserialized == 0) {
+void SiteToSiteProvenanceReportingTask::onTrigger(core::ProcessContext& context, core::ProcessSession& session) {
+  std::shared_ptr<provenance::ProvenanceRepository> repo = context.getProvenanceRepository();
+  if (!repo) {
+    throw minifi::Exception(ExceptionType::REPOSITORY_EXCEPTION, "Failed to retrieve provenance repository");
+  }
+  auto* state_manager = context.getStateManager();
+  if (!state_manager) {
+    logger_->log_error("Failed to get StateManager");
+    context.yield();
     return;
   }
-  logging::LOG_DEBUG(logger_) << "Captured " << deserialized << " records";
-  std::string jsonStr;
-  this->getJsonReport(context, session, records, jsonStr);
-  if (jsonStr.length() <= 0) {
+  auto cursor = getCursor(*state_manager, *repo, *logger_);
+  std::vector<std::shared_ptr<provenance::ProvenanceEventRecord>> records;
+  if (auto result = repo->getEvents(batch_size_, cursor.get())) {
+    records = std::move(result.value());
+  } else {
+    throw minifi::Exception(GENERAL_EXCEPTION, "Failed to retrieve records: " + result.error());
+  }
+  if (records.empty()) {
+    logger_->log_debug("No new provenance records");
+    return;
+  }
+  logger_->log_debug("Captured {} records", records.size());
+  std::string jsonStr = getJsonReport(context, session, records);
+  if (jsonStr.empty()) {
     return;
   }
 
-  auto protocol_ = getNextProtocol(true);
+  auto protocol_ = getNextProtocol();
 
   if (!protocol_) {
-    context->yield();
+    context.yield();
     return;
   }
 
   try {
     std::map<std::string, std::string> attributes;
-    if (!protocol_->transmitPayload(context, session, jsonStr, attributes)) {
-      context->yield();
+    if (!protocol_->transmitPayload(context, jsonStr, attributes)) {
+      context.yield();
+      return;
     }
   } catch (...) {
     // if transfer bytes failed, return instead of purge the provenance records
     return;
   }
 
-  // we transfer the record, purge the record from DB
-  repo->Delete(records);
-  returnProtocol(std::move(protocol_));
+  if (cursor) {
+    // no need to delete just update the state
+    std::unordered_map<std::string, std::string> state_map;
+    state_map["cursor"] = cursor->toString();
+    if (!state_manager->set(state_map)) {
+      logger_->log_error("Failed to update cursor state");
+    }
+  } else {
+    // we transfer the record, purge the record from DB
+    std::vector<std::shared_ptr<core::SerializableComponent>> entries;
+    entries.reserve(records.size());
+    for (const auto& record : records) {
+      entries.push_back(record);
+    }
+    repo->Delete(entries);
+  }
+  returnProtocol(context, std::move(protocol_));
 }
 
-} /* namespace reporting */
-} /* namespace core */
-} /* namespace minifi */
-} /* namespace nifi */
-} /* namespace apache */
-} /* namespace org */
+}  // namespace org::apache::nifi::minifi::core::reporting

@@ -1,0 +1,97 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include <string_view>
+
+#include "core/ClassName.h"
+#include "minifi-api.h"
+#include "minifi-cpp/core/Annotation.h"
+#include "minifi-cpp/core/PropertyDefinition.h"
+#include "minifi-cpp/utils/gsl.h"
+#include "utils/StringUtils.h"
+
+#ifdef WIN32
+  #define CEXTENSIONAPI extern "C" __declspec(dllexport)
+#else
+  #define CEXTENSIONAPI extern "C"
+#endif
+
+namespace org::apache::nifi::minifi::api::utils {
+
+inline minifi_string_view minifiStringView(const std::string_view str) {
+  return minifi_string_view{.data = str.data(), .length = str.length()};
+}
+
+inline std::string toString(const minifi_string_view sv) {
+  return {sv.data, sv.length};
+}
+
+inline std::string_view toStringView(const minifi_string_view sv) {
+  return {sv.data, sv.length};
+}
+
+template<typename T>
+std::string classNameWithDots() {
+  std::string class_name{minifi::core::className<T>()};
+  return minifi::utils::string::replaceAll(class_name, "::", ".");
+}
+
+minifi_validator toStandardPropertyValidator(const minifi::core::PropertyValidator* validator);
+
+inline minifi_input_requirement toInputRequirement(minifi::core::annotation::Input req) {
+  switch (req) {
+    case minifi::core::annotation::Input::INPUT_REQUIRED: return MINIFI_INPUT_REQUIRED;
+    case minifi::core::annotation::Input::INPUT_ALLOWED: return MINIFI_INPUT_ALLOWED;
+    case minifi::core::annotation::Input::INPUT_FORBIDDEN: return MINIFI_INPUT_FORBIDDEN;
+  }
+  gsl_FailFast();
+}
+
+inline std::vector<minifi_property_definition> toProperties(std::span<const minifi::core::PropertyReference> props, std::vector<std::vector<minifi_string_view>>& cache) {
+  std::vector<minifi_property_definition> properties;
+    for (auto& prop : props) {
+      std::vector<minifi_string_view> sv_cache;
+      const size_t allowed_values_begin = sv_cache.size();
+      for (auto& allowed_value : prop.allowed_values) {
+        sv_cache.emplace_back(minifiStringView(allowed_value));
+      }
+      const std::optional<size_t> allowed_types_begin = [&] () -> std::optional<size_t> {
+        if (prop.allowed_types.empty()) {
+          return std::nullopt;
+        }
+        gsl_Expects(prop.allowed_types.size() == 1);
+        sv_cache.emplace_back(minifiStringView(prop.allowed_types[0]));
+        return sv_cache.size() - 1;
+      }();
+      const std::optional<size_t> default_value_begin = [&] () -> std::optional<size_t> {
+        if (!prop.default_value) {
+          return std::nullopt;
+        }
+        sv_cache.emplace_back(minifiStringView(*prop.default_value));
+        return sv_cache.size() - 1;
+      }();
+      properties.push_back(minifi_property_definition{
+        .name = minifiStringView(prop.name),
+        .display_name = minifiStringView(prop.display_name),
+        .description = minifiStringView(prop.description),
+        .is_required = prop.is_required,
+        .is_sensitive = prop.is_sensitive,
+
+        .default_value = default_value_begin ? sv_cache.data() + default_value_begin.value() : nullptr,
+        .allowed_values_count = prop.allowed_values.size(),
+        .allowed_values_ptr = sv_cache.data() + allowed_values_begin,
+        .validator = toStandardPropertyValidator(prop.validator),
+
+        .allowed_type = allowed_types_begin ? sv_cache.data() + allowed_types_begin.value() : nullptr,
+        .supports_expression_language = prop.supports_expression_language
+      });
+      cache.emplace_back(std::move(sv_cache));
+    }
+  return properties;
+}
+
+std::error_code make_error_code(minifi_status status);
+
+}  // namespace org::apache::nifi::minifi::api::utils

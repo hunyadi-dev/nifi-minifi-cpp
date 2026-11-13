@@ -1,24 +1,8 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include <sys/stat.h>
-#undef NDEBUG
-#include <cassert>
 #include <cstring>
 #include <utility>
 #include <chrono>
@@ -29,46 +13,43 @@
 #include <type_traits>
 #include <vector>
 #include <iostream>
-#include <sstream>
 #include <algorithm>
 #include <functional>
 #include <iterator>
 #include <random>
 
-#include "TestBase.h"
-#include "utils/StringUtils.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
 #include "utils/file/FileUtils.h"
-#include "core/Core.h"
-#include "core/logging/Logger.h"
+#include "minifi-cpp/core/logging/Logger.h"
 #include "core/ProcessGroup.h"
-#include "core/yaml/YamlConfiguration.h"
 #include "FlowController.h"
-#include "properties/Configure.h"
 #include "unit/ProvenanceTestHelper.h"
-#include "io/StreamFactory.h"
 #include "processors/FetchSFTP.h"
 #include "processors/ListSFTP.h"
 #include "processors/GenerateFlowFile.h"
 #include "processors/LogAttribute.h"
-#include "processors/UpdateAttribute.h"
 #include "processors/PutFile.h"
 #include "tools/SFTPTestServer.h"
+
+using namespace std::literals::chrono_literals;
 
 class ListThenFetchSFTPTestsFixture {
  public:
   ListThenFetchSFTPTestsFixture() {
+    LogTestController::getInstance().reset();
     LogTestController::getInstance().setTrace<TestPlan>();
     LogTestController::getInstance().setDebug<minifi::FlowController>();
     LogTestController::getInstance().setDebug<minifi::SchedulingAgent>();
     LogTestController::getInstance().setDebug<minifi::core::ProcessGroup>();
     LogTestController::getInstance().setDebug<minifi::core::Processor>();
     LogTestController::getInstance().setTrace<minifi::core::ProcessSession>();
-    LogTestController::getInstance().setDebug<processors::GenerateFlowFile>();
+    LogTestController::getInstance().setDebug<minifi::processors::GenerateFlowFile>();
     LogTestController::getInstance().setTrace<minifi::utils::SFTPClient>();
-    LogTestController::getInstance().setTrace<processors::ListSFTP>();
-    LogTestController::getInstance().setTrace<processors::FetchSFTP>();
-    LogTestController::getInstance().setTrace<processors::PutFile>();
-    LogTestController::getInstance().setDebug<processors::LogAttribute>();
+    LogTestController::getInstance().setTrace<minifi::processors::ListSFTP>();
+    LogTestController::getInstance().setTrace<minifi::processors::FetchSFTP>();
+    LogTestController::getInstance().setTrace<minifi::processors::PutFile>();
+    LogTestController::getInstance().setDebug<minifi::processors::LogAttribute>();
     LogTestController::getInstance().setDebug<SFTPTestServer>();
 
     REQUIRE_FALSE(src_dir.empty());
@@ -76,7 +57,7 @@ class ListThenFetchSFTPTestsFixture {
     REQUIRE(plan);
 
     // Start SFTP server
-    sftp_server = std::unique_ptr<SFTPTestServer>(new SFTPTestServer(src_dir));
+    sftp_server = std::make_unique<SFTPTestServer>(src_dir);
     REQUIRE(true == sftp_server->start());
 
     // Build MiNiFi processing graph
@@ -101,7 +82,7 @@ class ListThenFetchSFTPTestsFixture {
          true);
 
     // Configure ListSFTP processor
-    plan->setProperty(list_sftp, "Listing Strategy", processors::ListSFTP::LISTING_STRATEGY_TRACKING_TIMESTAMPS);
+    plan->setProperty(list_sftp, "Listing Strategy", minifi::processors::ListSFTP::LISTING_STRATEGY_TRACKING_TIMESTAMPS);
     plan->setProperty(list_sftp, "Hostname", "localhost");
     plan->setProperty(list_sftp, "Port", std::to_string(sftp_server->getPort()));
     plan->setProperty(list_sftp, "Username", "nifiuser");
@@ -113,19 +94,19 @@ class ListThenFetchSFTPTestsFixture {
     plan->setProperty(list_sftp, "Connection Timeout", "30 sec");
     plan->setProperty(list_sftp, "Data Timeout", "30 sec");
     plan->setProperty(list_sftp, "Send Keep Alive On Timeout", "true");
-    plan->setProperty(list_sftp, "Target System Timestamp Precision", processors::ListSFTP::TARGET_SYSTEM_TIMESTAMP_PRECISION_AUTO_DETECT);
+    plan->setProperty(list_sftp, "Target System Timestamp Precision", minifi::processors::ListSFTP::TARGET_SYSTEM_TIMESTAMP_PRECISION_AUTO_DETECT);
     plan->setProperty(list_sftp, "Minimum File Age", "0 sec");
     plan->setProperty(list_sftp, "Minimum File Size", "0 B");
     plan->setProperty(list_sftp, "Target System Timestamp Precision", "Seconds");
     plan->setProperty(list_sftp, "Remote Path", "nifi_test/");
-    plan->setProperty(list_sftp, "State File", src_dir + "/state");
+    plan->setProperty(list_sftp, "State File", (src_dir / "state").string());
 
     // Configure FetchSFTP processor
     plan->setProperty(fetch_sftp, "Hostname", "localhost");
     plan->setProperty(fetch_sftp, "Port", std::to_string(sftp_server->getPort()));
     plan->setProperty(fetch_sftp, "Username", "nifiuser");
     plan->setProperty(fetch_sftp, "Password", "nifipassword");
-    plan->setProperty(fetch_sftp, "Completion Strategy", processors::FetchSFTP::COMPLETION_STRATEGY_NONE);
+    plan->setProperty(fetch_sftp, "Completion Strategy", minifi::processors::FetchSFTP::COMPLETION_STRATEGY_NONE);
     plan->setProperty(fetch_sftp, "Connection Timeout", "30 sec");
     plan->setProperty(fetch_sftp, "Data Timeout", "30 sec");
     plan->setProperty(fetch_sftp, "Strict Host Key Checking", "false");
@@ -137,40 +118,33 @@ class ListThenFetchSFTPTestsFixture {
     plan->setProperty(log_attribute, "FlowFiles To Log", "0");
 
     // Configure PutFile processor
-    plan->setProperty(put_file, "Directory", dst_dir + "/${path}");
-    plan->setProperty(put_file, "Conflict Resolution Strategy", processors::PutFile::CONFLICT_RESOLUTION_STRATEGY_FAIL);
+    plan->setProperty(put_file, "Directory", (dst_dir / "${path}").string());
+    plan->setProperty(put_file, "Conflict Resolution Strategy", magic_enum::enum_name(minifi::processors::PutFile::FileExistsResolutionStrategy::fail));
     plan->setProperty(put_file, "Create Missing Directories", "true");
   }
 
-  virtual ~ListThenFetchSFTPTestsFixture() {
-    LogTestController::getInstance().reset();
-  }
+  ListThenFetchSFTPTestsFixture(ListThenFetchSFTPTestsFixture&&) = delete;
+  ListThenFetchSFTPTestsFixture(const ListThenFetchSFTPTestsFixture&) = delete;
+  ListThenFetchSFTPTestsFixture& operator=(ListThenFetchSFTPTestsFixture&&) = delete;
+  ListThenFetchSFTPTestsFixture& operator=(const ListThenFetchSFTPTestsFixture&) = delete;
+
+  virtual ~ListThenFetchSFTPTestsFixture() = default;
 
   // Create source file
-  void createFile(const std::string& relative_path, const std::string& content, uint64_t modification_timestamp = 0U) {
+  void createFile(const std::string& relative_path, const std::string& content, const std::optional<std::chrono::file_clock::time_point>& modification_time) const {
     std::fstream file;
-    std::stringstream ss;
-    ss << src_dir << "/vfs/" << relative_path;
-    auto full_path = ss.str();
-    std::deque<std::string> parent_dirs;
-    std::string parent_dir = full_path;
-    while ((parent_dir = utils::file::FileUtils::get_parent_path(parent_dir)) != "") {
-      parent_dirs.push_front(parent_dir);
-    }
-    for (const auto& dir : parent_dirs) {
-      utils::file::FileUtils::create_dir(dir);
-    }
-    file.open(ss.str(), std::ios::out);
+    const auto full_path = src_dir / "vfs" / relative_path;
+    std::filesystem::create_directories(full_path.parent_path());
+    file.open(full_path, std::ios::out);
     file << content;
     file.close();
-    if (modification_timestamp != 0U) {
-      REQUIRE(true == utils::file::FileUtils::set_last_write_time(full_path, modification_timestamp));
+    if (modification_time.has_value()) {
+      REQUIRE(utils::file::set_last_write_time(full_path, modification_time.value()));
     }
   }
 
-  void createFileWithModificationTimeDiff(const std::string& relative_path, const std::string& content, int64_t modification_timediff = -300 /*5 minutes ago*/) {
-    time_t now = time(nullptr);
-    return createFile(relative_path, content, now + modification_timediff);
+  void createFileWithModificationTimeDiff(const std::string& relative_path, const std::string& content, std::chrono::seconds modification_timediff = -5min) const {
+    createFile(relative_path, content, std::chrono::file_clock::now() + modification_timediff);
   }
 
   enum TestWhere {
@@ -178,54 +152,32 @@ class ListThenFetchSFTPTestsFixture {
     IN_SOURCE
   };
 
-  void testFile(TestWhere where, const std::string& relative_path, const std::string& expected_content) {
-    std::stringstream resultFile;
-    if (where == IN_DESTINATION) {
-      resultFile << dst_dir << "/" << relative_path;
-    } else {
-      resultFile << src_dir << "/vfs/" << relative_path;
-#ifndef WIN32
-      /* Workaround for mina-sshd setting the read file's permissions to 0000 */
-      REQUIRE(0 == chmod(resultFile.str().c_str(), 0644));
-#endif
-    }
-    std::ifstream file(resultFile.str());
-    REQUIRE(true == file.good());
+  void testFile(TestWhere where, const std::filesystem::path& relative_path, std::string_view expected_content) const {
+    std::filesystem::path expected_path = where == IN_DESTINATION ? dst_dir / relative_path : src_dir / "vfs" / relative_path;
+    REQUIRE(std::filesystem::exists(expected_path));
+    std::filesystem::permissions(expected_path, static_cast<std::filesystem::perms>(0644));;
+
+    std::ifstream file(expected_path);
+    REQUIRE(file.good());
     std::stringstream content;
     std::vector<char> buffer(1024U);
     while (file) {
-      file.read(buffer.data(), buffer.size());
+      file.read(buffer.data(), gsl::narrow<std::streamsize>(buffer.size()));
       content << std::string(buffer.data(), file.gcount());
     }
-    REQUIRE(expected_content == content.str());
-  }
-
-  void testFileNotExists(TestWhere where, const std::string& relative_path) {
-    std::stringstream resultFile;
-    if (where == IN_DESTINATION) {
-      resultFile << dst_dir << "/" << relative_path;
-    } else {
-      resultFile << src_dir << "/vfs/" << relative_path;
-#ifndef WIN32
-      /* Workaround for mina-sshd setting the read file's permissions to 0000 */
-      REQUIRE(-1 == chmod(resultFile.str().c_str(), 0644));
-#endif
-    }
-    std::ifstream file(resultFile.str());
-    REQUIRE(false == file.is_open());
-    REQUIRE(false == file.good());
+    CHECK(expected_content == content.str());
   }
 
  protected:
   TestController testController;
-  std::string src_dir = testController.createTempDirectory();
-  std::string dst_dir = testController.createTempDirectory();
+  std::filesystem::path src_dir = testController.createTempDirectory();
+  std::filesystem::path dst_dir = testController.createTempDirectory();
   std::shared_ptr<TestPlan> plan = testController.createPlan();
   std::unique_ptr<SFTPTestServer> sftp_server;
-  std::shared_ptr<core::Processor> list_sftp;
-  std::shared_ptr<core::Processor> fetch_sftp;
-  std::shared_ptr<core::Processor> log_attribute;
-  std::shared_ptr<core::Processor> put_file;
+  core::Processor* list_sftp;
+  core::Processor* fetch_sftp;
+  core::Processor* log_attribute;
+  core::Processor* put_file;
 };
 
 TEST_CASE_METHOD(ListThenFetchSFTPTestsFixture, "ListSFTP then FetchSFTP one file", "[ListThenFetchSFTP][basic]") {

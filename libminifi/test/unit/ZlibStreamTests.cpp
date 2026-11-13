@@ -1,28 +1,16 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #include <utility>
 #include <string>
 #include <random>
 #include <algorithm>
-#include "../TestBase.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
 #include "io/ZlibStream.h"
-#include "utils/gsl.h"
+#include "minifi-cpp/utils/gsl.h"
 #include "utils/StringUtils.h"
+#include "utils/span.h"
 
 namespace io = org::apache::nifi::minifi::io;
 
@@ -64,17 +52,17 @@ TEST_CASE("gzip compression and decompression", "[basic]") {
   REQUIRE(0U < compressBuffer.size());
 
   if (compressBuffer.size() < 64U) {
-    std::cerr << utils::StringUtils::to_hex(compressBuffer.getBuffer(), compressBuffer.size()) << std::endl;
+    std::cerr << utils::string::to_hex(compressBuffer.getBuffer()) << std::endl;
   }
 
   /* Decompression */
   io::BufferStream decompressBuffer;
   io::ZlibDecompressStream decompressStream(gsl::make_not_null(&decompressBuffer));
 
-  decompressStream.write(compressBuffer.getBuffer(), compressBuffer.size());
+  decompressStream.write(compressBuffer.getBuffer());
 
   REQUIRE(decompressStream.isFinished());
-  REQUIRE(original == std::string(reinterpret_cast<const char*>(decompressBuffer.getBuffer()), decompressBuffer.size()));
+  REQUIRE(original == utils::span_to<std::string>(utils::as_span<const char>(decompressBuffer.getBuffer())));
 }
 
 TEST_CASE("gzip compression and decompression pipeline", "[basic]") {
@@ -113,5 +101,5 @@ TEST_CASE("gzip compression and decompression pipeline", "[basic]") {
   compressStream.close();
 
   REQUIRE(decompressStream.isFinished());
-  REQUIRE(original == std::string(reinterpret_cast<const char*>(output.getBuffer()), output.size()));
+  REQUIRE(original == utils::span_to<std::string>(utils::as_span<const char>(output.getBuffer())));
 }

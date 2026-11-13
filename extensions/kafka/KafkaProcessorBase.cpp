@@ -1,0 +1,68 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#include "KafkaProcessorBase.h"
+
+#include "api/utils/ProcessorConfigUtils.h"
+#include "rdkafka_utils.h"
+
+namespace org::apache::nifi::minifi::processors {
+
+KafkaProcessorBase::KafkaProcessorBase(core::ProcessorMetadata metadata) : ProcessorImpl(std::move(metadata)), kafka_opaque_(*logger_) {
+}
+
+std::optional<api::utils::net::SslData> KafkaProcessorBase::getSslData(api::core::ProcessContext& context) const {
+  return context.getSslData(SSLContextService).value_or(std::nullopt);
+}
+
+void KafkaProcessorBase::setKafkaAuthenticationParameters(api::core::ProcessContext& context, gsl::not_null<rd_kafka_conf_t*> config) {  // NOLINT(performance-unnecessary-value-param)
+  security_protocol_ = api::utils::parseEnumProperty<kafka::SecurityProtocolOption>(context, SecurityProtocol);
+  utils::setKafkaConfigurationField(*config, "security.protocol", std::string{magic_enum::enum_name(security_protocol_)});
+  logger_->log_debug("Kafka security.protocol [{}]", magic_enum::enum_name(security_protocol_));
+  if (security_protocol_ == kafka::SecurityProtocolOption::ssl || security_protocol_ == kafka::SecurityProtocolOption::sasl_ssl) {
+    // "probe" makes librdkafka look for the system CA certificates in the standard locations, regardless of how OpenSSL was built
+    std::string ca_location = "probe";
+    if (auto ssl_data = getSslData(context)) {
+      if (ssl_data->ca_loc.empty() && ssl_data->cert_loc.empty() && ssl_data->key_loc.empty() && ssl_data->key_pw.empty()) {
+        logger_->log_warn("Security protocol is set to {}, but no valid security parameters are set in the properties or in the SSL Context Service.",
+            magic_enum::enum_name(security_protocol_));
+      } else {
+        if (!ssl_data->ca_loc.empty()) {
+          ca_location = ssl_data->ca_loc.string();
+        }
+        utils::setKafkaConfigurationField(*config, "ssl.certificate.location", ssl_data->cert_loc.string());
+        logger_->log_debug("Kafka ssl.certificate.location [{}]", ssl_data->cert_loc);
+        utils::setKafkaConfigurationField(*config, "ssl.key.location", ssl_data->key_loc.string());
+        logger_->log_debug("Kafka ssl.key.location [{}]", ssl_data->key_loc);
+        utils::setKafkaConfigurationField(*config, "ssl.key.password", ssl_data->key_pw);
+        logger_->log_debug("Kafka ssl.key.password was set");
+      }
+    }
+    utils::setKafkaConfigurationField(*config, "ssl.ca.location", ca_location);
+    logger_->log_debug("Kafka ssl.ca.location [{}]", ca_location);
+  }
+
+  auto sasl_mechanism = api::utils::parseEnumProperty<kafka::SASLMechanismOption>(context, SASLMechanism);
+  utils::setKafkaConfigurationField(*config, "sasl.mechanism", std::string{magic_enum::enum_name(sasl_mechanism)});
+  logger_->log_debug("Kafka sasl.mechanism [{}]", magic_enum::enum_name(sasl_mechanism));
+
+  auto setKafkaConfigIfNotEmpty = [this, &context, config](const core::PropertyReference& property, const std::string& kafka_config_name, bool log_value = true) {
+    const std::string value = context.getProperty(property, nullptr).value_or("");
+    if (!value.empty()) {
+      utils::setKafkaConfigurationField(*config, kafka_config_name, value);
+      if (log_value) {
+        logger_->log_debug("Kafka {} [{}]", kafka_config_name, value);
+      } else {
+        logger_->log_debug("Kafka {} was set", kafka_config_name);
+      }
+    }
+  };
+
+  setKafkaConfigIfNotEmpty(KerberosServiceName, "sasl.kerberos.service.name");
+  setKafkaConfigIfNotEmpty(KerberosPrincipal, "sasl.kerberos.principal");
+  setKafkaConfigIfNotEmpty(KerberosKeytabPath, "sasl.kerberos.keytab");
+  setKafkaConfigIfNotEmpty(Username, "sasl.username");
+  setKafkaConfigIfNotEmpty(Password, "sasl.password", false);
+}
+
+}  // namespace org::apache::nifi::minifi::processors

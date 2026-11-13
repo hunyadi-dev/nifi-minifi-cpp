@@ -1,43 +1,23 @@
-/**
- * @file AWSCredentialsProvider.cpp
- * AWSCredentialsProvider class implementation
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 
 #include "AWSCredentialsProvider.h"
 
 #include "aws/core/auth/AWSCredentialsProviderChain.h"
-#include "properties/Properties.h"
+#include "minifi-cpp/properties/Properties.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace aws {
+namespace org::apache::nifi::minifi::aws {
 
 AWSCredentialsProvider::AWSCredentialsProvider(
     bool use_default_credentials,
-    const std::string &access_key,
-    const std::string &secret_key,
-    const std::string &credentials_file)
+    std::string access_key,
+    std::string secret_key,
+    std::string credentials_file)
   : use_default_credentials_(use_default_credentials)
-  , access_key_(access_key)
-  , secret_key_(secret_key)
-  , credentials_file_(credentials_file) {
+  , access_key_(std::move(access_key))
+  , secret_key_(std::move(secret_key))
+  , credentials_file_(std::move(credentials_file)) {
 }
 
 void AWSCredentialsProvider::setUseDefaultCredentials(bool use_default_credentials) {
@@ -77,7 +57,7 @@ std::optional<Aws::Auth::AWSCredentials> AWSCredentialsProvider::getAWSCredentia
   }
 
   if (!credentials_file_.empty()) {
-    auto properties = std::make_shared<minifi::Properties>();
+    auto properties = minifi::Properties::create();
     properties->loadConfigureFile(credentials_file_.c_str());
     std::string access_key;
     std::string secret_key;
@@ -91,8 +71,4 @@ std::optional<Aws::Auth::AWSCredentials> AWSCredentialsProvider::getAWSCredentia
   return std::nullopt;
 }
 
-}  // namespace aws
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+}  // namespace org::apache::nifi::minifi::aws

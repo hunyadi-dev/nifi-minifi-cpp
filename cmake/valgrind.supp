@@ -1,0 +1,216 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+
+# Valgrind suppressions for MiNiFi C++ test runs.
+# Wired into CTest via the MEMORYCHECK_SUPPRESSIONS_FILE cache variable
+# in the top-level CMakeLists.txt.
+# Or invoke valgrind directly with --suppressions=cmake/valgrind.supp
+
+# Every "still reachable" record in the MiNiFi test binaries stems from a
+# process-lifetime singleton or a static initializer registering plugin
+# factories: rocksdb::ObjectLibrary, spdlog pattern-formatter handlers,
+# LoggerConfiguration, extension dlopen()s, zlib globals, etc. Valgrind
+# still holds a live pointer to all of these at exit, so by definition
+# they are not leaked; they are intentionally kept for the process's
+# lifetime and freed by the OS on exit. `fun:*` matches any top frame
+# (valgrind rejects suppressions whose only entry is `...`).
+{
+   still_reachable_process_lifetime
+   Memcheck:Leak
+   match-leak-kinds: reachable
+   fun:*
+}
+
+# glibc allocates a Thread-Local-Storage / DTV block via calloc inside
+# pthread_create. For long-lived worker threads (e.g. the log-compressor)
+# the pointer is still reachable at exit and valgrind flags it "possibly
+# lost". Not a real leak.
+{
+   pthread_create_tls_dtv_LogCompressorSink
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:calloc
+   ...
+   fun:_dl_allocate_tls
+   ...
+   fun:pthread_create*
+   ...
+   fun:*LogCompressorSink*
+}
+
+# Every extension which uses protobuf calls AddDescriptorsImpl at static-init time,
+# which populates the process-wide DescriptorPool / MessageFactory singletons.
+# Valgrind flags these as "possibly lost" because they're reached via interior abseil-hash pointers.
+# The memory is freed by the OS at exit, not leaked.
+{
+   possibly_lost_extension_static_init
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:_Znwm
+   ...
+   fun:*AddDescriptorsImpl*
+   ...
+   fun:*Extension*load*
+   ...
+}
+# PushGrafanaLokiGrpcTest and PushGrafanaLokiRESTTest statically link protobuf,
+# so a second copy of the DescriptorPool singleton is initialized from inside the
+# test binary itself at process startup.
+{
+   possibly_lost_grafana_loki_static_init_dl_init
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:_Znwm
+   ...
+   fun:*AddDescriptorsImpl*
+   ...
+   fun:_dl_init
+   obj:*ld-linux*
+}
+{
+   possibly_lost_grafana_loki_static_init_libc_start_main
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:_Znwm
+   ...
+   fun:*AddDescriptorsImpl*
+   ...
+   fun:__libc_start_main*
+   ...
+}
+
+# glibc lazily allocates a module's Thread-Local-Storage block (a DTV entry) the first time a
+# thread touches a thread_local in a dynamically-loaded library (e.g. the Lua script extension):
+# __tls_get_addr -> tls_get_addr_tail -> allocate_and_init -> allocate_dtv_entry. The block is
+# owned by the dynamic linker's DTV and freed by the OS at exit; valgrind only holds an interior
+# pointer, so it is flagged "possibly lost". Sibling path to possibly_lost_tls_dtv_growth (which
+# matches DTV *resize* instead). Never a real leak.
+{
+   possibly_lost_tls_dtv_entry_allocation
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:malloc
+   ...
+   fun:allocate_dtv_entry
+   ...
+   fun:__tls_get_addr
+   ...
+}
+
+# glibc grows the Thread-Local-Storage descriptor vector (DTV) the first time a
+# thread touches a dynamically-loaded TLS variable. The DTV block is kept for
+# the thread's lifetime and freed by the OS at exit; the growth happens only
+# through this __tls_get_addr -> _dl_update_slotinfo -> _dl_resize_dtv chain, so
+# whatever sits above it (spdlog thread_id, __cxa_throw's __cxa_get_globals,
+# std::call_once, ...) is irrelevant. Never a real leak.
+{
+   possibly_lost_tls_dtv_growth
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:malloc
+   ...
+   fun:_dl_resize_dtv
+   fun:_dl_update_slotinfo
+   fun:update_get_addr
+   fun:__tls_get_addr
+   ...
+}
+
+# grpc_core::ChannelInit::BuildStackConfig populates the process-lifetime
+# CoreConfiguration singleton (channelz::PropertyTable and friends) the first
+# time grpc_server_create is called. Held via interior abseil-hash pointers,
+# freed by the OS at exit. Not a leak.
+{
+   possibly_lost_grpc_core_configuration_singleton
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:_Znwm
+   ...
+   fun:*ChannelInit*BuildStackConfig*
+   ...
+}
+
+# absl::flags_internal::FlagRegistry::RegisterFlag populates the process-lifetime
+# global flag registry (an absl flat-hash-map) from static initializers (e.g.
+# gRPC's config_vars.cc) at dlopen()/startup time. Held via interior abseil-hash
+# pointers, freed by the OS at exit. Not a leak.
+{
+   possibly_lost_absl_flags_registry_static_init
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:_Znwm
+   ...
+   fun:*FlagRegistry*RegisterFlag*
+   ...
+}
+
+# grpc_core::instrument_detail::InstrumentIndex::Register populates the
+# process-lifetime instrument/telemetry registry (a global absl node-hash-map).
+# It runs from static initializers in gRPC's telemetry.cc/instrument.cc while an
+# extension is dlopen()ed. The map is held via interior abseil-hash pointers and
+# freed by the OS at exit. Not a leak.
+{
+   possibly_lost_grpc_instrument_registry_static_init
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:_Znwm
+   ...
+   fun:*instrument_detail*Register*
+   ...
+}
+
+# grpc_core::BasicMemoryQuota::AddNewAllocator inserts each new allocator into
+# the process-lifetime MemoryQuota's allocator set (an absl flat-hash-set). This
+# runs on gRPC's own EventEngine worker threads, which are still alive at exit,
+# so valgrind reaches the set's backing array via an interior pointer and flags
+# it "possibly lost". Owned by a process-lifetime singleton; not a leak.
+{
+   possibly_lost_grpc_memory_quota_add_allocator
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:_Znwm
+   ...
+   fun:*BasicMemoryQuota*AddNewAllocator*
+   ...
+}
+
+# grpc_core::CollectionScope registers itself (into an absl flat-hash-set) with
+# the process-lifetime GlobalStatsPluginRegistry the first time a channel/server
+# is created (GetStatsPluginsForChannel / ...ForServer -> CreateCollectionScope).
+# This runs on gRPC's EventEngine/WorkSerializer threads, so the set's backing
+# array is reached via an interior pointer and flagged "possibly lost". Owned by
+# a process-lifetime singleton; not a leak.
+{
+   possibly_lost_grpc_stats_plugin_collection_scope
+   Memcheck:Leak
+   match-leak-kinds: possible
+   fun:_Znwm
+   ...
+   fun:*CollectionScope*
+   ...
+}
+
+# Suppress a "Conditional jump or move depends on uninitialised value(s)" error
+# in zlib: this is intentional optimization, with the comment "prev[n] is garbage
+# but its value will never be used" at deflate.c:204.
+{
+   zlib_slide_hash_uninitialised_prev
+   Memcheck:Cond
+   fun:slide_hash
+   fun:fill_window
+   ...
+}
+
+# "Conditional jump or move depends on uninitialised value(s)" inside the libstdc++
+# std::from_chars<int> that is inlined into Cron's fromChars<>/parse<year>
+# (utils/Cron.cpp). The input std::string is fully initialised and fromChars value-
+# initialises its output; this is a known valgrind imprecision on optimized integer
+# parsing, not a real defect.
+{
+   cron_parse_year_fromchars_uninitialised
+   Memcheck:Cond
+   fun:*parse*year*
+   fun:*Cron*
+   ...
+}

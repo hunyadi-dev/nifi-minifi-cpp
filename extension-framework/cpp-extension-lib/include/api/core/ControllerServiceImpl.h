@@ -1,0 +1,50 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#pragma once
+
+#include <memory>
+#include <string>
+
+#include "ControllerServiceContext.h"
+#include "minifi-cpp/core/ControllerServiceMetadata.h"
+#include "minifi-cpp/utils/Id.h"
+#include "utils/SmallString.h"
+
+namespace org::apache::nifi::minifi::api {
+
+class Connection;
+
+namespace core {
+
+/// Helper class that makes implementing the stable API easier
+/// It is used in conjunction with useControllerServiceClassDefinition
+class ControllerServiceImpl {
+ public:
+  explicit ControllerServiceImpl(minifi::core::ControllerServiceMetadata metadata);
+
+  ControllerServiceImpl(const ControllerServiceImpl&) = delete;
+  ControllerServiceImpl(ControllerServiceImpl&&) = delete;
+  ControllerServiceImpl& operator=(const ControllerServiceImpl&) = delete;
+  ControllerServiceImpl& operator=(ControllerServiceImpl&&) = delete;
+
+  virtual ~ControllerServiceImpl();
+
+  minifi_status enable(ControllerServiceContext&);
+  void disable();
+
+  [[nodiscard]] std::string getName() const;
+  [[nodiscard]] minifi::utils::Identifier getUUID() const;
+  [[nodiscard]] minifi::utils::SmallString<minifi::utils::Identifier::UUID_STR_LEN> getUUIDStr() const;
+
+ protected:
+  virtual minifi_status enableImpl(api::core::ControllerServiceContext&) = 0;
+  virtual void disableImpl() {}
+
+  minifi::core::ControllerServiceMetadata metadata_;
+
+  std::shared_ptr<minifi::core::logging::Logger> logger_;
+};
+
+}  // namespace core
+}  // namespace org::apache::nifi::minifi::api

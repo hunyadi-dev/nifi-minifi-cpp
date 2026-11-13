@@ -1,0 +1,151 @@
+Subject: [PATCH] removed spdlog and asio thirdparty libs (since we already provide those)
+---
+Index: cmake/ThirdPartyDependencies.cmake
+IDEA additional info:
+Subsystem: com.intellij.openapi.diff.impl.patch.CharsetEP
+<+>UTF-8
+===================================================================
+diff --git a/cmake/ThirdPartyDependencies.cmake b/cmake/ThirdPartyDependencies.cmake
+--- a/cmake/ThirdPartyDependencies.cmake	(revision fb3f860843c3ca594f2676225dcc95ed8d6c1375)
++++ b/cmake/ThirdPartyDependencies.cmake	(date 1776166918688)
+@@ -18,27 +18,6 @@
+
+ include(cmake/OpenSSL.cmake)
+
+-if(NOT TARGET spdlog::spdlog)
+-  # https://github.com/gabime/spdlog/releases
+-  cpmaddpackage(
+-    NAME
+-    spdlog
+-    VERSION
+-    1.15.0
+-    GITHUB_REPOSITORY
+-    "gabime/spdlog"
+-    EXCLUDE_FROM_ALL ON
+-    SYSTEM NO
+-    OPTIONS
+-    "SPDLOG_INSTALL OFF"
+-    "BUILD_SHARED_LIBS OFF"
+-    "CMAKE_C_VISIBILITY_PRESET hidden"
+-    "CMAKE_CXX_VISIBILITY_PRESET hidden"
+-    "CMAKE_POSITION_INDEPENDENT_CODE ON"
+-    "SPDLOG_BUILD_SHARED OFF"
+-    "SPDLOG_FMT_EXTERNAL OFF")
+-endif()
+-
+ if(COUCHBASE_CXX_CLIENT_BUILD_OPENTELEMETRY)
+   if(NOT TARGET opentelemetry)
+     # Disable curl HTTP client to avoid curl downloading and linking to BoringSSL
+@@ -196,103 +175,7 @@
+     "TAOCPP_JSON_BUILD_EXAMPLES OFF")
+ endif()
+
+-if(NOT TARGET asio::asio)
+-  # https://github.com/chriskohlhoff/asio/tags
+-  cpmaddpackage(
+-    NAME
+-    asio
+-    GIT_TAG
+-    asio-1-34-2
+-    VERSION
+-    1.34.2
+-    GITHUB_REPOSITORY
+-    "chriskohlhoff/asio"
+-    EXCLUDE_FROM_ALL ON
+-    SYSTEM NO)
+-endif()
+-
+-# ASIO doesn't use CMake, we have to configure it manually. Extra notes for using on Windows:
+-#
+-# 1) If _WIN32_WINNT is not set, ASIO assumes _WIN32_WINNT=0x0501, i.e. Windows XP target, which is definitely not the
+-# platform which most users target.
+-#
+-# 2) WIN32_LEAN_AND_MEAN is defined to make Winsock2 work.
+-if(asio_ADDED)
+-  add_library(asio STATIC ${asio_SOURCE_DIR}/asio/src/asio.cpp ${asio_SOURCE_DIR}/asio/src/asio_ssl.cpp)
+-
+-  target_include_directories(asio SYSTEM PUBLIC ${asio_SOURCE_DIR}/asio/include)
+-  target_compile_definitions(asio PUBLIC ASIO_STANDALONE=1 ASIO_NO_DEPRECATED=1 ASIO_SEPARATE_COMPILATION=1)
+-  target_link_libraries(asio PRIVATE Threads::Threads)
+-  if(COUCHBASE_CXX_CLIENT_STATIC_BORINGSSL)
+-    target_link_libraries(asio PUBLIC $<TARGET_OBJECTS:ssl> $<TARGET_OBJECTS:crypto>)
+-    # Add BoringSSL include directories before asio's own include directories.
+-    target_include_directories(
+-      asio BEFORE PRIVATE $<BUILD_INTERFACE:$<TARGET_PROPERTY:ssl,INTERFACE_INCLUDE_DIRECTORIES>>
+-                          $<BUILD_INTERFACE:$<TARGET_PROPERTY:crypto,INTERFACE_INCLUDE_DIRECTORIES>>)
+-  elseif(NOT COUCHBASE_CXX_CLIENT_POST_LINKED_OPENSSL)
+-    target_link_libraries(asio PRIVATE OpenSSL::SSL OpenSSL::Crypto)
+-  endif()
+-  set_target_properties(
+-    asio
+-    PROPERTIES C_VISIBILITY_PRESET hidden
+-               CXX_VISIBILITY_PRESET hidden
+-               POSITION_INDEPENDENT_CODE TRUE)
+-
+-  if(WIN32)
+-    # macro see @ https://stackoverflow.com/a/40217291/1746503
+-    macro(get_win32_winnt version)
+-      if(CMAKE_SYSTEM_VERSION)
+-        set(ver ${CMAKE_SYSTEM_VERSION})
+-        string(
+-          REGEX MATCH
+-                "^([0-9]+).([0-9])"
+-                ver
+-                ${ver})
+-        string(
+-          REGEX MATCH
+-                "^([0-9]+)"
+-                verMajor
+-                ${ver})
+-        # Check for Windows 10, b/c we'll need to convert to hex 'A'.
+-        if("${verMajor}" MATCHES "10")
+-          set(verMajor "A")
+-          string(
+-            REGEX
+-            REPLACE "^([0-9]+)"
+-                    ${verMajor}
+-                    ver
+-                    ${ver})
+-        endif("${verMajor}" MATCHES "10")
+-        # Remove all remaining '.' characters.
+-        string(
+-          REPLACE "."
+-                  ""
+-                  ver
+-                  ${ver})
+-        # Prepend each digit with a zero.
+-        string(
+-          REGEX
+-          REPLACE "([0-9A-Z])"
+-                  "0\\1"
+-                  ver
+-                  ${ver})
+-        set(${version} "0x${ver}")
+-      endif()
+-    endmacro()
+-
+-    if(NOT DEFINED _WIN32_WINNT)
+-      get_win32_winnt(ver)
+-      set(_WIN32_WINNT ${ver})
+-    endif()
+-
+-    message(STATUS "Set _WIN32_WINNT=${_WIN32_WINNT}")
+-
+-    target_compile_definitions(asio INTERFACE _WIN32_WINNT=${_WIN32_WINNT} WIN32_LEAN_AND_MEAN)
+-    target_compile_options(asio INTERFACE /bigobj)
+-  endif()
+-
+-  add_library(asio::asio ALIAS asio)
+-endif()
++# MINIFICPP PATCH: removed asio and splog declare_system_library
+
+ add_library(jsonsl OBJECT ${PROJECT_SOURCE_DIR}/third_party/jsonsl/jsonsl.c)
+ set_target_properties(jsonsl PROPERTIES C_VISIBILITY_PRESET hidden POSITION_INDEPENDENT_CODE TRUE)
+@@ -302,7 +185,5 @@
+ declare_system_library(llhttp::llhttp)
+ declare_system_library(hdr_histogram_static)
+ declare_system_library(Microsoft.GSL::GSL)
+-declare_system_library(spdlog::spdlog)
+-declare_system_library(asio)
+ declare_system_library(taocpp::json)
+ declare_system_library(snappy)

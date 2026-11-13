@@ -1,43 +1,22 @@
-/**
- *
- * Licensed to the Apache Software Foundation (ASF) under one or more
- * contributor license agreements.  See the NOTICE file distributed with
- * this work for additional information regarding copyright ownership.
- * The ASF licenses this file to You under the Apache License, Version 2.0
- * (the "License"); you may not use this file except in compliance with
- * the License.  You may obtain a copy of the License at
- *
- *     http://www.apache.org/licenses/LICENSE-2.0
- *
- * Unless required by applicable law or agreed to in writing, software
- * distributed under the License is distributed on an "AS IS" BASIS,
- * WITHOUT WARRANTIES OR CONDITIONS OF ANY KIND, either express or implied.
- * See the License for the specific language governing permissions and
- * limitations under the License.
- */
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
 #include <utility>
 #include <string>
 #include <memory>
 #include <ctime>
 #include <algorithm>
 #include <cctype>
-#include "../TestBase.h"
+#include "unit/TestBase.h"
+#include "unit/Catch.h"
 #include "utils/Id.h"
-#include "../Utils.h"
+#include "unit/TestUtils.h"
 
-namespace org {
-namespace apache {
-namespace nifi {
-namespace minifi {
-namespace utils {
+namespace org::apache::nifi::minifi::utils {
 struct IdentifierTestAccessor {
   FIELD_ACCESSOR(data_)
 };
-}  // namespace utils
-}  // namespace minifi
-}  // namespace nifi
-}  // namespace apache
-}  // namespace org
+}  // namespace org::apache::nifi::minifi::utils
 
 using org::apache::nifi::minifi::utils::IdentifierTestAccessor;
 
@@ -46,7 +25,7 @@ TEST_CASE("Test default is time", "[id]") {
 
   LogTestController::getInstance().setDebug<utils::IdGenerator>();
   std::shared_ptr<utils::IdGenerator> generator = utils::IdGenerator::getIdGenerator();
-  generator->initialize(std::make_shared<minifi::Properties>());
+  generator->initialize(std::make_shared<minifi::PropertiesImpl>(minifi::PropertiesImpl::PersistTo::MultipleFiles, "UID properties"));
 
   REQUIRE(true == LogTestController::getInstance().contains("Using uuid_generate_time implementation for uids."));
   LogTestController::getInstance().reset();
@@ -56,7 +35,7 @@ TEST_CASE("Test time", "[id]") {
   TestController test_controller;
 
   LogTestController::getInstance().setDebug<utils::IdGenerator>();
-  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::Properties>();
+  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::PropertiesImpl>(minifi::PropertiesImpl::PersistTo::MultipleFiles, "UID properties");
   id_props->set("uid.implementation", "TiMe");
 
   std::shared_ptr<utils::IdGenerator> generator = utils::IdGenerator::getIdGenerator();
@@ -76,7 +55,7 @@ TEST_CASE("Test Generate Move", "[id]") {
   TestController test_controller;
 
   LogTestController::getInstance().setDebug<utils::IdGenerator>();
-  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::Properties>();
+  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::PropertiesImpl>(minifi::PropertiesImpl::PersistTo::MultipleFiles, "UID properties");
   id_props->set("uid.implementation", "TiMe");
 
   std::shared_ptr<utils::IdGenerator> generator = utils::IdGenerator::getIdGenerator();
@@ -84,7 +63,7 @@ TEST_CASE("Test Generate Move", "[id]") {
 
   auto generated = generator->generate();
   auto str = generated.to_string();
-  utils::Identifier moved = std::move(generated);
+  utils::Identifier moved = std::move(generated);  // NOLINT(performance-move-const-arg)
   auto str2 = moved.to_string();
   REQUIRE(str == str2);
 }
@@ -93,7 +72,7 @@ TEST_CASE("Test random", "[id]") {
   TestController test_controller;
 
   LogTestController::getInstance().setDebug<utils::IdGenerator>();
-  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::Properties>();
+  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::PropertiesImpl>(minifi::PropertiesImpl::PersistTo::MultipleFiles, "UID properties");
   id_props->set("uid.implementation", "RaNDoM");
 
   std::shared_ptr<utils::IdGenerator> generator = utils::IdGenerator::getIdGenerator();
@@ -113,7 +92,7 @@ TEST_CASE("Test uuid_default", "[id]") {
   TestController test_controller;
 
   LogTestController::getInstance().setDebug<utils::IdGenerator>();
-  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::Properties>();
+  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::PropertiesImpl>(minifi::PropertiesImpl::PersistTo::MultipleFiles, "UID properties");
   id_props->set("uid.implementation", "UUID_default");
 
   std::shared_ptr<utils::IdGenerator> generator = utils::IdGenerator::getIdGenerator();
@@ -127,7 +106,7 @@ TEST_CASE("Test invalid", "[id]") {
   TestController test_controller;
 
   LogTestController::getInstance().setDebug<utils::IdGenerator>();
-  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::Properties>();
+  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::PropertiesImpl>(minifi::PropertiesImpl::PersistTo::MultipleFiles, "UID properties");
   id_props->set("uid.implementation", "InVaLiD");
 
   std::shared_ptr<utils::IdGenerator> generator = utils::IdGenerator::getIdGenerator();
@@ -141,7 +120,7 @@ TEST_CASE("Test parse", "[id]") {
   TestController test_controller;
 
   LogTestController::getInstance().setDebug<utils::IdGenerator>();
-  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::Properties>();
+  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::PropertiesImpl>(minifi::PropertiesImpl::PersistTo::MultipleFiles, "UID properties");
   id_props->set("uid.implementation", "time");
 
   std::shared_ptr<utils::IdGenerator> generator = utils::IdGenerator::getIdGenerator();
@@ -157,7 +136,7 @@ TEST_CASE("Test parse", "[id]") {
   for (const auto& test_case : test_cases) {
     utils::Identifier id = utils::Identifier::parse(test_case.first).value();
     REQUIRE(memcmp(IdentifierTestAccessor::get_data_(id).data(), test_case.second.data(), 16U) == 0);
-    REQUIRE(utils::StringUtils::equalsIgnoreCase(test_case.first, id.to_string()));
+    REQUIRE(utils::string::equalsIgnoreCase(test_case.first, id.to_string().view()));
   }
 
   LogTestController::getInstance().reset();
@@ -167,7 +146,7 @@ TEST_CASE("Test parse invalid", "[id]") {
   TestController test_controller;
 
   LogTestController::getInstance().setDebug<utils::IdGenerator>();
-  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::Properties>();
+  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::PropertiesImpl>(minifi::PropertiesImpl::PersistTo::MultipleFiles, "UID properties");
   id_props->set("uid.implementation", "time");
 
   std::shared_ptr<utils::IdGenerator> generator = utils::IdGenerator::getIdGenerator();
@@ -194,7 +173,7 @@ TEST_CASE("Test to_string", "[id]") {
   TestController test_controller;
 
   LogTestController::getInstance().setDebug<utils::IdGenerator>();
-  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::Properties>();
+  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::PropertiesImpl>(minifi::PropertiesImpl::PersistTo::MultipleFiles, "UID properties");
   id_props->set("uid.implementation", "time");
 
   std::shared_ptr<utils::IdGenerator> generator = utils::IdGenerator::getIdGenerator();
@@ -236,7 +215,7 @@ TEST_CASE("Test Hex Device Segment 16 bits correct digits", "[id]") {
   TestController test_controller;
 
   LogTestController::getInstance().setDebug<utils::IdGenerator>();
-  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::Properties>();
+  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::PropertiesImpl>(minifi::PropertiesImpl::PersistTo::MultipleFiles, "UID properties");
   id_props->set("uid.implementation", "minifi_uid");
   id_props->set("uid.minifi.device.segment", "09aF");
 
@@ -254,7 +233,7 @@ TEST_CASE("Test Hex Device Segment 16 bits correct digits", "[id]") {
   REQUIRE(0xaf == data[1]);
   REQUIRE(1 == data[15]);
 
-  REQUIRE(true == LogTestController::getInstance().contains("Using user defined device segment: 9af"));
+  REQUIRE(true == LogTestController::getInstance().contains("Using user defined device segment: 0x9af"));
   LogTestController::getInstance().reset();
 }
 
@@ -262,7 +241,7 @@ TEST_CASE("Test Hex Device Segment 16 bits too many digits", "[id]") {
   TestController test_controller;
 
   LogTestController::getInstance().setDebug<utils::IdGenerator>();
-  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::Properties>();
+  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::PropertiesImpl>(minifi::PropertiesImpl::PersistTo::MultipleFiles, "UID properties");
   id_props->set("uid.implementation", "minifi_uid");
   id_props->set("uid.minifi.device.segment", "09aFee");
 
@@ -282,7 +261,7 @@ TEST_CASE("Test Hex Device Segment 16 bits too many digits", "[id]") {
   REQUIRE(0 == (data[2] & 128));
   REQUIRE(1 == data[15]);
 
-  REQUIRE(true == LogTestController::getInstance().contains("Using user defined device segment: 9af"));
+  REQUIRE(true == LogTestController::getInstance().contains("Using user defined device segment: 0x9af"));
   LogTestController::getInstance().reset();
 }
 
@@ -290,7 +269,7 @@ TEST_CASE("Test Hex Device Segment 18 bits", "[id]") {
   TestController test_controller;
 
   LogTestController::getInstance().setDebug<utils::IdGenerator>();
-  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::Properties>();
+  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::PropertiesImpl>(minifi::PropertiesImpl::PersistTo::MultipleFiles, "UID properties");
   id_props->set("uid.implementation", "minifi_uid");
   id_props->set("uid.minifi.device.segment.bits", "18");
   id_props->set("uid.minifi.device.segment", "09aF8");
@@ -315,7 +294,7 @@ TEST_CASE("Test Hex Device Segment 18 bits", "[id]") {
   REQUIRE(uuid.to_string() != uuid2.to_string());
   REQUIRE(uuid != uuid2);
 
-  REQUIRE(true == LogTestController::getInstance().contains("Using minifi uid prefix: 9af8"));
+  REQUIRE(true == LogTestController::getInstance().contains("Using minifi uid prefix: 0x9af8"));
   LogTestController::getInstance().reset();
 }
 
@@ -324,7 +303,7 @@ TEST_CASE("Collision", "[collision]") {
   TestController test_controller;
 
   LogTestController::getInstance().setDebug<utils::IdGenerator>();
-  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::Properties>();
+  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::PropertiesImpl>(minifi::PropertiesImpl::PersistTo::MultipleFiles, "UID properties");
   SECTION("random") {
     id_props->set("uid.implementation", "random");
   }
@@ -340,6 +319,7 @@ TEST_CASE("Collision", "[collision]") {
 
   std::vector<utils::Identifier> uuids(16 * 1024U);
   std::vector<std::thread> threads;
+  threads.reserve(16);
   for (size_t i = 0U; i < 16U; i++) {
     threads.emplace_back([&generator, &uuids, i](){
       for (size_t j = 0U; j < 1024U; j++) {
@@ -363,7 +343,7 @@ TEST_CASE("Speed", "[speed]") {
   TestController test_controller;
 
   LogTestController::getInstance().setDebug<utils::IdGenerator>();
-  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::Properties>();
+  std::shared_ptr<minifi::Properties> id_props = std::make_shared<minifi::PropertiesImpl>(minifi::PropertiesImpl::PersistTo::MultipleFiles, "UID properties");
   std::string implementation;
   SECTION("random") {
     implementation = "random";
@@ -384,8 +364,8 @@ TEST_CASE("Speed", "[speed]") {
   generator->generate();
 
   auto before = std::chrono::high_resolution_clock::now();
-  for (size_t i = 0U; i < uuids.size(); i++) {
-    uuids[i] = generator->generate();
+  for (auto& uuid : uuids) {
+    uuid = generator->generate();
   }
   auto duration = std::chrono::duration_cast<std::chrono::nanoseconds>(std::chrono::high_resolution_clock::now() - before).count();
   std::cerr << "Generating one " << implementation << " UUID took " << (duration / uuids.size()) << "ns" << std::endl;

@@ -1,0 +1,79 @@
+# SPDX-License-Identifier: Apache-2.0
+# SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+# SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+"""
+Install the following with pip
+
+pip install datatable
+pip install pandas
+"""
+
+import codecs
+from io import StringIO
+
+import datatable as dt
+import pandas as pd  # noqa F401
+
+
+def describe(processor):
+    """describe what this processor does"""
+    processor.setDescription(
+        "Converts the data source content of incoming flow file to csv. It \
+                              supports a variety of data sources: pandas DataFrames, csv, numpy \
+                              arrays, dictionary, list, raw Python objects, etc"
+    )
+
+
+def onInitialize(processor):
+    """onInitialize is where you can set properties"""
+    processor.setSupportsDynamicProperties()
+
+
+class ContentExtract:
+    """ContentExtract callback class is defined for reading streams of data through the session
+    and has a process function that accepts the input stream
+    """
+
+    def __init__(self):
+        self.content = None
+
+    def process(self, input_stream):
+        """Use codecs getReader to read that data"""
+        self.content = codecs.getreader("utf-8")(input_stream).read()
+        return len(self.content)
+
+
+class ContentWrite:
+    """ContentWrite callback class is defined for writing streams of data through the session"""
+
+    def __init__(self, data):
+        self.content = data
+
+    def process(self, output_stream):
+        """Use codecs getWriter to write data encoded to the stream"""
+        codecs.getwriter("utf-8")(output_stream).write(self.content)
+        return len(self.content)
+
+
+def onTrigger(context, session):
+    """onTrigger is executed and passed processor context and session"""
+    flow_file = session.get()
+    if flow_file is not None:
+        read_cb = ContentExtract()
+        # read flow file content into read_cb.content data member
+        session.read(flow_file, read_cb)
+        # create empty in-memory text streams csv_data buffer
+        csv_data = StringIO()
+        # load str data into datatable, then convert to pandas df
+        dt_frame = dt.Frame(read_cb.content)
+        pd_dframe = dt_frame.to_pandas()
+        # convert df to csv file like object without df index
+        pd_dframe.to_csv(csv_data, index=False)
+        # set the csv to the start of text stream
+        csv_data.seek(0)
+        # get csv str data out of StringIO text stream, then store str
+        csv_data = csv_data.read()
+        # write csv str to flow file
+        write_cb = ContentWrite(csv_data)
+        session.write(flow_file, write_cb)
+        session.transfer(flow_file, REL_SUCCESS)

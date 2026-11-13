@@ -1,0 +1,101 @@
+// SPDX-License-Identifier: Apache-2.0
+// SPDX-FileCopyrightText: See the NOTICE file distributed with this work for additional information regarding copyright ownership
+// SPDX-FileContributor: Licensed to the Apache Software Foundation (ASF) under one or more contributor license agreements
+#include <cstdio>
+#include <iostream>
+#include <string>
+
+#include "CivetServer.h"
+#include "FlowController.h"
+#include "controllers/SSLContextService.h"
+#include "core/ConfigurableComponentImpl.h"
+#include "minifi-cpp/core/logging/Logger.h"
+#include "integration/HTTPIntegrationBase.h"
+#include "processors/InvokeHTTP.h"
+#include "unit/TestBase.h"
+#include "RemoteProcessGroupPort.h"
+#include "unit/TestUtils.h"
+
+namespace org::apache::nifi::minifi::test {
+
+class Responder : public ServerAwareHandler {
+ public:
+  explicit Responder(bool isSecure)
+      : isSecure(isSecure) {
+  }
+  bool handleGet(CivetServer* /*server*/, struct mg_connection *conn) override {
+    std::string site2site_rest_resp = "{"
+        "\"revision\": {"
+        "\"clientId\": \"483d53eb-53ec-4e93-b4d4-1fc3d23dae6f\""
+        "},"
+        "\"controller\": {"
+        "\"id\": \"fe4a3a42-53b6-4af1-a80d-6fdfe60de97f\","
+        "\"name\": \"NiFi Flow\","
+        "\"remoteSiteListeningPort\": 10001,"
+        "\"siteToSiteSecure\": ";
+    site2site_rest_resp += (isSecure ? "true" : "false");
+    site2site_rest_resp += "}}";
+    mg_printf(conn, "HTTP/1.1 200 OK\r\nContent-Type: "
+              "text/plain\r\nContent-Length: %lu\r\nConnection: close\r\n\r\n",
+              site2site_rest_resp.length());
+    mg_printf(conn, "%s", site2site_rest_resp.c_str());
+    return true;
+  }
+
+ protected:
+  bool isSecure;
+};
+
+class SiteToSiteTestHarness : public HTTPIntegrationBase {
+ public:
+  explicit SiteToSiteTestHarness(const std::filesystem::path& test_file_path, bool isSecure)
+      : HTTPIntegrationBase(test_file_path),
+        isSecure(isSecure) {
+    dir_ = test_controller_.createTempDirectory();
+  }
+
+  void testSetup() override {
+    LogTestController::getInstance().setTrace<minifi::RemoteProcessGroupPort>();
+    LogTestController::getInstance().setDebug<minifi::http::HTTPClient>();
+    LogTestController::getInstance().setTrace<minifi::controllers::SSLContextServiceInterface>();
+    LogTestController::getInstance().setInfo<minifi::FlowController>();
+    LogTestController::getInstance().setDebug<core::ConfigurableComponent>();
+
+    std::fstream file;
+    test_file_ = dir_ / "tstFile.ext";
+    file.open(test_file_, std::ios::out);
+    file << "tempFile";
+    file.close();
+  }
+
+  void cleanup() override {
+    std::filesystem::remove(test_file_);
+    IntegrationBase::cleanup();
+  }
+
+  void runAssertions() override {
+    using minifi::test::utils::verifyLogLinePresenceInPollTime;
+    if (isSecure) {
+      REQUIRE(verifyLogLinePresenceInPollTime(std::chrono::milliseconds(wait_time_), "process group remote site2site port 10001, is secure true"));
+    } else {
+      REQUIRE(verifyLogLinePresenceInPollTime(std::chrono::milliseconds(wait_time_), "process group remote site2site port 10001, is secure false"));
+    }
+    REQUIRE(verifyLogLinePresenceInPollTime(std::chrono::milliseconds(wait_time_), "ProcessGroup::refreshRemoteSiteToSiteInfo -- curl_easy_perform() failed "));
+  }
+
+ protected:
+  bool isSecure;
+  std::filesystem::path dir_;
+  std::filesystem::path test_file_;
+  TestController test_controller_;
+};
+
+TEST_CASE("Test site to site using REST", "[s2s]") {
+  SiteToSiteTestHarness harness(std::filesystem::path(TEST_RESOURCES) / "TestSite2SiteRest.yml", false);
+  Responder responder(false);
+  harness.setKeyDir(TEST_RESOURCES);
+  harness.setUrl(parseUrl("http://localhost:8077/nifi-api/site-to-site"), &responder);
+  harness.run();
+}
+
+}  // namespace org::apache::nifi::minifi::test
